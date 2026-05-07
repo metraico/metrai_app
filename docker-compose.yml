@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: metrai_app_backend
+    environment:
+      # host.docker.internal resolves to your Mac's localhost from inside Docker
+      SIM_ENGINE_URL: "http://host.docker.internal:8000"
+      POSTGRES_DSN: "postgresql://metrai:metrai_pass@host.docker.internal:5433/metrai"
+    ports:
+      - "8080:8000"   # proxy available at localhost:8080 on your Mac
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: metrai_app_frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "8503:8501"   # Streamlit available at localhost:8503 on your Mac
+    depends_on:
+      backend:
+        condition: service_healthy
