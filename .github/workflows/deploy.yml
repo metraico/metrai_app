@@ -1,0 +1,24 @@
+name: Deploy Metrai App
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ec2-user/metrai_app
+            git pull origin dev
+            docker-compose pull
+            docker-compose up -d --build --remove-orphans
+            docker image prune -f
