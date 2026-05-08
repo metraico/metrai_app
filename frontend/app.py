@@ -107,9 +107,9 @@ _SPEC_RENAMES = {
     "CustomerOrderDelivery.csv": {
         "store_order_number": "CustomerOrderNumber", "line_number": "LineNumber",
         "store_code": "SiteCode", "item_code": "ItemCode",
-        "delivery_date": "DeliveryDate", "order_quantity": "OrderQuantity",
-        "delivered_quantity": "DeliveredQuantity", "delivery_status": "DeliveryStatus",
-        "is_late": "IsLate",
+        "delivery_week": "DeliveryWeek", "order_quantity": "OrderQuantity",
+        "delivered_quantity": "DeliveredQuantity", "unfilled_quantity": "UnfilledQuantity",
+        "delivery_status": "DeliveryStatus", "is_late": "IsLate",
     },
     "SalesHistoryInformation.csv": {
         "store_code": "SiteCode", "item_code": "ItemCode", "sales_week": "SalesWeek",
@@ -273,21 +273,40 @@ def _prepare_export_dfs(
     cust_line_df = cust_line_df.reset_index(drop=True)
 
     # CustomerOrderDelivery: engine now writes delivery vocab directly; no join needed
-    del_df = _filt(str_rec_df, store_col="store_id", item_col="item_id")
+    del_df = _filt(str_rec_df, store_col="store_id", item_col="item_id").copy()
+    if not del_df.empty and "delivery_date" in del_df.columns:
+        _dd = pd.to_datetime(del_df["delivery_date"], errors="coerce")
+        del_df["delivery_week"] = _dd.dt.strftime("%Y-W%V")
+    elif "delivery_week" not in del_df.columns:
+        del_df["delivery_week"] = ""
+    if not del_df.empty:
+        _oq = pd.to_numeric(del_df.get("order_quantity",    0), errors="coerce").fillna(0)
+        _dq = pd.to_numeric(del_df.get("delivered_quantity", 0), errors="coerce").fillna(0)
+        del_df["unfilled_quantity"] = (_oq - _dq).clip(lower=0)
 
     # ── SalesHistoryInformation ───────────────────────────────────────────────
     sales_filt = _filt(sales_hist_df, store_col="store_id", item_col="item_id")
 
     # ── CalendarPeriod ────────────────────────────────────────────────────────
-    weeks = pd.date_range(start=start_date, end=end_date, freq="W-MON")
+    days = pd.date_range(start=start_date, end=end_date, freq="D")
     cal_df = pd.DataFrame({
-        "CalendarPeriod": [w.strftime("%Y-W%W") for w in weeks],
-        "StartDate": [w.strftime("%Y-%m-%d") for w in weeks],
-        "EndDate": [(w + pd.Timedelta(days=6)).strftime("%Y-%m-%d") for w in weeks],
+        "CalendarDate":  [d.strftime("%Y-%m-%d") for d in days],
+        "WeekId":        [d.strftime("%Y-W%V") for d in days],
+        "WeekStartDate": [(d - pd.Timedelta(days=d.weekday())).strftime("%Y-%m-%d") for d in days],
+        "MonthId":       [d.strftime("%Y-%m") for d in days],
+        "QuarterId":     [f"{d.year}-Q{(d.month - 1) // 3 + 1}" for d in days],
+        "YearId":        [d.year for d in days],
+        "DayOfWeek":     [d.strftime("%A") for d in days],
+        "IsWeekend":     [1 if d.weekday() >= 5 else 0 for d in days],
     })
 
     # ── Currency ──────────────────────────────────────────────────────────────
-    cur_df = pd.DataFrame([{"CurrencyCode": "USD", "CurrencyName": "US Dollar", "ExchangeRate": 1.0}])
+    cur_df = pd.DataFrame([{
+        "CurrencyCode":        "USD",
+        "CurrencyName":        "US Dollar",
+        "ExchangeRateToUSD":   1.0,
+        "EffectiveDate":       str(start_date),
+    }])
 
     # ── PromoEvents ───────────────────────────────────────────────────────────
     promo_rows = []
@@ -868,9 +887,10 @@ with tab_simulate:
 
     dc_on_time_by_dc: dict = {}
     dc_partial_by_dc: dict = {}
+    dc_lead_days_by_dc: dict = {}
 
     if _dc_list:
-        with st.sidebar.expander(f"Per-DC Delivery Rates ({len(_dc_list)} DCs)"):
+        with st.sidebar.expander(f"Per-DC Delivery Rates & Lead Time ({len(_dc_list)} DCs)"):
             st.caption("Leave at global default or adjust per DC.")
             for _dc in _dc_list:
                 _code = _dc.get("dc_code", "") or _dc.get("dc_id", "")
@@ -881,10 +901,14 @@ with tab_simulate:
                                 key=f"dc_ot_{_code}")
                 _pt = st.slider(f"Partial — {_code}", 0.0, 0.3, dc_partial, 0.05,
                                 key=f"dc_pt_{_code}")
+                _ld = st.number_input(f"Lead time (days) — {_code}", min_value=1, max_value=14,
+                                      value=int(dc_lead_days), key=f"dc_ld_{_code}")
                 if _ot != dc_on_time:
                     dc_on_time_by_dc[_code] = _ot
                 if _pt != dc_partial:
                     dc_partial_by_dc[_code] = _pt
+                if int(_ld) != int(dc_lead_days):
+                    dc_lead_days_by_dc[_code] = int(_ld)
 
     seed = st.sidebar.number_input("Random Seed", min_value=0, value=42)
 
@@ -955,6 +979,7 @@ with tab_simulate:
             "dc_lead_days":        int(dc_lead_days),
             "dc_on_time_by_dc":    dc_on_time_by_dc,
             "dc_partial_by_dc":    dc_partial_by_dc,
+            "dc_lead_days_by_dc":  dc_lead_days_by_dc,
             "seed":                int(seed),
         }
 
