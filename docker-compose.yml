@@ -5,9 +5,8 @@ services:
       dockerfile: Dockerfile.backend
     container_name: metrai_app_backend
     environment:
-      # host.docker.internal resolves to your Mac's localhost from inside Docker
-      SIM_ENGINE_URL: "http://host.docker.internal:8000"
-      POSTGRES_DSN: "postgresql://metrai:metrai_pass@host.docker.internal:5433/metrai"
+      SIM_ENGINE_URL: "${SIM_ENGINE_URL:-http://host.docker.internal:8000}"
+      POSTGRES_DSN: "${POSTGRES_DSN:-postgresql://metrai:metrai_pass@host.docker.internal:5433/metrai}"
     ports:
       - "8080:8000"   # proxy available at localhost:8080 on your Mac
     healthcheck:
