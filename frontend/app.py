@@ -15,7 +15,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from frontend.components.styles import CSS_BLOCK
-from frontend.components.nav import render_sidebar_nav
+from frontend.components.sidebar import render_sidebar_nav
 from frontend.screens.login import render_login_screen
 from frontend.screens.retailers import render_retailers_screen
 from frontend.screens.runs import render_runs_screen

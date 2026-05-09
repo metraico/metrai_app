@@ -36,119 +36,174 @@ section[data-testid="stMain"] > div,
 /* ═══════════════════════════════════════════════════════════
    SIDEBAR
 ═══════════════════════════════════════════════════════════ */
+
+/* Shell */
 [data-testid="stSidebar"] {
     background: #111827 !important;
-    border-right: 1px solid rgba(255,255,255,0.08) !important;
-    min-width: 260px !important;
-    max-width: 260px !important;
+    border-right: 1px solid rgba(255,255,255,0.07) !important;
+    width: 256px !important;
+    min-width: 256px !important;
+    max-width: 256px !important;
     transform: none !important;
     display: flex !important;
 }
+
+/* Inner container — #3: min-height instead of height to avoid double-scroll */
 [data-testid="stSidebar"] > div:first-child {
     display: flex !important;
     flex-direction: column !important;
-    height: 100vh !important;
     min-height: 100vh !important;
-    padding: 20px 16px !important;
+    height: 100% !important;
+    padding: 24px 16px 20px !important;
     width: 100% !important;
-    position: relative !important;
     box-sizing: border-box !important;
 }
+
+/* #2: Target only the FIRST vertical block, not all nested ones */
+[data-testid="stSidebar"] > div:first-child > [data-testid="stVerticalBlockBorderWrapper"] {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+[data-testid="stSidebar"] > div:first-child > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    gap: 2px !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
 [data-testid="stSidebar"] .block-container { padding: 0 !important; }
+
+/* Kill backgrounds on markdown wrappers */
+[data-testid="stSidebar"] .stMarkdown {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
 
 /* Hide collapse buttons */
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapseButton"] { display: none !important; }
 
-/* Kill default backgrounds/borders on inner wrappers; propagate flex height */
-[data-testid="stSidebar"] .stMarkdown,
-[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-    background: transparent !important;
-    box-shadow: none !important;
-    border: none !important;
+/* ── Branding ── */
+.sb-brand {
+    display: flex; align-items: center; gap: 12px;
+    padding: 4px 6px;
+    margin-bottom: 28px;
 }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-    background: transparent !important;
-    box-shadow: none !important;
-    border: none !important;
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 0 !important;
-    flex: 1 !important;
-    min-height: 0 !important;
-}
-
-/* ── Logo ── */
-.sb-logo { display: flex; align-items: center; gap: 14px; padding: 6px 4px; margin-bottom: 28px; }
-.sb-logo-icon {
-    width: 44px; height: 44px; flex-shrink: 0;
+.sb-brand-icon {
+    width: 40px; height: 40px; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
-    border-radius: 14px;
-    background: linear-gradient(135deg, #2563eb, #4f46e5);
-    font-size: 20px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #3b82f6, #6366f1);
+    font-size: 18px;
 }
-.sb-logo-text { display: flex; flex-direction: column; gap: 2px; }
-.sb-name {
-    font-size: 18px !important; font-weight: 700 !important;
-    color: #ffffff !important; margin: 0 !important; padding: 0 !important;
-    line-height: 1.2 !important;
+.sb-brand-text { display: flex; flex-direction: column; gap: 1px; }
+.sb-brand-name {
+    font-size: 17px !important; font-weight: 700 !important;
+    color: #f9fafb !important; letter-spacing: -0.3px !important;
+    margin: 0 !important; padding: 0 !important; line-height: 1.25 !important;
 }
-.sb-subtitle {
-    font-size: 12px !important; color: #9ca3af !important;
-    margin: 3px 0 0 !important; padding: 0 !important; line-height: 1.2 !important;
+.sb-brand-sub {
+    font-size: 11px !important; font-weight: 400 !important;
+    color: #6b7280 !important;
+    margin: 0 !important; padding: 0 !important; line-height: 1.3 !important;
 }
 
-/* ── Nav ── */
-.sb-nav { display: flex; flex-direction: column; gap: 8px; }
-.sb-nav-label {
-    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
-    color: #6b7280 !important; padding-left: 10px; margin-bottom: 8px; margin-top: 0; display: block;
+/* ── Section label ── */
+.sb-label {
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1.5px;
+    color: #4b5563 !important;
+    padding: 0 10px; margin-bottom: 8px;
 }
-.sb-nav-item {
-    width: 100%; display: flex; align-items: center; gap: 12px;
-    padding: 13px 14px; border: none; border-radius: 14px;
-    background: transparent; color: #e5e7eb !important;
-    font-size: 15px; font-weight: 500; cursor: pointer;
-    transition: all 0.2s ease;
-}
-.sb-nav-item:hover { background: rgba(255,255,255,0.06); }
-.sb-nav-active {
-    background: #2563eb !important; color: #ffffff !important;
-    box-shadow: 0 6px 20px rgba(37,99,235,0.25);
-}
-.sb-nav-disabled { opacity: 0.45; cursor: not-allowed; }
-.sb-nav-icon { font-size: 16px; }
 
-/* ── Retailers button (used when not active) ── */
+/* ── Nav items (HTML) ── */
+.sb-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; margin-bottom: 2px;
+    border-radius: 10px;
+    font-size: 14px; font-weight: 500;
+    color: #d1d5db !important;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.sb-item:hover { background: rgba(255,255,255,0.05); color: #f3f4f6 !important; }
+.sb-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+
+/* #6: box-shadow instead of border-left to prevent layout shift */
+.sb-active {
+    background: rgba(59,130,246,0.12) !important;
+    color: #93c5fd !important;
+    box-shadow: inset 3px 0 0 #3b82f6;
+}
+
+/* #8: pointer-events:none for disabled items */
+.sb-disabled {
+    color: #4b5563 !important;
+    pointer-events: none;
+}
+.sb-disabled .sb-icon { opacity: 0.5; }
+.sb-badge {
+    font-size: 9px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    background: rgba(75,85,99,0.3); color: #6b7280 !important;
+    padding: 2px 6px; border-radius: 4px; margin-left: auto;
+}
+
+/* ── Retailers st.button (when not active) — #4: specific resets instead of all:unset ── */
 [data-testid="stSidebar"] [data-testid="stButton-nav_retailers"] > button {
-    all: unset !important;
-    width: 100% !important; display: flex !important; align-items: center !important;
-    gap: 12px !important; padding: 13px 14px !important; border-radius: 14px !important;
-    background: transparent !important; color: #e5e7eb !important;
-    font-size: 15px !important; font-weight: 500 !important; cursor: pointer !important;
-    transition: all 0.2s ease !important; box-sizing: border-box !important;
+    border: none !important;
+    background: transparent !important;
+    outline: none !important;
+    display: flex !important; align-items: center !important; gap: 10px !important;
+    width: 100% !important;
+    padding: 10px 12px !important; border-radius: 10px !important;
+    color: #d1d5db !important;
+    font-size: 14px !important; font-weight: 500 !important;
+    cursor: pointer !important;
+    transition: background 0.15s, color 0.15s !important;
+    box-sizing: border-box !important;
 }
 [data-testid="stSidebar"] [data-testid="stButton-nav_retailers"] > button:hover {
-    background: rgba(255,255,255,0.06) !important;
+    background: rgba(255,255,255,0.05) !important; color: #f3f4f6 !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton-nav_retailers"] > button:focus-visible {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px !important;
 }
 
-/* ── Sign out — pushed to bottom via margin-top: auto ── */
-[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] {
+/* ── Sign out — #1: margin-top:auto via last-child of the flex container ── */
+[data-testid="stSidebar"] > div:first-child > [data-testid="stVerticalBlockBorderWrapper"] > [data-testid="stVerticalBlock"] > div:last-child {
     margin-top: auto !important;
-    border-top: 1px solid rgba(255,255,255,0.08) !important;
-    padding-top: 20px !important;
-    flex-shrink: 0 !important;
+    padding-top: 16px !important;
+    border-top: 1px solid rgba(255,255,255,0.06) !important;
 }
 [data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button {
-    all: unset !important;
-    display: block !important; width: 100% !important; text-align: center !important;
-    padding: 13px !important; border-radius: 14px !important;
-    background: rgba(255,255,255,0.05) !important; color: #f3f4f6 !important;
-    font-size: 14px !important; font-weight: 500 !important; cursor: pointer !important;
-    transition: all 0.2s ease !important; box-sizing: border-box !important;
+    border: none !important;
+    background: rgba(255,255,255,0.04) !important;
+    outline: none !important;
+    display: flex !important; align-items: center !important; justify-content: center !important;
+    width: 100% !important;
+    padding: 10px 12px !important; border-radius: 10px !important;
+    color: #9ca3af !important;
+    font-size: 13px !important; font-weight: 500 !important;
+    cursor: pointer !important;
+    transition: background 0.15s, color 0.15s !important;
+    box-sizing: border-box !important;
 }
 [data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button:hover {
-    background: rgba(255,255,255,0.10) !important;
+    background: rgba(255,255,255,0.08) !important; color: #e5e7eb !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button:focus-visible {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px !important;
 }
 
 /* ═══════════════════════════════════════════════════════════
