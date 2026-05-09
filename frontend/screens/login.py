@@ -13,14 +13,30 @@ def render_login_screen(backend_url: str):
         "<style>"
         "[data-testid='stSidebar']{display:none!important;}"
         "[data-testid='collapsedControl']{display:none!important;}"
+        "[data-testid='stMainBlockContainer']{"
+            "display:flex!important;"
+            "align-items:center!important;"
+            "justify-content:center!important;"
+            "min-height:100vh!important;"
+            "padding:0!important;"
+        "}"
+        "[data-testid='stMainBlockContainer'] [data-testid='stHorizontalBlock']{"
+            "width:100%!important;"
+        "}"
         "[data-testid='stForm']{"
             "background:#161b27!important;"
             "border:1px solid rgba(255,255,255,0.08)!important;"
             "border-radius:16px!important;"
             "padding:40px 36px!important;"
             "max-width:400px!important;"
-            "margin:80px auto 0!important;"
+            "margin:0 auto!important;"
             "box-shadow:0 8px 32px rgba(0,0,0,0.4)!important;"
+        "}"
+        "[data-testid='stForm'] .stTextInput{"
+            "margin-bottom:4px!important;"
+        "}"
+        "[data-testid='stForm'] [data-testid='stFormSubmitButton']{"
+            "margin-top:4px!important;"
         "}"
         "</style>",
         unsafe_allow_html=True,
@@ -38,11 +54,10 @@ def render_login_screen(backend_url: str):
             username = st.text_input("Email / Username", placeholder="demo")
             password = st.text_input("Password", type="password", placeholder="••••••••")
             submitted = st.form_submit_button("Sign in", use_container_width=True, type="primary")
-
-        st.markdown(
-            '<a class="forgot-link" href="#">Forgot password?</a>',
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                '<a class="forgot-link" href="#">Forgot password?</a>',
+                unsafe_allow_html=True,
+            )
 
     if submitted:
         try:
