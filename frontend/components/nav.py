@@ -70,5 +70,6 @@ def render_sidebar_nav():
         if st.button("Sign out", key="nav_logout"):
             for k in list(ss.keys()):
                 del ss[k]
+            st.query_params.clear()
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)  # close sb-user-section
