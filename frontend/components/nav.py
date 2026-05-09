@@ -6,32 +6,29 @@ import streamlit as st
 
 def render_sidebar_nav():
     ss = st.session_state
-    screen  = ss.get("screen", "login")
-    name    = ss.get("full_name") or "User"
-    initial = name[0].upper()
+    screen = ss.get("screen", "login")
 
     with st.sidebar:
-        # ── Logo ──────────────────────────────────────────────────
+        retailers_active = screen in ("retailers", "runs", "simulation")
+
+        # ── Logo ─────────────────────────────────────────────────
         st.markdown(
-            '<div class="sb-logo-area">'
-            '  <div class="sb-wordmark">'
-            '    <div class="sb-icon">⬡</div>'
-            '    <span class="sb-name">Metrai</span>'
+            '<div class="sb-logo">'
+            '  <div class="sb-logo-icon">⬡</div>'
+            '  <div class="sb-logo-text">'
+            '    <h2 class="sb-name">MetrAI</h2>'
+            '    <p class="sb-subtitle">Supply Chain Simulator</p>'
             '  </div>'
-            '  <div class="sb-subtitle">Supply Chain Simulation</div>'
-            '</div>',
+            '</div>'
+            '<div class="sb-nav-label">Navigation</div>',
             unsafe_allow_html=True,
         )
 
-        # ── Nav ───────────────────────────────────────────────────
-        st.markdown('<div class="sb-nav"><div class="sb-nav-label">Main</div>', unsafe_allow_html=True)
-
-        # Retailers — clickable nav item (active state or button)
-        retailers_active = screen in ("retailers", "runs", "simulation")
+        # Retailers — active state as HTML, inactive as clickable button
         if retailers_active:
             st.markdown(
-                '<div class="sb-nav-item active">'
-                '  <span class="sb-nav-icon">🏪</span> Retailers'
+                '<div class="sb-nav-item sb-nav-active">'
+                '  <span class="sb-nav-icon">🏪</span><span>Retailers</span>'
                 '</div>',
                 unsafe_allow_html=True,
             )
@@ -42,34 +39,17 @@ def render_sidebar_nav():
                 ss.runs_list = None
                 st.rerun()
 
-        # Future nav items (disabled)
+        # Analytics (disabled)
         st.markdown(
-            '<div class="sb-nav-item-disabled"><span class="sb-nav-icon-disabled">📊</span> Analytics</div>'
-            '<div class="sb-nav-item-disabled"><span class="sb-nav-icon-disabled">⚙️</span> Settings</div>',
+            '<div class="sb-nav-item sb-nav-disabled">'
+            '  <span class="sb-nav-icon">📊</span><span>Analytics</span>'
+            '</div>',
             unsafe_allow_html=True,
         )
 
-        st.markdown('</div>', unsafe_allow_html=True)  # close sb-nav
-
-        # ── Push user section to bottom ───────────────────────────
-        st.markdown('<div style="flex:1;min-height:24px"></div>', unsafe_allow_html=True)
-
-        # ── User section + text-link logout ───────────────────────
-        st.markdown(
-            f'<div class="sb-user-section">'
-            f'  <div class="sb-user-row">'
-            f'    <div class="sb-avatar">{initial}</div>'
-            f'    <div class="sb-user-info">'
-            f'      <div class="sb-user-name">{name}</div>'
-            f'      <div class="sb-user-role">Simulation Admin</div>'
-            f'    </div>'
-            f'  </div>',
-            unsafe_allow_html=True,
-        )
-        # Logout as a small text-style button (overridden to look like a link)
+        # ── Sign out — pinned to bottom via CSS ───────────────────
         if st.button("Sign out", key="nav_logout"):
             for k in list(ss.keys()):
                 del ss[k]
             st.query_params.clear()
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)  # close sb-user-section

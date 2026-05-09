@@ -59,6 +59,23 @@ for _key, _val in _defaults:
 ss = st.session_state
 
 # ---------------------------------------------------------------------------
+# Query-param session restore (survives page refresh)
+# ---------------------------------------------------------------------------
+if not ss.logged_in:
+    import json as _json, base64 as _b64
+    _raw = st.query_params.get("s")
+    if _raw:
+        try:
+            _data = _json.loads(_b64.urlsafe_b64decode(_raw.encode()))
+            ss.logged_in   = True
+            ss.user_id     = _data["user_id"]
+            ss.account_id  = _data["account_id"]
+            ss.full_name   = _data["full_name"]
+            ss.screen      = "retailers"
+        except Exception:
+            st.query_params.clear()  # bad param — wipe and go to login
+
+# ---------------------------------------------------------------------------
 # Routing
 # ---------------------------------------------------------------------------
 if not ss.logged_in:

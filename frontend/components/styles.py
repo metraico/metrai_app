@@ -37,119 +37,119 @@ section[data-testid="stMain"] > div,
    SIDEBAR
 ═══════════════════════════════════════════════════════════ */
 [data-testid="stSidebar"] {
-    background: #131929 !important;
-    border-right: 1px solid rgba(255,255,255,0.06) !important;
-    min-width: 240px !important;
-    max-width: 240px !important;
+    background: #111827 !important;
+    border-right: 1px solid rgba(255,255,255,0.08) !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
+    transform: none !important;
+    display: flex !important;
 }
 [data-testid="stSidebar"] > div:first-child {
     display: flex !important;
     flex-direction: column !important;
-    height: 100% !important;
-    padding: 0 !important;
+    height: 100vh !important;
     min-height: 100vh !important;
+    padding: 20px 16px !important;
+    width: 100% !important;
+    position: relative !important;
+    box-sizing: border-box !important;
 }
 [data-testid="stSidebar"] .block-container { padding: 0 !important; }
-[data-testid="stSidebar"],
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] div,
-[data-testid="stSidebar"] label { color: #cbd5e1 !important; }
 
-/* Sidebar nav buttons (Retailers when not active) */
-[data-testid="stSidebar"] .stButton > button {
-    all: unset !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 10px !important;
-    width: 100% !important;
-    padding: 9px 12px !important;
-    border-radius: 8px !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    color: #94a3b8 !important;
-    cursor: pointer !important;
-    transition: background 0.15s, color 0.15s !important;
-    margin-bottom: 2px !important;
-}
-[data-testid="stSidebar"] .stButton > button:hover {
-    background: rgba(255,255,255,0.06) !important;
-    color: #f1f5f9 !important;
-}
+/* Hide collapse buttons */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"] { display: none !important; }
 
-/* Sign out — text-link style */
-[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button {
-    all: unset !important;
-    font-size: 12px !important;
-    color: #475569 !important;
-    cursor: pointer !important;
-    padding: 2px 0 !important;
-    display: block !important;
-    width: 100% !important;
-    transition: color 0.15s !important;
-}
-[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button:hover {
-    color: #94a3b8 !important;
+/* Kill default backgrounds/borders on inner wrappers; propagate flex height */
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
     background: transparent !important;
-    text-decoration: underline !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0 !important;
+    flex: 1 !important;
+    min-height: 0 !important;
 }
 
-/* Hamburger toggle — styled for dark bg */
-[data-testid="collapsedControl"] {
-    background: #131929 !important;
-    color: #64748b !important;
-    border-right: 1px solid rgba(255,255,255,0.06) !important;
+/* ── Logo ── */
+.sb-logo { display: flex; align-items: center; gap: 14px; padding: 6px 4px; margin-bottom: 28px; }
+.sb-logo-icon {
+    width: 44px; height: 44px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #2563eb, #4f46e5);
+    font-size: 20px;
 }
-[data-testid="collapsedControl"] svg { fill: #64748b !important; }
-[data-testid="collapsedControl"]:hover { background: #1a2235 !important; }
+.sb-logo-text { display: flex; flex-direction: column; gap: 2px; }
+.sb-name {
+    font-size: 18px !important; font-weight: 700 !important;
+    color: #ffffff !important; margin: 0 !important; padding: 0 !important;
+    line-height: 1.2 !important;
+}
+.sb-subtitle {
+    font-size: 12px !important; color: #9ca3af !important;
+    margin: 3px 0 0 !important; padding: 0 !important; line-height: 1.2 !important;
+}
 
-/* ── Sidebar HTML elements ── */
-.sb-logo-area {
-    padding: 20px 20px 16px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    margin-bottom: 8px;
-    flex-shrink: 0;
-}
-.sb-wordmark { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
-.sb-icon {
-    width: 28px; height: 28px; background: #6366f1; border-radius: 7px;
-    display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0;
-}
-.sb-name { font-size: 17px; font-weight: 700; color: #f1f5f9 !important; letter-spacing: -0.3px; }
-.sb-subtitle { font-size: 11px; color: #475569 !important; padding-left: 36px; letter-spacing: 0.02em; }
-.sb-nav { padding: 4px 12px; flex: 1; overflow-y: auto; }
+/* ── Nav ── */
+.sb-nav { display: flex; flex-direction: column; gap: 8px; }
 .sb-nav-label {
-    font-size: 10px; font-weight: 600; color: #334155 !important;
-    letter-spacing: 0.08em; text-transform: uppercase; padding: 8px 4px 4px; margin-bottom: 2px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+    color: #6b7280 !important; padding-left: 10px; margin-bottom: 8px; margin-top: 0; display: block;
 }
 .sb-nav-item {
-    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
-    border-radius: 8px; font-size: 14px; font-weight: 500; color: #94a3b8 !important;
-    cursor: pointer; transition: background 0.15s, color 0.15s; margin-bottom: 2px;
+    width: 100%; display: flex; align-items: center; gap: 12px;
+    padding: 13px 14px; border: none; border-radius: 14px;
+    background: transparent; color: #e5e7eb !important;
+    font-size: 15px; font-weight: 500; cursor: pointer;
+    transition: all 0.2s ease;
 }
-.sb-nav-item:hover { background: rgba(255,255,255,0.06); color: #f1f5f9 !important; }
-.sb-nav-item.active {
-    background: rgba(99,102,241,0.15); color: #a5b4fc !important;
-    border-left: 3px solid #6366f1; padding-left: 9px;
+.sb-nav-item:hover { background: rgba(255,255,255,0.06); }
+.sb-nav-active {
+    background: #2563eb !important; color: #ffffff !important;
+    box-shadow: 0 6px 20px rgba(37,99,235,0.25);
 }
-.sb-nav-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
-.sb-nav-item-disabled {
-    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
-    border-radius: 8px; font-size: 14px; color: #2d3748 !important; cursor: default; margin-bottom: 2px;
+.sb-nav-disabled { opacity: 0.45; cursor: not-allowed; }
+.sb-nav-icon { font-size: 16px; }
+
+/* ── Retailers button (used when not active) ── */
+[data-testid="stSidebar"] [data-testid="stButton-nav_retailers"] > button {
+    all: unset !important;
+    width: 100% !important; display: flex !important; align-items: center !important;
+    gap: 12px !important; padding: 13px 14px !important; border-radius: 14px !important;
+    background: transparent !important; color: #e5e7eb !important;
+    font-size: 15px !important; font-weight: 500 !important; cursor: pointer !important;
+    transition: all 0.2s ease !important; box-sizing: border-box !important;
 }
-.sb-nav-icon-disabled { font-size: 16px; width: 20px; text-align: center; color: #2d3748 !important; }
-.sb-user-section {
-    border-top: 1px solid rgba(255,255,255,0.06); padding: 14px 16px 14px; flex-shrink: 0;
+[data-testid="stSidebar"] [data-testid="stButton-nav_retailers"] > button:hover {
+    background: rgba(255,255,255,0.06) !important;
 }
-.sb-user-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.sb-user-info { display: flex; flex-direction: column; min-width: 0; }
-.sb-avatar {
-    width: 34px; height: 34px; border-radius: 50%; background: #6366f1;
-    color: #fff !important; font-size: 14px; font-weight: 700;
-    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+
+/* ── Sign out — pushed to bottom via margin-top: auto ── */
+[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] {
+    margin-top: auto !important;
+    border-top: 1px solid rgba(255,255,255,0.08) !important;
+    padding-top: 20px !important;
+    flex-shrink: 0 !important;
 }
-.sb-user-name { font-size: 13px; font-weight: 600; color: #e2e8f0 !important; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sb-user-role { font-size: 11px; color: #475569 !important; line-height: 1.3; }
+[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button {
+    all: unset !important;
+    display: block !important; width: 100% !important; text-align: center !important;
+    padding: 13px !important; border-radius: 14px !important;
+    background: rgba(255,255,255,0.05) !important; color: #f3f4f6 !important;
+    font-size: 14px !important; font-weight: 500 !important; cursor: pointer !important;
+    transition: all 0.2s ease !important; box-sizing: border-box !important;
+}
+[data-testid="stSidebar"] [data-testid="stButton-nav_logout"] > button:hover {
+    background: rgba(255,255,255,0.10) !important;
+}
 
 /* ═══════════════════════════════════════════════════════════
    TOP BAR
