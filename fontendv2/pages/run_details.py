@@ -1,5 +1,18 @@
 import streamlit as st
+
+import api
 from router import go_to
+
+
+def _get_runs(account_id):
+    cache_key = f"runs_list_{account_id}"
+    if cache_key not in st.session_state:
+        try:
+            st.session_state[cache_key] = api.fetch_runs(account_id)
+        except Exception as e:
+            st.error(f"Could not load runs: {e}")
+            st.session_state[cache_key] = []
+    return st.session_state[cache_key]
 
 
 def render():
@@ -7,27 +20,39 @@ def render():
     run_id = st.query_params.get("id")
     retailer_id = st.query_params.get("retailer_id")
 
-    run_data = {
-        "run_001": {"name": "Spring Forecast",  "date": "2024-03-01", "period": "W01 → W13", "status": "Completed",  "weeks": 13, "skus": 240},
-        "run_002": {"name": "Summer Planning",  "date": "2024-05-15", "period": "W14 → W26", "status": "In Progress","weeks": 13, "skus": 310},
-        "run_003": {"name": "Q3 Simulation",    "date": "2024-07-10", "period": "W27 → W39", "status": "Failed",     "weeks": 13, "skus": 180},
-        "run_004": {"name": "Holiday Run",      "date": "2024-09-01", "period": "W40 → W52", "status": "Queued",     "weeks": 13, "skus": 420},
-        "run_005": {"name": "Fashion Week Sim", "date": "2024-02-10", "period": "W05 → W10", "status": "Completed",  "weeks": 6,  "skus": 95},
-    }
+    if not run_id or not retailer_id:
+        st.error("Missing run or retailer id.")
+        return
 
-    run = run_data.get(run_id)
+    runs = _get_runs(retailer_id)
+    run = next((r for r in runs if r.get("simulation_id") == run_id), None)
 
     if not run:
         st.error("Run not found.")
+        if st.button("← Back"):
+            go_to("runs", id=retailer_id)
         return
 
-    st.title(run["name"])
+    name = run.get("simulation_name") or run_id[:8]
+    created = (run.get("created_at") or "—")
+    start_w = run.get("start_week")
+    end_w = run.get("end_week")
+    period = f"W{start_w} → W{end_w}" if start_w is not None and end_w is not None else "—"
+    status = (run.get("simulation_status") or "QUEUED").replace("_", " ").title()
+    seed = run.get("random_seed", "—")
+    notes = run.get("notes") or "—"
 
-    st.write(f"Date: {run['date']}")
-    st.write(f"Period: {run['period']}")
-    st.write(f"Status: {run['status']}")
-    st.write(f"Weeks: {run['weeks']}")
-    st.write(f"SKUs: {run['skus']}")
+    st.title(name)
 
-    if st.button("← Back"):
+    st.write(f"Simulation ID: `{run_id}`")
+    st.write(f"Created: {created}")
+    st.write(f"Period: {period}")
+    st.write(f"Status: {status}")
+    st.write(f"Random seed: {seed}")
+    st.write(f"Notes: {notes}")
+
+    col_back, col_open = st.columns([1, 1])
+    if col_back.button("← Back"):
         go_to("runs", id=retailer_id)
+    if col_open.button("Open in Simulation", type="primary"):
+        go_to("simulation", account_id=retailer_id)

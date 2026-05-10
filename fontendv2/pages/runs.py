@@ -1,31 +1,51 @@
 import streamlit as st
+
+import api
 from router import go_to
+
+
+def _get_runs(account_id):
+    cache_key = f"runs_list_{account_id}"
+    if cache_key not in st.session_state:
+        try:
+            st.session_state[cache_key] = api.fetch_runs(account_id)
+        except Exception as e:
+            st.error(f"Could not load runs: {e}")
+            st.session_state[cache_key] = []
+    return st.session_state[cache_key]
+
+
+def _format_run(r):
+    sim_id = r.get("simulation_id") or ""
+    name = r.get("simulation_name") or (sim_id[:8] if sim_id else "Untitled")
+    created = (r.get("created_at") or "")[:10]
+    start_w = r.get("start_week")
+    end_w = r.get("end_week")
+    period = f"W{start_w} → W{end_w}" if start_w is not None and end_w is not None else "—"
+    status_raw = (r.get("simulation_status") or "QUEUED").upper()
+    status = status_raw.replace("_", " ").title()
+    return sim_id, name, created or "—", period, status
 
 
 def render():
 
-    retailer_id = st.query_params.get("id")
-
-    runs_data = {
-        "101": [
-            {"id": "run_001", "name": "Spring Forecast", "date": "2024-03-01", "period": "W01 → W13", "status": "Completed"},
-            {"id": "run_002", "name": "Summer Planning", "date": "2024-05-15", "period": "W14 → W26", "status": "In Progress"},
-            {"id": "run_003", "name": "Q3 Simulation",   "date": "2024-07-10", "period": "W27 → W39", "status": "Failed"},
-            {"id": "run_004", "name": "Holiday Run",     "date": "2024-09-01", "period": "W40 → W52", "status": "Queued"},
-        ],
-        "102": [
-            {"id": "run_005", "name": "Fashion Week Sim", "date": "2024-02-10", "period": "W05 → W10", "status": "Completed"},
-        ],
-        "103": [],
-        "104": [],
-    }
-
-    runs = runs_data.get(str(retailer_id), [])
+    account_id = st.query_params.get("id")
 
     st.title("Simulation Runs")
 
-    if st.button("← Back"):
+    col_back, col_new = st.columns([1, 1])
+    if col_back.button("← Back"):
         go_to("retailers")
+    if col_new.button("+ New Run", type="primary"):
+        st.session_state.pop("sim_results", None)
+        st.session_state.pop("_active_run_id", None)
+        go_to("simulation", account_id=account_id)
+
+    if not account_id:
+        st.error("Missing retailer id.")
+        return
+
+    runs = _get_runs(account_id)
 
     if not runs:
         st.info("No simulation runs yet.")
@@ -34,22 +54,26 @@ def render():
     cols = st.columns(3)
 
     for index, run in enumerate(runs):
+        sim_id, name, date, period, status = _format_run(run)
 
         with cols[index % 3]:
 
             with st.container(border=True):
 
-                st.subheader(run["name"])
-                st.write(f"Date: {run['date']}")
-                st.write(f"Period: {run['period']}")
-                st.write(f"Status: {run['status']}")
+                st.subheader(name)
+                st.write(f"Date: {date}")
+                st.write(f"Period: {period}")
+                st.write(f"Status: {status}")
 
                 if st.button(
                     "Open",
-                    key=run["id"]
+                    key=f"open_{sim_id or index}",
                 ):
+                    # Clear cached results so the simulation page loads fresh
+                    st.session_state.pop("sim_results", None)
+                    st.session_state.pop("_active_run_id", None)
                     go_to(
-                        "run_details",
-                        id=run["id"],
-                        retailer_id=retailer_id,
+                        "simulation",
+                        account_id=account_id,
+                        run_id=sim_id,
                     )

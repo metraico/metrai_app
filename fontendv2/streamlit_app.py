@@ -17,7 +17,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ALWAYS render sidebar
+# Session defaults
+for key, default in [
+    ("logged_in", False),
+    ("user_id", None),
+    ("account_id", None),
+    ("full_name", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+# AUTH GUARD
+if not st.session_state.logged_in:
+    from pages.login import render
+    render()
+    st.stop()
+
+
+# ALWAYS render sidebar when logged in
 render_sidebar()
 
 # PAGE ROUTER
@@ -37,4 +55,12 @@ elif page == "runs":
 
 elif page == "run_details":
     from pages.run_details import render
+    render()
+
+elif page == "simulation":
+    from pages.simulation import render
+    render()
+
+elif page == "login":
+    from pages.login import render
     render()

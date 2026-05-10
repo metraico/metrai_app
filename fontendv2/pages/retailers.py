@@ -1,40 +1,56 @@
 import streamlit as st
+
+import api
 from router import go_to
+
+
+def _get_runs(account_id):
+    cache_key = f"runs_list_{account_id}"
+    if cache_key not in st.session_state:
+        try:
+            st.session_state[cache_key] = api.fetch_runs(account_id)
+        except Exception as e:
+            st.error(f"Could not load runs: {e}")
+            st.session_state[cache_key] = []
+    return st.session_state[cache_key]
 
 
 def render():
 
     st.title("🏪 Retailers")
 
-    retailers = [
-        {"id": 101, "name": "Freshmart Retail", "industry": "Grocery", "region": "North America", "runs": 17, "completed": 8, "failed": 9},
-        {"id": 102, "name": "Metro Apparel Co.", "industry": "Fashion", "region": "Europe", "runs": 0, "completed": 0, "failed": 0},
-        {"id": 103, "name": "TechZone Electronics", "industry": "Electronics", "region": "Asia Pacific", "runs": 0, "completed": 0, "failed": 0},
-        {"id": 104, "name": "HomeBase Furnishings", "industry": "Home & Garden", "region": "North America", "runs": 0, "completed": 0, "failed": 0},
-    ]
+    account_id = st.session_state.get("account_id")
+    if not account_id:
+        st.error("No account in session. Please sign in again.")
+        return
+
+    name = st.session_state.get("full_name") or "My Retailer"
+
+    runs = _get_runs(account_id)
+    completed = sum(1 for r in runs if (r.get("simulation_status") or "").upper() == "COMPLETED")
+    failed = sum(1 for r in runs if (r.get("simulation_status") or "").upper() == "FAILED")
+    total = len(runs)
 
     cols = st.columns(3)
 
-    for index, retailer in enumerate(retailers):
+    with cols[0]:
 
-        with cols[index % 3]:
+        with st.container(border=True):
 
-            with st.container(border=True):
+            st.subheader(name)
+            st.caption("Default account")
 
-                st.subheader(retailer["name"])
-                st.caption(f"{retailer['industry']} · {retailer['region']}")
+            if total > 0:
+                st.write(f"**{total} runs**")
+                c1, c2 = st.columns(2)
+                c1.success(f"✓ {completed} completed")
+                c2.error(f"✗ {failed} failed")
+            else:
+                st.caption("No simulations yet")
 
-                if retailer["runs"] > 0:
-                    st.write(f"**{retailer['runs']} runs**")
-                    c1, c2 = st.columns(2)
-                    c1.success(f"✓ {retailer['completed']} completed")
-                    c2.error(f"✗ {retailer['failed']} failed")
-                else:
-                    st.caption("No simulations yet")
-
-                if st.button(
-                    "Open →",
-                    key=f"open_{retailer['id']}",
-                    use_container_width=True
-                ):
-                    go_to("runs", id=retailer["id"])
+            if st.button(
+                "Open →",
+                key=f"open_{account_id}",
+                use_container_width=True,
+            ):
+                go_to("runs", id=account_id)
