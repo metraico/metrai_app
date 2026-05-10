@@ -50,6 +50,75 @@ def show_error(title: str, exc: Exception, response: httpx.Response | None = Non
 
 
 # ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+def _auth_headers() -> dict[str, str]:
+    tok = st.session_state.get("access_token", "")
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
+
+
+def _try_refresh() -> bool:
+    """Attempt to get a new access token using the stored refresh token."""
+    rt = st.session_state.get("refresh_token")
+    if not rt:
+        return False
+    try:
+        r = httpx.post(
+            f"{BACKEND_URL}/auth/refresh",
+            json={"refresh_token": rt},
+            timeout=10.0,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            st.session_state.access_token  = data["access_token"]
+            st.session_state.refresh_token = data["refresh_token"]
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _do_logout():
+    """Revoke refresh token server-side, then clear all session state."""
+    rt = st.session_state.get("refresh_token")
+    if rt:
+        try:
+            httpx.post(
+                f"{BACKEND_URL}/auth/logout",
+                json={"refresh_token": rt},
+                timeout=5.0,
+            )
+        except Exception:
+            pass
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.rerun()
+
+
+def _api(method: str, path: str, **kwargs) -> httpx.Response:
+    """
+    Authenticated httpx call.
+    On 401, tries to refresh the access token once before forcing a re-login.
+    """
+    url      = f"{BACKEND_URL}{path}"
+    extra_h  = kwargs.pop("headers", {})
+
+    def _call() -> httpx.Response:
+        return getattr(httpx, method)(
+            url, headers={**extra_h, **_auth_headers()}, **kwargs
+        )
+
+    resp = _call()
+    if resp.status_code == 401:
+        if _try_refresh():
+            resp = _call()
+        else:
+            _do_logout()
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Spec-aligned export helpers
 # ---------------------------------------------------------------------------
 
@@ -578,47 +647,94 @@ st.set_page_config(page_title="Metrai Simulation", layout="wide")
 # Session state initialisation
 # ---------------------------------------------------------------------------
 for _key, _val in [
-    ("logged_in",   False),
-    ("user_id",     None),
-    ("account_id",  None),
-    ("full_name",   None),
-    ("entities",    None),
-    ("mappings",    None),
+    ("logged_in",     False),
+    ("user_id",       None),
+    ("account_id",    None),
+    ("full_name",     None),
+    ("access_token",  None),
+    ("refresh_token", None),
+    ("entities",      None),
+    ("mappings",      None),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _val
 
 
 # ---------------------------------------------------------------------------
-# Login screen (blocks the rest of the app until logged in)
+# Login / Register screen (blocks the rest of the app until logged in)
 # ---------------------------------------------------------------------------
 if not st.session_state.logged_in:
-    st.title("Metrai — Login")
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+    st.title("Metrai")
+    tab_login, tab_register = st.tabs(["Login", "Register"])
 
-    st.caption("Hint: username = `demo`, password = `demo123`")
+    def _apply_auth_response(data: dict):
+        st.session_state.logged_in     = True
+        st.session_state.user_id       = data["user_id"]
+        st.session_state.account_id    = data["account_id"]
+        st.session_state.full_name     = data["full_name"]
+        st.session_state.access_token  = data["access_token"]
+        st.session_state.refresh_token = data["refresh_token"]
 
-    if submitted:
-        try:
-            resp = httpx.post(
-                f"{BACKEND_URL}/login",
-                json={"username": username, "password": password},
-                timeout=10.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                st.session_state.logged_in  = True
-                st.session_state.user_id    = data["user_id"]
-                st.session_state.account_id = data["account_id"]
-                st.session_state.full_name  = data["full_name"]
-                st.rerun()
+    # ── Login tab ────────────────────────────────────────────────────────────
+    with tab_login:
+        with st.form("login_form"):
+            lg_user = st.text_input("Username")
+            lg_pass = st.text_input("Password", type="password")
+            lg_submit = st.form_submit_button("Login", use_container_width=True)
+
+        st.caption("Default demo account: `demo` / `demo123`")
+
+        if lg_submit:
+            try:
+                resp = httpx.post(
+                    f"{BACKEND_URL}/auth/login",
+                    json={"username": lg_user, "password": lg_pass},
+                    timeout=10.0,
+                )
+                if resp.status_code == 200:
+                    _apply_auth_response(resp.json())
+                    st.rerun()
+                elif resp.status_code == 429:
+                    st.error(resp.json().get("detail", "Too many attempts. Please wait."))
+                else:
+                    st.error("Invalid username or password.")
+            except httpx.ConnectError:
+                st.error(f"Cannot reach backend at {BACKEND_URL}.")
+
+    # ── Register tab ─────────────────────────────────────────────────────────
+    with tab_register:
+        with st.form("register_form"):
+            rg_name  = st.text_input("Full Name")
+            rg_email = st.text_input("Email (optional)")
+            rg_user  = st.text_input("Username")
+            rg_pass  = st.text_input("Password", type="password",
+                                     help="Min 8 chars · uppercase · lowercase · digit")
+            rg_pass2 = st.text_input("Confirm Password", type="password")
+            rg_submit = st.form_submit_button("Create Account", use_container_width=True)
+
+        if rg_submit:
+            if rg_pass != rg_pass2:
+                st.error("Passwords do not match.")
             else:
-                st.error("Invalid username or password.")
-        except httpx.ConnectError:
-            st.error(f"Cannot reach backend at {BACKEND_URL}.")
+                try:
+                    resp = httpx.post(
+                        f"{BACKEND_URL}/auth/register",
+                        json={
+                            "username":  rg_user,
+                            "password":  rg_pass,
+                            "email":     rg_email,
+                            "full_name": rg_name,
+                        },
+                        timeout=10.0,
+                    )
+                    if resp.status_code == 200:
+                        _apply_auth_response(resp.json())
+                        st.rerun()
+                    else:
+                        st.error(resp.json().get("detail", "Registration failed."))
+                except httpx.ConnectError:
+                    st.error(f"Cannot reach backend at {BACKEND_URL}.")
+
     st.stop()
 
 
@@ -629,9 +745,7 @@ st.title("Metrai Simulation Dashboard")
 st.caption(f"Logged in as **{st.session_state.full_name}**")
 
 if st.button("Logout", key="logout_btn"):
-    for k in ["logged_in", "user_id", "account_id", "full_name", "entities", "mappings"]:
-        st.session_state[k] = None if k not in ("logged_in",) else False
-    st.rerun()
+    _do_logout()
 
 account_id = st.session_state.account_id
 
@@ -641,7 +755,7 @@ account_id = st.session_state.account_id
 
 def _fetch_entities():
     try:
-        r = httpx.get(f"{BACKEND_URL}/entities", params={"account_id": account_id}, timeout=15.0)
+        r = _api("get", "/entities", timeout=15.0)
         r.raise_for_status()
         st.session_state.entities = r.json()
     except httpx.HTTPStatusError as e:
@@ -652,7 +766,7 @@ def _fetch_entities():
 
 def _fetch_mappings():
     try:
-        r = httpx.get(f"{BACKEND_URL}/mappings", params={"account_id": account_id}, timeout=15.0)
+        r = _api("get", "/mappings", timeout=15.0)
         r.raise_for_status()
         st.session_state.mappings = r.json()
     except httpx.HTTPStatusError as e:
@@ -813,7 +927,6 @@ with tab_network:
         # ── Save ─────────────────────────────────────────────────────────────
         if st.button("Save Network Config", type="primary", key="save_network"):
             payload = {
-                "account_id":     account_id,
                 "store_items":    new_store_items,
                 "dc_items":       new_dc_items,
                 "supplier_items": new_supplier_items,
@@ -821,7 +934,7 @@ with tab_network:
                 "dc_mappings":    new_dc_mappings,
             }
             try:
-                r = httpx.post(f"{BACKEND_URL}/mappings", json=payload, timeout=30.0)
+                r = _api("post", "/mappings", json=payload, timeout=30.0)
                 r.raise_for_status()
                 st.success("Network configuration saved.")
                 _fetch_mappings()
@@ -921,11 +1034,7 @@ with tab_simulate:
         pass  # will re-fetch below
 
     try:
-        history_resp = httpx.get(
-            f"{BACKEND_URL}/runs",
-            params={"account_id": account_id},
-            timeout=10.0,
-        )
+        history_resp = _api("get", "/runs", timeout=10.0)
         history_resp.raise_for_status()
         runs = history_resp.json()
     except Exception as e:
@@ -986,7 +1095,7 @@ with tab_simulate:
         _t_start = time.time()
         with st.spinner("Running simulation…"):
             try:
-                response = httpx.post(f"{BACKEND_URL}/run", json=config, timeout=300.0)
+                response = _api("post", "/run", json=config, timeout=300.0)
                 response.raise_for_status()
             except httpx.ConnectError as e:
                 show_error(f"Cannot reach backend at {BACKEND_URL}", e)

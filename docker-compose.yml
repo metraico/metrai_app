@@ -4,8 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: metrai_app_backend
+    env_file: .env
     environment:
-      # host.docker.internal resolves to your Mac's localhost from inside Docker
+      # These override any .env values so Docker-internal hostnames are used
       SIM_ENGINE_URL: "http://host.docker.internal:8000"
       POSTGRES_DSN: "postgresql://metrai:metrai_pass@host.docker.internal:5433/metrai"
     ports:
