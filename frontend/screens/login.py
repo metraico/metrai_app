@@ -4,6 +4,8 @@ screens/login.py — Screen 1: Login page.
 import httpx
 import streamlit as st
 
+from frontend.router import go_to
+
 
 def render_login_screen(backend_url: str):
     ss = st.session_state
@@ -72,16 +74,7 @@ def render_login_screen(backend_url: str):
                 ss.user_id     = data["user_id"]
                 ss.account_id  = data["account_id"]
                 ss.full_name   = data["full_name"]
-                ss.screen      = "retailers"
-                # Persist session in URL query params — survives refresh, no JS timing issues
-                import json as _json, base64 as _b64
-                _payload = _b64.urlsafe_b64encode(_json.dumps({
-                    "user_id":    data["user_id"],
-                    "account_id": data["account_id"],
-                    "full_name":  data["full_name"],
-                }).encode()).decode()
-                st.query_params["s"] = _payload
-                st.rerun()
+                go_to("retailers")
             else:
                 st.error("Invalid username or password.")
         except httpx.ConnectError:

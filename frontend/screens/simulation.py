@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from frontend.router import go_to
 from frontend.utils.export import (
     _build_data_quality_report,
     _build_run_manifest,
@@ -45,9 +46,11 @@ def _fetch_mappings(backend_url, account_id):
 
 def render_simulation_screen(backend_url: str):
     ss = st.session_state
-    account_id   = ss.account_id
-    account_name = ss.get("selected_account_name", "Retailer")
-    run_name     = ss.get("selected_run_name", "New Run")
+
+    # Read context from URL query params
+    account_id   = st.query_params.get("account_id") or ss.account_id
+    account_name = st.query_params.get("account_name", "Retailer")
+    run_name     = st.query_params.get("run_name", "New Run")
 
     # Breadcrumb
     st.markdown(
@@ -65,8 +68,7 @@ def render_simulation_screen(backend_url: str):
     )
 
     if st.button("← Back to runs"):
-        ss.screen = "runs"
-        st.rerun()
+        go_to("runs", account_id=account_id, account_name=account_name, account_is_real=True)
 
     # Ensure entities + mappings are loaded
     if ss.entities is None:

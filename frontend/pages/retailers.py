@@ -5,8 +5,6 @@ screens/retailers.py — Screen 2: Retailer accounts dashboard.
 import httpx
 import streamlit as st
 
-from frontend.router import go_to
-
 RETAILER_ACCOUNTS = [
     {"account_id": None,        "name": "FreshMart Retail",       "initial": "F", "industry": "Grocery",       "region": "North America", "color": "#6366f1", "is_real": True},
     {"account_id": "_mock_002", "name": "Metro Apparel Co.",       "initial": "M", "industry": "Fashion",       "region": "Europe",        "color": "#8b5cf6", "is_real": False},
@@ -151,12 +149,12 @@ def render_retailers_screen(backend_url: str):
                 )
 
                 if st.button("Open →", key=f"open_{acct['account_id']}", use_container_width=True):
-                    go_to(
-                        "runs",
-                        account_id=acct["account_id"],
-                        account_name=acct["name"],
-                        account_is_real=acct["is_real"],
-                    )
+                    ss.selected_account_id      = acct["account_id"]
+                    ss.selected_account_name    = acct["name"]
+                    ss.selected_account_is_real = acct["is_real"]
+                    ss.runs_list = None
+                    ss.screen = "runs"
+                    st.rerun()
 
                 st.markdown('</div></div>', unsafe_allow_html=True)  # close card-footer + retailer-card
 

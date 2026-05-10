@@ -4,6 +4,8 @@ screens/runs.py — Screen 3: Simulation runs for a selected retailer.
 import httpx
 import streamlit as st
 
+from frontend.router import go_to
+
 
 _STATUS_BADGE = {
     "COMPLETED":   '<span class="badge badge-completed">Completed</span>',
@@ -29,9 +31,11 @@ def _fetch_runs(backend_url: str, account_id: str) -> list:
 
 def render_runs_screen(backend_url: str):
     ss = st.session_state
-    account_name   = ss.get("selected_account_name", "Retailer")
-    account_id     = ss.get("selected_account_id")
-    is_real        = ss.get("selected_account_is_real", False)
+
+    # Read context from URL query params
+    account_name = st.query_params.get("account_name", "Retailer")
+    account_id   = st.query_params.get("account_id")
+    is_real      = st.query_params.get("account_is_real", "False") == "True"
 
     # Breadcrumb
     st.markdown(
@@ -46,13 +50,15 @@ def render_runs_screen(backend_url: str):
         unsafe_allow_html=True,
     )
 
-    col_title, col_btn = st.columns([4, 1])
+    col_back, col_title, col_btn = st.columns([0.6, 3.4, 1])
+
+    if col_back.button("← Back", key="runs_back"):
+        go_to("retailers")
+
     col_title.markdown(f"## {account_name}")
 
     if col_btn.button("+ New Run", type="primary", use_container_width=True):
-        ss.selected_run_id = None
-        ss.screen = "simulation"
-        st.rerun()
+        go_to("simulation", account_id=account_id, account_name=account_name, run_name="New Run")
 
     if not is_real:
         st.markdown(
@@ -65,12 +71,13 @@ def render_runs_screen(backend_url: str):
         )
         return
 
-    # Fetch & cache runs
-    if ss.get("runs_list") is None:
+    # Cache key scoped to account so switching accounts refetches
+    cache_key = f"runs_list_{account_id}"
+    if ss.get(cache_key) is None:
         with st.spinner("Loading runs…"):
-            ss.runs_list = _fetch_runs(backend_url, account_id)
+            ss[cache_key] = _fetch_runs(backend_url, account_id)
 
-    runs = ss.runs_list or []
+    runs = ss[cache_key] or []
 
     if not runs:
         st.markdown(
@@ -96,12 +103,12 @@ def render_runs_screen(backend_url: str):
 
     for run in runs:
         c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
-        name      = run.get("simulation_name") or run.get("simulation_id", "—")[:8]
-        created   = (run.get("created_at") or "")[:16].replace("T", " ")
-        start_w   = run.get("start_week") or run.get("start_date", "")
-        end_w     = run.get("end_week")   or run.get("end_date",   "")
-        period    = f"{start_w} → {end_w}" if start_w else "—"
-        status    = (run.get("simulation_status") or "QUEUED").upper()
+        name    = run.get("simulation_name") or run.get("simulation_id", "—")[:8]
+        created = (run.get("created_at") or "")[:16].replace("T", " ")
+        start_w = run.get("start_week") or run.get("start_date", "")
+        end_w   = run.get("end_week")   or run.get("end_date",   "")
+        period  = f"{start_w} → {end_w}" if start_w else "—"
+        status  = (run.get("simulation_status") or "QUEUED").upper()
 
         c1.markdown(f"**{name}**")
         c2.markdown(created or "—")
@@ -109,7 +116,10 @@ def render_runs_screen(backend_url: str):
         c4.markdown(_badge(status), unsafe_allow_html=True)
 
         if c5.button("View", key=f"view_{run.get('simulation_id', name)}"):
-            ss.selected_run_id   = run.get("simulation_id")
-            ss.selected_run_name = name
-            ss.screen = "simulation"
-            st.rerun()
+            go_to(
+                "simulation",
+                account_id=account_id,
+                account_name=account_name,
+                run_id=run.get("simulation_id"),
+                run_name=name,
+            )

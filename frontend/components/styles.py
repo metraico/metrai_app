@@ -87,9 +87,81 @@ section[data-testid="stMain"] > div,
     border: none !important;
 }
 
-/* Hide collapse buttons */
-[data-testid="collapsedControl"],
-[data-testid="stSidebarCollapseButton"] { display: none !important; }
+/* Hide the default Streamlit sidebar toggle (we use our own) */
+[data-testid="collapsedControl"] { display: none !important; }
+
+/* ── Hamburger toggle — inside sidebar (visible when open) ── */
+[data-testid="stSidebarCollapseButton"] {
+    position: absolute !important;
+    top: 16px !important;
+    right: -48px !important;
+    z-index: 999 !important;
+    background: #111827 !important;
+    border: 1px solid rgba(255,255,255,0.1) !important;
+    border-radius: 8px !important;
+    width: 36px !important;
+    height: 36px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+}
+[data-testid="stSidebarCollapseButton"] > button {
+    all: unset !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 100% !important;
+    height: 100% !important;
+    cursor: pointer !important;
+}
+[data-testid="stSidebarCollapseButton"] svg { display: none !important; }
+[data-testid="stSidebarCollapseButton"] > button::after {
+    content: "☰" !important;
+    font-size: 16px !important;
+    color: #9ca3af !important;
+    line-height: 1 !important;
+}
+[data-testid="stSidebarCollapseButton"]:hover {
+    background: #1f2937 !important;
+}
+[data-testid="stSidebarCollapseButton"] > button:hover::after {
+    color: #f3f4f6 !important;
+}
+
+/* When sidebar is collapsed, show the toggle in the main area */
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    position: fixed !important;
+    top: 16px !important;
+    left: 16px !important;
+    z-index: 999 !important;
+    background: #111827 !important;
+    border: 1px solid rgba(255,255,255,0.1) !important;
+    border-radius: 8px !important;
+    width: 36px !important;
+    height: 36px !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+}
+[data-testid="collapsedControl"] > button {
+    all: unset !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 100% !important;
+    height: 100% !important;
+    cursor: pointer !important;
+}
+[data-testid="collapsedControl"] svg { display: none !important; }
+[data-testid="collapsedControl"] > button::after {
+    content: "☰" !important;
+    font-size: 16px !important;
+    color: #9ca3af !important;
+    line-height: 1 !important;
+}
+[data-testid="collapsedControl"]:hover { background: #1f2937 !important; }
 
 /* ── Branding ── */
 .sb-brand {

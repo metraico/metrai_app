@@ -1,15 +1,17 @@
 """
-components/nav.py — Sidebar navigation.
+components/sidebar.py — Sidebar navigation.
 """
 import streamlit as st
+
+from frontend.router import go_to, get_page
 
 
 def render_sidebar_nav():
     ss = st.session_state
-    screen = ss.get("screen", "login")
+    page = get_page()
 
     with st.sidebar:
-        retailers_active = screen in ("retailers", "runs", "simulation")
+        retailers_active = page in ("retailers", "runs", "simulation")
 
         # ── Branding ──────────────────────────────────────────
         st.markdown(
@@ -40,10 +42,7 @@ def render_sidebar_nav():
             )
         else:
             if st.button("🏪  Retailers", key="nav_retailers"):
-                ss.screen = "retailers"
-                ss.selected_account_id = None
-                ss.runs_list = None
-                st.rerun()
+                go_to("retailers")
 
         # ── Analytics (coming soon) ───────────────────────────
         st.markdown(
@@ -59,5 +58,4 @@ def render_sidebar_nav():
         if st.button("Sign out", key="nav_logout"):
             for k in list(ss.keys()):
                 del ss[k]
-            st.query_params.clear()
-            st.rerun()
+            go_to("login")

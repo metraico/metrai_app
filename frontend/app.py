@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from frontend.components.styles import CSS_BLOCK
 from frontend.components.sidebar import render_sidebar_nav
+from frontend.router import get_page, go_to
 from frontend.screens.login import render_login_screen
 from frontend.screens.retailers import render_retailers_screen
 from frontend.screens.runs import render_runs_screen
@@ -38,19 +39,12 @@ st.markdown(CSS_BLOCK, unsafe_allow_html=True)
 # Session state initialisation
 # ---------------------------------------------------------------------------
 _defaults = [
-    ("logged_in",               False),
-    ("user_id",                 None),
-    ("account_id",              None),
-    ("full_name",               None),
-    ("entities",                None),
-    ("mappings",                None),
-    ("screen",                  "login"),
-    ("selected_account_id",     None),
-    ("selected_account_name",   None),
-    ("selected_account_is_real", False),
-    ("selected_run_id",         None),
-    ("selected_run_name",       "New Run"),
-    ("runs_list",               None),
+    ("logged_in",  False),
+    ("user_id",    None),
+    ("account_id", None),
+    ("full_name",  None),
+    ("entities",   None),
+    ("mappings",   None),
 ]
 for _key, _val in _defaults:
     if _key not in st.session_state:
@@ -59,7 +53,7 @@ for _key, _val in _defaults:
 ss = st.session_state
 
 # ---------------------------------------------------------------------------
-# Query-param session restore (survives page refresh)
+# Session restore from URL token (survives page refresh)
 # ---------------------------------------------------------------------------
 if not ss.logged_in:
     import json as _json, base64 as _b64
@@ -71,27 +65,28 @@ if not ss.logged_in:
             ss.user_id     = _data["user_id"]
             ss.account_id  = _data["account_id"]
             ss.full_name   = _data["full_name"]
-            ss.screen      = "retailers"
         except Exception:
-            st.query_params.clear()  # bad param — wipe and go to login
+            st.query_params.clear()
 
 # ---------------------------------------------------------------------------
-# Routing
+# Routing — URL query params are the source of truth
 # ---------------------------------------------------------------------------
-if not ss.logged_in:
-    ss.screen = "login"
+page = get_page()
 
-if ss.screen == "login":
+# Guard: unauthenticated users always go to login
+if not ss.logged_in and page != "login":
+    go_to("login")
+
+if page == "login":
     render_login_screen(BACKEND_URL)
-elif ss.screen == "retailers":
+elif page == "retailers":
     render_sidebar_nav()
     render_retailers_screen(BACKEND_URL)
-elif ss.screen == "runs":
+elif page == "runs":
     render_sidebar_nav()
     render_runs_screen(BACKEND_URL)
-elif ss.screen == "simulation":
+elif page == "simulation":
     render_sidebar_nav()
     render_simulation_screen(BACKEND_URL)
 else:
-    ss.screen = "login"
-    st.rerun()
+    go_to("login")
