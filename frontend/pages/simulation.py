@@ -454,15 +454,25 @@ def _render_results():
     st.divider()
     stores_list = sorted(_selector_source["store_id"].unique().tolist()) if not _selector_source.empty else []
     items_list = sorted(_selector_source["item_id"].unique().tolist()) if not _selector_source.empty else []
-    item_code_map = items_df.set_index("item_id")["item_code"].to_dict() if not items_df.empty else {}
-    items_display = {f"{item_code_map.get(iid, iid)}": iid for iid in items_list}
+
+    store_code_map = stores_df.set_index("store_id")["store_code"].to_dict() if not stores_df.empty else {}
+    stores_display = {store_code_map.get(sid, sid): sid for sid in stores_list}
+
+    if "item_description" in items_df.columns:
+        item_label_map = items_df.set_index("item_id").apply(
+            lambda r: r["item_description"] if r.get("item_description") else r["item_code"], axis=1
+        ).to_dict() if not items_df.empty else {}
+    else:
+        item_label_map = items_df.set_index("item_id")["item_code"].to_dict() if not items_df.empty else {}
+    items_display = {item_label_map.get(iid, iid): iid for iid in items_list}
 
     if not stores_list or not items_list:
         st.warning("No store/item identifiers found in any of the result tables.")
         return
 
     col_sel1, col_sel2 = st.columns(2)
-    sel_store = col_sel1.selectbox("Store", stores_list)
+    sel_store_label = col_sel1.selectbox("Store", list(stores_display.keys()))
+    sel_store = stores_display[sel_store_label]
     sel_item_label = col_sel2.selectbox("Item", list(items_display.keys()))
     sel_item = items_display[sel_item_label]
 
@@ -500,11 +510,10 @@ def _render_results():
     avg_daily_d = s_sales_d["demand_qty"].mean() if not s_sales_d.empty else 0
     trigger_units = int(round(store_reorder_weeks * avg_daily_d * 7))
     target_units = int(round(store_target_weeks * avg_daily_d * 7))
-    st.caption(f"Min Inventory Trigger = **{store_reorder_weeks} weeks × {avg_daily_d:.1f} units/day × 7 = {trigger_units} units**")
-    st.caption(f"Store Target Stock = **{store_target_weeks} weeks × {avg_daily_d:.1f} units/day × 7 = {target_units} units**")
+
 
     # KPIs (fall back to weekly when daily isn't available)
-    st.subheader(f"KPI — {sel_store} / {sel_item_label}")
+    st.subheader(f"KPI — {sel_store_label} / {sel_item_label}")
 
     has_daily = not s_sales_d.empty
     if has_daily:
@@ -687,31 +696,9 @@ def _render_results():
     )
     st.plotly_chart(fig_weekly, use_container_width=True)
 
-    # Heatmap
-    st.divider()
-    st.subheader(f"Inventory Status — All Stores for {sel_item_label}")
-    if not inv_daily_df.empty:
-        heat_df = inv_daily_df[inv_daily_df["item_id"] == sel_item].copy()
-        heat_df["date"] = pd.to_datetime(heat_df["date"])
-        status_num_map = {"AVAILABLE": 2, "LOW": 1, "ZERO": 0}
-        heat_df["status_num"] = heat_df["inventory_status"].map(status_num_map)
-        pivot = heat_df.pivot_table(index="store_id", columns="date", values="status_num", aggfunc="first")
-        y_labels = [f"► {s}" if s == sel_store else s for s in pivot.index.tolist()]
-        fig_heat = go.Figure(go.Heatmap(
-            z=pivot.values, x=pivot.columns.astype(str), y=y_labels,
-            colorscale=[[0, "#E84855"], [0.5, "#F4A261"], [1, "#2E86AB"]],
-            zmin=0, zmax=2,
-            colorbar=dict(tickvals=[0, 1, 2], ticktext=["ZERO", "LOW", "AVAILABLE"]),
-        ))
-        fig_heat.update_layout(
-            height=max(200, len(stores_list) * 35 + 80),
-            xaxis_title="Date", yaxis_title="Store",
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
-
     # Raw output tables
     st.divider()
-    st.subheader(f"Raw Output Tables — {sel_store} / {sel_item_label}")
+    st.subheader(f"Raw Output Tables — {sel_store_label} / {sel_item_label}")
 
     with st.expander("Demand Matrix"):
         st.dataframe(s_demand.reset_index(drop=True) if not s_demand.empty else pd.DataFrame())
