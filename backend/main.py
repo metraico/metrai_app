@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
-SIM_ENGINE_URL = os.getenv("SIM_ENGINE_URL", "http://localhost:8001")
+SIM_ENGINE_URL = os.getenv("SIM_ENGINE_URL", "http://localhost:8000")
 POSTGRES_DSN   = os.getenv("POSTGRES_DSN")
 
 app = FastAPI(title="Metrai App Backend", version="0.2.0")
@@ -245,5 +245,35 @@ async def run_simulation(req: dict):
         raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Simulation timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+# ---------------------------------------------------------------------------
+# Past simulation retrieval (proxy)
+# ---------------------------------------------------------------------------
+
+@app.get("/simulation/{simulation_id}")
+async def get_simulation(simulation_id: str):
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.get("/run-config/{simulation_id}")
+async def get_run_config(simulation_id: str):
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{SIM_ENGINE_URL}/run-config/{simulation_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
