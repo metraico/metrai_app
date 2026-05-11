@@ -426,11 +426,27 @@ def _render_results():
     store_target_weeks = r.get("store_target_weeks", 3)
 
     # Counts row
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Items", len(items_df))
-    col2.metric("Stores", len(stores_df))
-    col3.metric("DCs", len(set(store_dc_map.values())) if store_dc_map else 0)
-    col4.metric("Suppliers", len(dcs_df) if not dcs_df.empty else 0)
+    def _tile(label, value):
+        return f"""
+        <div style="background:#1e1e2e;border:1px solid #2e2e3e;border-radius:10px;
+                    padding:16px 20px;text-align:center;flex:1;min-width:0;">
+            <div style="color:#8888aa;font-size:13px;margin-bottom:6px;">{label}</div>
+            <div style="color:#ffffff;font-size:28px;font-weight:700;">{value}</div>
+        </div>"""
+
+    n_items = len(items_df)
+    n_stores = len(stores_df)
+    n_dcs = len(set(store_dc_map.values())) if store_dc_map else 0
+    n_suppliers = len(dcs_df) if not dcs_df.empty else 0
+    st.markdown(
+        f'<div style="display:flex;gap:12px;margin:8px 0;">'
+        + _tile("Items", n_items)
+        + _tile("Stores", n_stores)
+        + _tile("DCs", n_dcs)
+        + _tile("Suppliers", n_suppliers)
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     if sales_daily_df.empty and sales_hist_df.empty:
         st.warning("Simulation returned no sales data.")
@@ -454,15 +470,25 @@ def _render_results():
     st.divider()
     stores_list = sorted(_selector_source["store_id"].unique().tolist()) if not _selector_source.empty else []
     items_list = sorted(_selector_source["item_id"].unique().tolist()) if not _selector_source.empty else []
-    item_code_map = items_df.set_index("item_id")["item_code"].to_dict() if not items_df.empty else {}
-    items_display = {f"{item_code_map.get(iid, iid)}": iid for iid in items_list}
+
+    store_code_map = stores_df.set_index("store_id")["store_code"].to_dict() if not stores_df.empty else {}
+    stores_display = {store_code_map.get(sid, sid): sid for sid in stores_list}
+
+    if "item_description" in items_df.columns:
+        item_label_map = items_df.set_index("item_id").apply(
+            lambda r: r["item_description"] if r.get("item_description") else r["item_code"], axis=1
+        ).to_dict() if not items_df.empty else {}
+    else:
+        item_label_map = items_df.set_index("item_id")["item_code"].to_dict() if not items_df.empty else {}
+    items_display = {item_label_map.get(iid, iid): iid for iid in items_list}
 
     if not stores_list or not items_list:
         st.warning("No store/item identifiers found in any of the result tables.")
         return
 
     col_sel1, col_sel2 = st.columns(2)
-    sel_store = col_sel1.selectbox("Store", stores_list)
+    sel_store_label = col_sel1.selectbox("Store", list(stores_display.keys()))
+    sel_store = stores_display[sel_store_label]
     sel_item_label = col_sel2.selectbox("Item", list(items_display.keys()))
     sel_item = items_display[sel_item_label]
 
@@ -500,12 +526,9 @@ def _render_results():
     avg_daily_d = s_sales_d["demand_qty"].mean() if not s_sales_d.empty else 0
     trigger_units = int(round(store_reorder_weeks * avg_daily_d * 7))
     target_units = int(round(store_target_weeks * avg_daily_d * 7))
-    st.caption(f"Min Inventory Trigger = **{store_reorder_weeks} weeks × {avg_daily_d:.1f} units/day × 7 = {trigger_units} units**")
-    st.caption(f"Store Target Stock = **{store_target_weeks} weeks × {avg_daily_d:.1f} units/day × 7 = {target_units} units**")
+
 
     # KPIs (fall back to weekly when daily isn't available)
-    st.subheader(f"KPI — {sel_store} / {sel_item_label}")
-
     has_daily = not s_sales_d.empty
     if has_daily:
         total_demand = s_sales_d["demand_qty"].sum()
@@ -531,13 +554,17 @@ def _render_results():
     stockout_days = (s_inv_d["inventory_status"] == "ZERO").sum() if not s_inv_d.empty else 0
     stockout_days_str = f"{stockout_days:,}" if not s_inv_d.empty else "—"
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Total Demand", total_demand_str)
-    k2.metric("Total Sales", total_sales_str)
-    k3.metric("Lost Sales", total_lost_str)
-    k4.metric("Fill Rate", fill_rate_str)
-    k5.metric("Stockout Days", stockout_days_str)
-    k6.metric("Revenue", total_revenue_str)
+    st.markdown(
+        f'<div style="display:flex;gap:12px;margin:8px 0;">'
+        + _tile("Total Demand", total_demand_str)
+        + _tile("Total Sales", total_sales_str)
+        + _tile("Lost Sales", total_lost_str)
+        + _tile("Fill Rate", fill_rate_str)
+        + _tile("Stockout Days", stockout_days_str)
+        + _tile("Revenue", total_revenue_str)
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     # Promo windows
     promo_date_ranges = []
@@ -687,74 +714,7 @@ def _render_results():
     )
     st.plotly_chart(fig_weekly, use_container_width=True)
 
-    # Heatmap
-    st.divider()
-    st.subheader(f"Inventory Status — All Stores for {sel_item_label}")
-    if not inv_daily_df.empty:
-        heat_df = inv_daily_df[inv_daily_df["item_id"] == sel_item].copy()
-        heat_df["date"] = pd.to_datetime(heat_df["date"])
-        status_num_map = {"AVAILABLE": 2, "LOW": 1, "ZERO": 0}
-        heat_df["status_num"] = heat_df["inventory_status"].map(status_num_map)
-        pivot = heat_df.pivot_table(index="store_id", columns="date", values="status_num", aggfunc="first")
-        y_labels = [f"► {s}" if s == sel_store else s for s in pivot.index.tolist()]
-        fig_heat = go.Figure(go.Heatmap(
-            z=pivot.values, x=pivot.columns.astype(str), y=y_labels,
-            colorscale=[[0, "#E84855"], [0.5, "#F4A261"], [1, "#2E86AB"]],
-            zmin=0, zmax=2,
-            colorbar=dict(tickvals=[0, 1, 2], ticktext=["ZERO", "LOW", "AVAILABLE"]),
-        ))
-        fig_heat.update_layout(
-            height=max(200, len(stores_list) * 35 + 80),
-            xaxis_title="Date", yaxis_title="Store",
-        )
-        st.plotly_chart(fig_heat, use_container_width=True)
-
     # Raw output tables
-    st.divider()
-    st.subheader(f"Raw Output Tables — {sel_store} / {sel_item_label}")
-
-    with st.expander("Demand Matrix"):
-        st.dataframe(s_demand.reset_index(drop=True) if not s_demand.empty else pd.DataFrame())
-    with st.expander("Daily Sales"):
-        st.dataframe(s_sales_d.reset_index(drop=True))
-    with st.expander("Daily Store Inventory"):
-        st.dataframe(s_inv_d.reset_index(drop=True))
-    with st.expander("Weekly Sales History"):
-        st.dataframe(s_sales_w.reset_index(drop=True))
-    with st.expander("Weekly Store Inventory"):
-        st.dataframe(s_inv_w.reset_index(drop=True))
-
-    def _has(df, *cols):
-        return not df.empty and all(c in df.columns for c in cols)
-
-    if _has(str_rec_df, "store_id", "item_id"):
-        with st.expander("Store Receipts"):
-            st.dataframe(str_rec_df[(str_rec_df["store_id"] == sel_store) & (str_rec_df["item_id"] == sel_item)].reset_index(drop=True))
-    if _has(store_od_df, "store_id", "item_id"):
-        with st.expander("Store Order Details"):
-            st.dataframe(store_od_df[(store_od_df["store_id"] == sel_store) & (store_od_df["item_id"] == sel_item)].reset_index(drop=True))
-    if _has(str_orders_df, "store_id"):
-        with st.expander("Store Orders (header)"):
-            st.dataframe(str_orders_df[str_orders_df["store_id"] == sel_store].reset_index(drop=True))
-    if _has(sup_rec_df, "item_id"):
-        with st.expander("Supplier Receipts"):
-            st.dataframe(sup_rec_df[sup_rec_df["item_id"] == sel_item].reset_index(drop=True))
-    if _has(sup_orders_df, "dc_id"):
-        with st.expander("Supplier Orders (for DC serving this store)"):
-            sel_dc = store_dc_map.get(sel_store)
-            st.dataframe((sup_orders_df[sup_orders_df["dc_id"] == sel_dc] if sel_dc else sup_orders_df).reset_index(drop=True))
-    if _has(sup_od_df, "item_id"):
-        with st.expander("Supplier Order Details"):
-            st.dataframe(sup_od_df[sup_od_df["item_id"] == sel_item].reset_index(drop=True))
-    if _has(dc_inv_df, "dc_id", "item_id"):
-        with st.expander("DC Inventory (Weekly)"):
-            sel_dc = store_dc_map.get(sel_store)
-            st.dataframe((dc_inv_df[(dc_inv_df["dc_id"] == sel_dc) & (dc_inv_df["item_id"] == sel_item)] if sel_dc else dc_inv_df).reset_index(drop=True))
-
-    # Validation
-    st.divider()
-    st.subheader("Validation")
-
     all_dfs = _prepare_export_dfs(
         filter_store=None, filter_item=None,
         items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
@@ -777,78 +737,110 @@ def _render_results():
         "data_quality_report.json": json.dumps(dq_report, indent=2),
     }
 
-    if dq_report["validation_passed"]:
-        st.success("**All checks passed** — data quality validated.")
-    else:
-        st.error("**Validation failed** — one or more checks did not pass.")
-
-    check_rows = [
-        {"Check": c["name"], "Passed": "✅" if c["passed"] else "❌", "Violations": c["violations"]}
-        for c in dq_report["checks"]
-    ]
-    st.dataframe(pd.DataFrame(check_rows), use_container_width=True, hide_index=True)
-
-    with st.expander("run_manifest.json"):
-        st.code(extra_files["run_manifest.json"], language="json")
-    with st.expander("data_quality_report.json"):
-        st.code(extra_files["data_quality_report.json"], language="json")
-
-    # Output Data Feeds
     st.divider()
-    st.subheader("Output Data Feeds")
+    tab_export, tab_debug = st.tabs(["Export", "Debugging"])
 
-    sel_store_code_series = stores_df.loc[stores_df["store_id"] == sel_store, "store_code"]
-    sel_store_code = sel_store_code_series.iloc[0] if not sel_store_code_series.empty else sel_store
+    with tab_debug:
+        st.subheader(f"Raw Output Tables — {sel_store_label} / {sel_item_label}")
 
-    feed_mode = st.radio(
-        "View / download",
-        [f"Filtered — {sel_store_code} / {sel_item_label}", "All Stores & Items"],
-        horizontal=True, key="feed_mode",
-    )
-    filtered_mode = feed_mode.startswith("Filtered")
-    fs = sel_store if filtered_mode else None
-    fi = sel_item if filtered_mode else None
+        with st.expander("Demand Matrix"):
+            st.dataframe(s_demand.reset_index(drop=True) if not s_demand.empty else pd.DataFrame())
+        with st.expander("Daily Sales"):
+            st.dataframe(s_sales_d.reset_index(drop=True))
+        with st.expander("Daily Store Inventory"):
+            st.dataframe(s_inv_d.reset_index(drop=True))
+        with st.expander("Weekly Sales History"):
+            st.dataframe(s_sales_w.reset_index(drop=True))
+        with st.expander("Weekly Store Inventory"):
+            st.dataframe(s_inv_w.reset_index(drop=True))
 
-    export_dfs = _prepare_export_dfs(
-        filter_store=fs, filter_item=fi,
-        items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
-        sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
-        str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
-        sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
-        store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
-    )
+        def _has(df, *cols):
+            return not df.empty and all(c in df.columns for c in cols)
 
-    for fname, df in export_dfs.items():
-        with st.expander(fname.replace(".csv", ""), expanded=False):
-            st.dataframe(df, use_container_width=True)
+        if _has(str_rec_df, "store_id", "item_id"):
+            with st.expander("Store Receipts"):
+                st.dataframe(str_rec_df[(str_rec_df["store_id"] == sel_store) & (str_rec_df["item_id"] == sel_item)].reset_index(drop=True))
+        if _has(store_od_df, "store_id", "item_id"):
+            with st.expander("Store Order Details"):
+                st.dataframe(store_od_df[(store_od_df["store_id"] == sel_store) & (store_od_df["item_id"] == sel_item)].reset_index(drop=True))
+        if _has(str_orders_df, "store_id"):
+            with st.expander("Store Orders (header)"):
+                st.dataframe(str_orders_df[str_orders_df["store_id"] == sel_store].reset_index(drop=True))
+        if _has(sup_rec_df, "item_id"):
+            with st.expander("Supplier Receipts"):
+                st.dataframe(sup_rec_df[sup_rec_df["item_id"] == sel_item].reset_index(drop=True))
+        if _has(sup_orders_df, "dc_id"):
+            with st.expander("Supplier Orders (for DC serving this store)"):
+                sel_dc = store_dc_map.get(sel_store)
+                st.dataframe((sup_orders_df[sup_orders_df["dc_id"] == sel_dc] if sel_dc else sup_orders_df).reset_index(drop=True))
+        if _has(sup_od_df, "item_id"):
+            with st.expander("Supplier Order Details"):
+                st.dataframe(sup_od_df[sup_od_df["item_id"] == sel_item].reset_index(drop=True))
+        if _has(dc_inv_df, "dc_id", "item_id"):
+            with st.expander("DC Inventory (Weekly)"):
+                sel_dc = store_dc_map.get(sel_store)
+                st.dataframe((dc_inv_df[(dc_inv_df["dc_id"] == sel_dc) & (dc_inv_df["item_id"] == sel_item)] if sel_dc else dc_inv_df).reset_index(drop=True))
 
-    st.markdown("#### Download")
-    dl_col1, dl_col2 = st.columns(2)
-    with dl_col1:
-        zip_filtered = _build_zip(
-            _prepare_export_dfs(
-                filter_store=sel_store, filter_item=sel_item,
-                items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
-                sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
-                str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
-                sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
-                store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
-            ),
-            extra_files=extra_files,
+        with st.expander("run_manifest.json"):
+            st.code(extra_files["run_manifest.json"], language="json")
+        with st.expander("data_quality_report.json"):
+            st.code(extra_files["data_quality_report.json"], language="json")
+
+    with tab_export:
+        st.subheader("Output Data Feeds")
+
+        sel_store_code_series = stores_df.loc[stores_df["store_id"] == sel_store, "store_code"]
+        sel_store_code = sel_store_code_series.iloc[0] if not sel_store_code_series.empty else sel_store
+
+        feed_mode = st.radio(
+            "View / download",
+            [f"Filtered — {sel_store_code} / {sel_item_label}", "All Stores & Items"],
+            horizontal=True, key="feed_mode",
         )
-        st.download_button(
-            label=f"⬇ Download filtered ({sel_store_code} / {sel_item_label})",
-            data=zip_filtered,
-            file_name=f"metrai_export_{sel_store_code}_{sel_item_label}.zip",
-            mime="application/zip", use_container_width=True,
+        filtered_mode = feed_mode.startswith("Filtered")
+        fs = sel_store if filtered_mode else None
+        fi = sel_item if filtered_mode else None
+
+        export_dfs = _prepare_export_dfs(
+            filter_store=fs, filter_item=fi,
+            items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
+            sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
+            str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
+            sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
+            store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
         )
-    with dl_col2:
-        zip_all = _build_zip(all_dfs, extra_files=extra_files)
-        st.download_button(
-            label="⬇ Download all data",
-            data=zip_all, file_name="metrai_export_all.zip",
-            mime="application/zip", use_container_width=True,
-        )
+
+        for fname, df in export_dfs.items():
+            with st.expander(fname.replace(".csv", ""), expanded=False):
+                st.dataframe(df, use_container_width=True)
+
+        st.markdown("#### Download")
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            zip_filtered = _build_zip(
+                _prepare_export_dfs(
+                    filter_store=sel_store, filter_item=sel_item,
+                    items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
+                    sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
+                    str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
+                    sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
+                    store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
+                ),
+                extra_files=extra_files,
+            )
+            st.download_button(
+                label=f"⬇ Download filtered ({sel_store_code} / {sel_item_label})",
+                data=zip_filtered,
+                file_name=f"metrai_export_{sel_store_code}_{sel_item_label}.zip",
+                mime="application/zip", use_container_width=True,
+            )
+        with dl_col2:
+            zip_all = _build_zip(all_dfs, extra_files=extra_files)
+            st.download_button(
+                label="⬇ Download all data",
+                data=zip_all, file_name="metrai_export_all.zip",
+                mime="application/zip", use_container_width=True,
+            )
 
 
 # =============================================================================
@@ -872,33 +864,34 @@ def render():
             st.session_state["_active_run_id"] = run_id
 
     # Header
-    col_back, col_title = st.columns([1, 5])
-    if col_back.button("← Back to runs"):
-        # Clear active state so leaving doesn't auto-reload
-        st.session_state.pop("_active_run_id", None)
-        go_to("runs", id=account_id)
-
-    if run_id:
-        col_title.title("Simulation Run")
-        st.caption(f"Viewing run `{run_id}`")
-    else:
-        col_title.title("New Simulation")
-
     sim_results = st.session_state.get("sim_results")
 
-    # If viewing an existing run, offer Rerun + New Simulation actions instead of the form
     if run_id and sim_results:
-        c1, c2 = st.columns([1, 1])
-        if c1.button("↻ Rerun this configuration", type="primary", use_container_width=True):
+        col_back, col_title, col_rerun, col_new = st.columns([1, 4, 2, 2])
+        if col_back.button("← Back"):
+            st.session_state.pop("_active_run_id", None)
+            go_to("runs", id=account_id)
+        col_title.subheader("Simulation Run")
+        col_title.caption(f"Run: `{run_id}`")
+        if col_rerun.button("↻ Rerun this configuration", type="primary", use_container_width=True):
             _execute_rerun(run_id, account_id, user_id)
             st.session_state.pop(f"runs_list_{account_id}", None)
             st.rerun()
-        if c2.button("+ New Simulation", use_container_width=True):
+        if col_new.button("+ New Simulation", use_container_width=True):
             st.session_state.pop("sim_results", None)
             st.session_state.pop("_active_run_id", None)
             go_to("simulation", account_id=account_id)
         _render_results()
         return
+
+    col_back, col_title = st.columns([1, 5])
+    if col_back.button("← Back to runs"):
+        st.session_state.pop("_active_run_id", None)
+        go_to("runs", id=account_id)
+    if run_id:
+        col_title.title("Simulation Run")
+    else:
+        col_title.title("New Simulation")
 
     # Default: new-run flow with the config form
     run_btn, config = _render_config_form(account_id, user_id)

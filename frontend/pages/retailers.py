@@ -17,7 +17,7 @@ def _get_runs(account_id):
 
 def render():
 
-    st.title("🏪 Retailers")
+    st.title("Retailers")
 
     account_id = st.session_state.get("account_id")
     if not account_id:
