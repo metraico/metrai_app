@@ -426,11 +426,27 @@ def _render_results():
     store_target_weeks = r.get("store_target_weeks", 3)
 
     # Counts row
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Items", len(items_df))
-    col2.metric("Stores", len(stores_df))
-    col3.metric("DCs", len(set(store_dc_map.values())) if store_dc_map else 0)
-    col4.metric("Suppliers", len(dcs_df) if not dcs_df.empty else 0)
+    def _tile(label, value):
+        return f"""
+        <div style="background:#1e1e2e;border:1px solid #2e2e3e;border-radius:10px;
+                    padding:16px 20px;text-align:center;flex:1;min-width:0;">
+            <div style="color:#8888aa;font-size:13px;margin-bottom:6px;">{label}</div>
+            <div style="color:#ffffff;font-size:28px;font-weight:700;">{value}</div>
+        </div>"""
+
+    n_items = len(items_df)
+    n_stores = len(stores_df)
+    n_dcs = len(set(store_dc_map.values())) if store_dc_map else 0
+    n_suppliers = len(dcs_df) if not dcs_df.empty else 0
+    st.markdown(
+        f'<div style="display:flex;gap:12px;margin:8px 0;">'
+        + _tile("Items", n_items)
+        + _tile("Stores", n_stores)
+        + _tile("DCs", n_dcs)
+        + _tile("Suppliers", n_suppliers)
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     if sales_daily_df.empty and sales_hist_df.empty:
         st.warning("Simulation returned no sales data.")
@@ -513,8 +529,6 @@ def _render_results():
 
 
     # KPIs (fall back to weekly when daily isn't available)
-    st.subheader(f"KPI — {sel_store_label} / {sel_item_label}")
-
     has_daily = not s_sales_d.empty
     if has_daily:
         total_demand = s_sales_d["demand_qty"].sum()
@@ -540,13 +554,17 @@ def _render_results():
     stockout_days = (s_inv_d["inventory_status"] == "ZERO").sum() if not s_inv_d.empty else 0
     stockout_days_str = f"{stockout_days:,}" if not s_inv_d.empty else "—"
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Total Demand", total_demand_str)
-    k2.metric("Total Sales", total_sales_str)
-    k3.metric("Lost Sales", total_lost_str)
-    k4.metric("Fill Rate", fill_rate_str)
-    k5.metric("Stockout Days", stockout_days_str)
-    k6.metric("Revenue", total_revenue_str)
+    st.markdown(
+        f'<div style="display:flex;gap:12px;margin:8px 0;">'
+        + _tile("Total Demand", total_demand_str)
+        + _tile("Total Sales", total_sales_str)
+        + _tile("Lost Sales", total_lost_str)
+        + _tile("Fill Rate", fill_rate_str)
+        + _tile("Stockout Days", stockout_days_str)
+        + _tile("Revenue", total_revenue_str)
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     # Promo windows
     promo_date_ranges = []
@@ -720,7 +738,7 @@ def _render_results():
     }
 
     st.divider()
-    tab_debug, tab_export = st.tabs(["Debugging", "Export"])
+    tab_export, tab_debug = st.tabs(["Export", "Debugging"])
 
     with tab_debug:
         st.subheader(f"Raw Output Tables — {sel_store_label} / {sel_item_label}")
@@ -846,33 +864,34 @@ def render():
             st.session_state["_active_run_id"] = run_id
 
     # Header
-    col_back, col_title = st.columns([1, 5])
-    if col_back.button("← Back to runs"):
-        # Clear active state so leaving doesn't auto-reload
-        st.session_state.pop("_active_run_id", None)
-        go_to("runs", id=account_id)
-
-    if run_id:
-        col_title.title("Simulation Run")
-        st.caption(f"Viewing run `{run_id}`")
-    else:
-        col_title.title("New Simulation")
-
     sim_results = st.session_state.get("sim_results")
 
-    # If viewing an existing run, offer Rerun + New Simulation actions instead of the form
     if run_id and sim_results:
-        c1, c2 = st.columns([1, 1])
-        if c1.button("↻ Rerun this configuration", type="primary", use_container_width=True):
+        col_back, col_title, col_rerun, col_new = st.columns([1, 4, 2, 2])
+        if col_back.button("← Back"):
+            st.session_state.pop("_active_run_id", None)
+            go_to("runs", id=account_id)
+        col_title.subheader("Simulation Run")
+        col_title.caption(f"Run: `{run_id}`")
+        if col_rerun.button("↻ Rerun this configuration", type="primary", use_container_width=True):
             _execute_rerun(run_id, account_id, user_id)
             st.session_state.pop(f"runs_list_{account_id}", None)
             st.rerun()
-        if c2.button("+ New Simulation", use_container_width=True):
+        if col_new.button("+ New Simulation", use_container_width=True):
             st.session_state.pop("sim_results", None)
             st.session_state.pop("_active_run_id", None)
             go_to("simulation", account_id=account_id)
         _render_results()
         return
+
+    col_back, col_title = st.columns([1, 5])
+    if col_back.button("← Back to runs"):
+        st.session_state.pop("_active_run_id", None)
+        go_to("runs", id=account_id)
+    if run_id:
+        col_title.title("Simulation Run")
+    else:
+        col_title.title("New Simulation")
 
     # Default: new-run flow with the config form
     run_btn, config = _render_config_form(account_id, user_id)
