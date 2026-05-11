@@ -237,8 +237,17 @@ def _prepare_export_dfs(
     elif "delivery_week" not in del_df.columns:
         del_df["delivery_week"] = ""
     if not del_df.empty:
-        _oq = pd.to_numeric(del_df.get("order_quantity",    0), errors="coerce").fillna(0)
-        _dq = pd.to_numeric(del_df.get("delivered_quantity", 0), errors="coerce").fillna(0)
+        # df.get(col, default) returns the default *scalar* (not a Series) when col is missing.
+        # Wrap with a zero-Series so to_numeric().fillna() always operates on a Series.
+        _zero = pd.Series(0, index=del_df.index)
+        _oq = pd.to_numeric(
+            del_df["order_quantity"] if "order_quantity" in del_df.columns else _zero,
+            errors="coerce",
+        ).fillna(0)
+        _dq = pd.to_numeric(
+            del_df["delivered_quantity"] if "delivered_quantity" in del_df.columns else _zero,
+            errors="coerce",
+        ).fillna(0)
         del_df["unfilled_quantity"] = (_oq - _dq).clip(lower=0)
 
     sales_filt = _filt(sales_hist_df, store_col="store_id", item_col="item_id")

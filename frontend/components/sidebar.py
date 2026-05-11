@@ -1,61 +1,46 @@
-"""
-components/sidebar.py — Sidebar navigation.
-"""
 import streamlit as st
+from router import go_to
 
-from frontend.router import go_to, get_page
 
-
-def render_sidebar_nav():
-    ss = st.session_state
-    page = get_page()
+def render_sidebar():
 
     with st.sidebar:
-        retailers_active = page in ("retailers", "runs", "simulation")
 
-        # ── Branding ──────────────────────────────────────────
-        st.markdown(
-            '<div class="sb-brand">'
-            '  <div class="sb-brand-icon">⬡</div>'
-            '  <div class="sb-brand-text">'
-            '    <span class="sb-brand-name">MetrAI</span>'
-            '    <span class="sb-brand-sub">Supply Chain Simulator</span>'
-            '  </div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        st.title("Metrai")
 
-        # ── Section label ─────────────────────────────────────
-        st.markdown(
-            '<div class="sb-label">Navigation</div>',
-            unsafe_allow_html=True,
-        )
+        st.divider()
 
-        # ── Retailers ─────────────────────────────────────────
-        if retailers_active:
-            st.markdown(
-                '<div class="sb-item sb-active">'
-                '  <span class="sb-icon">🏪</span>'
-                '  <span>Retailers</span>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            if st.button("🏪  Retailers", key="nav_retailers"):
-                go_to("retailers")
+        if st.button("Home", use_container_width=True):
+            go_to("home")
 
-        # ── Analytics (coming soon) ───────────────────────────
-        st.markdown(
-            '<div class="sb-item sb-disabled">'
-            '  <span class="sb-icon">📊</span>'
-            '  <span>Analytics</span>'
-            '  <span class="sb-badge">Soon</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        if st.button("Retailers", use_container_width=True):
+            go_to("retailers")
 
-        # ── Sign out ──────────────────────────────────────────
-        if st.button("Sign out", key="nav_logout"):
-            for k in list(ss.keys()):
-                del ss[k]
+        account_id = st.session_state.get("account_id")
+        if account_id:
+            if st.button("New Simulation", use_container_width=True):
+                st.session_state.pop("sim_results", None)
+                st.session_state.pop("_active_run_id", None)
+                go_to("simulation", account_id=account_id)
+
+        st.divider()
+
+        full_name = st.session_state.get("full_name") or "User"
+        st.write(f"Logged in as {full_name}")
+
+        if st.button("Sign out", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.user_id = None
+            st.session_state.account_id = None
+            st.session_state.full_name = None
+            # Clear all cached per-account data
+            for key in list(st.session_state.keys()):
+                if (
+                    key.startswith("runs_list_")
+                    or key.startswith("entities_")
+                    or key.startswith("mappings_")
+                ):
+                    del st.session_state[key]
+            st.session_state.pop("sim_results", None)
+            st.session_state.pop("_active_run_id", None)
             go_to("login")

@@ -466,22 +466,36 @@ def _render_results():
     sel_item_label = col_sel2.selectbox("Item", list(items_display.keys()))
     sel_item = items_display[sel_item_label]
 
-    # Filter dataframes for selection
+    # Filter dataframes for selection. Always sort by the time column afterwards —
+    # Plotly draws scatter lines in array order, and dataframe filters preserve whatever
+    # order the upstream gave us. Without an explicit sort the line zigzags.
+    def _sort(df, col):
+        return df.sort_values(col, kind="stable").reset_index(drop=True) if (not df.empty and col in df.columns) else df
+
     s_inv_d = inv_daily_df[
         (inv_daily_df["store_id"] == sel_store) & (inv_daily_df["item_id"] == sel_item)
     ].copy() if not inv_daily_df.empty else pd.DataFrame()
+    s_inv_d = _sort(s_inv_d, "date")
+
     s_sales_d = sales_daily_df[
         (sales_daily_df["store_id"] == sel_store) & (sales_daily_df["item_id"] == sel_item)
-    ].copy()
+    ].copy() if not sales_daily_df.empty else pd.DataFrame()
+    s_sales_d = _sort(s_sales_d, "date")
+
     s_demand = demand_df[
         (demand_df["store_id"] == sel_store) & (demand_df["item_id"] == sel_item)
     ].copy() if not demand_df.empty else pd.DataFrame()
+    s_demand = _sort(s_demand, "demand_date")
+
     s_sales_w = sales_hist_df[
         (sales_hist_df["store_id"] == sel_store) & (sales_hist_df["item_id"] == sel_item)
     ].copy() if not sales_hist_df.empty else pd.DataFrame()
+    s_sales_w = _sort(s_sales_w, "sales_week")
+
     s_inv_w = store_inv_df[
         (store_inv_df["store_id"] == sel_store) & (store_inv_df["item_id"] == sel_item)
     ].copy() if not store_inv_df.empty else pd.DataFrame()
+    s_inv_w = _sort(s_inv_w, "inventory_week" if "inventory_week" in s_inv_w.columns else "sales_week")
 
     avg_daily_d = s_sales_d["demand_qty"].mean() if not s_sales_d.empty else 0
     trigger_units = int(round(store_reorder_weeks * avg_daily_d * 7))
