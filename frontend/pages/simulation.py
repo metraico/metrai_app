@@ -485,7 +485,7 @@ def _render_results():
         else {}
     )
 
-def _item_label(iid):
+    def _item_label(iid):
         code = code_by_id.get(iid, iid)
         return desc_by_code.get(code) or code
 
