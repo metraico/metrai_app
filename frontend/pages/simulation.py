@@ -1047,6 +1047,20 @@ def render():
     else:
         col_title.title("New Simulation")
 
+    # Scenario shortcut
+    st.markdown(
+        "<div style='background:#1e1e2e;border:1px solid #f59e0b;border-left:3px solid #f59e0b;"
+        "border-radius:8px;padding:12px 16px;margin-bottom:16px;'>"
+        "<span style='color:#f59e0b;font-size:14px;font-weight:600;'>Scenarios</span>"
+        "<span style='color:#8888aa;font-size:14px;'> — inject promo anomalies or supply disruptions "
+        "and observe how your replenishment system responds.</span></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Run a Scenario instead", use_container_width=False):
+        go_to("scenario_setup", account_id=account_id)
+
+    st.divider()
+
     # Default: new-run flow with the config form
     run_btn, config = _render_config_form(account_id, user_id)
     if run_btn:

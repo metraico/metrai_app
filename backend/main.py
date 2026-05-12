@@ -128,6 +128,7 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid token")
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Invalid token type")
+    payload["user_id"] = payload["sub"]
     return payload
 
 
@@ -170,11 +171,10 @@ def health():
 
 @app.post("/register")
 def register(body: dict):
-    username     = (body.get("username") or "").strip().lower()
-    password     = body.get("password") or ""
-    email        = (body.get("email") or "").strip().lower()
-    full_name    = (body.get("full_name") or "").strip()
-    account_name = (body.get("account_name") or "").strip()
+    username  = (body.get("username") or "").strip().lower()
+    password  = body.get("password") or ""
+    email     = (body.get("email") or "").strip().lower()
+    full_name = (body.get("full_name") or "").strip()
 
     if not username:
         raise HTTPException(status_code=422, detail="Username is required")
@@ -182,9 +182,6 @@ def register(body: dict):
         raise HTTPException(status_code=422, detail="Password is required")
     if len(password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
-    if not account_name:
-        raise HTTPException(status_code=422, detail="Company / account name is required")
-
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No database configured")
 
@@ -195,31 +192,26 @@ def register(body: dict):
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail="Username already taken")
 
-            # Look up account by name; reject if not found
-            cur.execute(
-                "SELECT account_id::text FROM retailer_accounts WHERE account_name = %s",
-                (account_name,),
-            )
+            # Auto-join the single demo account (all users share the same data in Phase 1)
+            cur.execute("SELECT account_id::text FROM retailer_accounts ORDER BY account_id LIMIT 1")
             row = cur.fetchone()
-            if not row:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No account named '{account_name}'. Check the company name and try again.",
-                )
-            account_id = row[0]
+            account_id = row[0] if row else None
 
             cur.execute(
                 """
-                INSERT INTO users
-                    (username, email, full_name, password_hash, account_id,
-                     auth_provider, role)
+                INSERT INTO users (username, email, full_name, password_hash, account_id, auth_provider, role)
                 VALUES (%s, %s, %s, %s, %s, 'local', 'ADMIN')
                 RETURNING user_id::text
                 """,
-                (username, email or None, full_name or username,
-                 _ph.hash(password), account_id),
+                (username, email or None, full_name or username, _ph.hash(password), account_id),
             )
             user_id = cur.fetchone()[0]
+
+            if account_id:
+                cur.execute(
+                    "INSERT INTO user_accounts (user_id, account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (user_id, account_id),
+                )
 
         conn.commit()
     except HTTPException:
@@ -231,10 +223,9 @@ def register(body: dict):
     finally:
         conn.close()
 
-    access_token    = _create_access_token(user_id, account_id, "ADMIN")
+    access_token    = _create_access_token(user_id, account_id or "", "ADMIN")
     raw_rt, rt_hash = _make_refresh_token()
-    _store_refresh_token(user_id, rt_hash,
-                         datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
+    _store_refresh_token(user_id, rt_hash, datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
 
     return {
         "access_token":  access_token,
@@ -243,6 +234,125 @@ def register(body: dict):
         "user_id":       user_id,
         "account_id":    account_id,
         "full_name":     full_name or username,
+    }
+
+
+@app.get("/accounts")
+def get_accounts(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+    if not POSTGRES_DSN:
+        return []
+    conn = _pg_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ra.account_id::text, ra.account_code, ra.account_name,
+                       ra.account_type, ra.country_code, ra.region,
+                       ra.currency_code, ra.is_active
+                FROM retailer_accounts ra
+                JOIN user_accounts ua ON ra.account_id = ua.account_id
+                WHERE ua.user_id = %s
+                ORDER BY ra.account_name
+                """,
+                (user_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+@app.post("/accounts")
+def create_account(body: dict, current_user: dict = Depends(get_current_user)):
+    user_id      = current_user["user_id"]
+    account_name = (body.get("account_name") or "").strip()
+    account_type = (body.get("account_type") or "GROCERY").strip().upper()
+    country_code = (body.get("country_code") or "US").strip().upper()
+    region       = (body.get("region") or "").strip()
+    currency     = (body.get("currency_code") or "USD").strip().upper()
+
+    if not account_name:
+        raise HTTPException(status_code=422, detail="Account name is required")
+    if not POSTGRES_DSN:
+        raise HTTPException(status_code=503, detail="No database configured")
+
+    # Auto-generate a unique account code from the name
+    base = "ACCT_" + "".join(c if c.isalnum() else "_" for c in account_name.upper())[:15].strip("_")
+
+    conn = _pg_connect()
+    try:
+        with conn.cursor() as cur:
+            account_id_c = base
+            suffix = 1
+            while True:
+                cur.execute("SELECT 1 FROM retailer_accounts WHERE account_code = %s", (account_id_c,))
+                if not cur.fetchone():
+                    break
+                account_id_c = f"{base}_{suffix}"
+                suffix += 1
+
+            cur.execute(
+                """
+                INSERT INTO retailer_accounts
+                    (account_code, account_name, account_type, country_code, region, currency_code, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, true)
+                RETURNING account_id::text
+                """,
+                (account_id_c, account_name, account_type,
+                 country_code or None, region or None, currency),
+            )
+            new_account_id = cur.fetchone()[0]
+
+            cur.execute(
+                "INSERT INTO user_accounts (user_id, account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (user_id, new_account_id),
+            )
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+    return {"account_id": new_account_id, "account_code": account_id_c, "account_name": account_name}
+
+
+@app.post("/switch-account")
+def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
+    user_id    = current_user["user_id"]
+    account_id = (body.get("account_id") or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=422, detail="account_id is required")
+    if not POSTGRES_DSN:
+        raise HTTPException(status_code=503, detail="No database configured")
+
+    conn = _pg_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM user_accounts WHERE user_id = %s AND account_id = %s",
+                (user_id, account_id),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="Access denied to this account")
+            cur.execute("UPDATE users SET account_id = %s WHERE user_id = %s", (account_id, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    role = current_user.get("role", "ADMIN")
+    access_token    = _create_access_token(user_id, account_id, role)
+    raw_rt, rt_hash = _make_refresh_token()
+    _store_refresh_token(user_id, rt_hash, datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
+    return {
+        "access_token":  access_token,
+        "refresh_token": raw_rt,
+        "token_type":    "bearer",
+        "account_id":    account_id,
     }
 
 @app.post("/login")
@@ -407,6 +517,16 @@ def get_runs(current_user: dict = Depends(get_current_user)):
 
 # ── Entity catalogue ──────────────────────────────────────────────────────────
 
+def _resolve_data_account(cur, account_id: str) -> str:
+    """Return account_id to use for catalog data. Falls back to demo account if this account has no items."""
+    cur.execute("SELECT 1 FROM items WHERE account_id = %s LIMIT 1", (account_id,))
+    if cur.fetchone():
+        return account_id
+    cur.execute("SELECT account_id::text FROM items LIMIT 1")
+    row = cur.fetchone()
+    return row[0] if row else account_id
+
+
 @app.get("/entities")
 def get_entities(current_user: dict = Depends(get_current_user)):
     account_id = current_user["account_id"]
@@ -415,12 +535,14 @@ def get_entities(current_user: dict = Depends(get_current_user)):
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
+            data_acct = _resolve_data_account(cur, account_id)
+
             def q(sql, params):
                 cur.execute(sql, params)
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            acct = (account_id,)
+            acct = (data_acct,)
             return {
                 "items":     q("SELECT item_id::text, item_code, item_description FROM items WHERE account_id = %s ORDER BY item_code", acct),
                 "stores":    q("SELECT store_id::text, store_code, store_name FROM stores WHERE account_id = %s ORDER BY store_code", acct),
@@ -441,12 +563,14 @@ def get_mappings(current_user: dict = Depends(get_current_user)):
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
+            data_acct = _resolve_data_account(cur, account_id)
+
             def q(sql, params):
                 cur.execute(sql, params)
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            acct = (account_id,)
+            acct = (data_acct,)
             return {
                 "store_items":    q("SELECT si.store_id::text, si.item_id::text FROM store_items si JOIN stores s ON si.store_id = s.store_id WHERE s.account_id = %s", acct),
                 "dc_items":       q("SELECT di.dc_id::text, di.item_id::text FROM dc_items di JOIN distribution_centers dc ON di.dc_id = dc.dc_id WHERE dc.account_id = %s", acct),
@@ -505,6 +629,7 @@ def get_promos(current_user: dict = Depends(get_current_user)):
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
+            data_acct = _resolve_data_account(cur, account_id)
             cur.execute(
                 """
                 SELECT p.promo_id::text, p.promo_name, p.start_date::text, p.end_date::text,
@@ -518,7 +643,7 @@ def get_promos(current_user: dict = Depends(get_current_user)):
                          p.demand_multiplier, pg.promo_group_name
                 ORDER BY p.start_date
                 """,
-                (account_id,),
+                (data_acct,),
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
