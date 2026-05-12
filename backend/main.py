@@ -195,20 +195,18 @@ def register(body: dict):
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail="Username already taken")
 
-            # Derive a short uppercase code from the account name
-            account_code = "".join(c if c.isalnum() else "_"
-                                   for c in account_name.upper())[:20].strip("_") or "ACCT"
-
+            # Look up account by name; reject if not found
             cur.execute(
-                """
-                INSERT INTO retailer_accounts
-                    (account_code, account_name, account_type, currency_code)
-                VALUES (%s, %s, 'RETAILER', 'USD')
-                RETURNING account_id::text
-                """,
-                (account_code, account_name),
+                "SELECT account_id::text FROM retailer_accounts WHERE account_name = %s",
+                (account_name,),
             )
-            account_id = cur.fetchone()[0]
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No account named '{account_name}'. Check the company name and try again.",
+                )
+            account_id = row[0]
 
             cur.execute(
                 """
@@ -510,10 +508,14 @@ def get_promos(current_user: dict = Depends(get_current_user)):
             cur.execute(
                 """
                 SELECT p.promo_id::text, p.promo_name, p.start_date::text, p.end_date::text,
-                       p.demand_multiplier, pg.promo_group_name
+                       p.demand_multiplier, pg.promo_group_name,
+                       array_agg(pgi.item_id::text) AS item_ids
                 FROM promos p
                 JOIN promo_groups pg ON p.promo_group_id = pg.promo_group_id
+                JOIN promo_group_items pgi ON pg.promo_group_id = pgi.promo_group_id
                 WHERE p.account_id = %s AND p.simulation_id IS NULL
+                GROUP BY p.promo_id, p.promo_name, p.start_date, p.end_date,
+                         p.demand_multiplier, pg.promo_group_name
                 ORDER BY p.start_date
                 """,
                 (account_id,),

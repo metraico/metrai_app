@@ -173,9 +173,17 @@ def _render_promo_forecast_config(account_id, user_id):
         st.warning("No base promos found. Seed promos in the database first.")
         return
 
+    def _promo_sort_key(p):
+        n = p["promo_name"].upper()
+        if n.startswith("PEPSI"):   return (0, n)
+        if n.startswith("LAYS"):    return (1, n)
+        if n.startswith("COLA_2"):  return (3, n)
+        return (2, n)
+
+    promos_sorted = sorted(promos, key=_promo_sort_key)
     promo_opts = {
         f"{p['promo_name']}  ({p['start_date']} → {p['end_date']},  x{p['demand_multiplier']} uplift)": p
-        for p in promos
+        for p in promos_sorted
     }
     sel_label = st.selectbox("Promo event to inject anomaly into", list(promo_opts.keys()))
     sel_promo = promo_opts[sel_label]
@@ -237,6 +245,7 @@ def _render_promo_forecast_config(account_id, user_id):
                 "factor":     factor,
                 "start_date": sel_promo["start_date"],
                 "end_date":   sel_promo["end_date"],
+                "promo_items": sel_promo.get("item_ids") or [],
             }
             go_to("simulation", account_id=account_id, run_id=sim_id)
 

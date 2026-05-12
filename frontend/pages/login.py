@@ -82,6 +82,8 @@ def render():
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 409:
                     st.error("Username already taken.")
+                elif e.response.status_code == 404:
+                    st.error("Company name not found. Use **Salty Snack & Beverages Co** to join the existing account.")
                 elif e.response.status_code == 422:
                     st.error(f"Validation error: {e.response.text}")
                 else:
