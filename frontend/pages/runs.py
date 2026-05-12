@@ -33,13 +33,16 @@ def render():
 
     st.title("Simulation Runs")
 
-    col_back, col_new = st.columns([1, 1])
+    col_back, col_new, col_scen = st.columns([1, 1, 1])
     if col_back.button("← Back"):
         go_to("retailers")
     if col_new.button("+ New Run", type="primary"):
         st.session_state.pop("sim_results", None)
         st.session_state.pop("_active_run_id", None)
         go_to("simulation", account_id=account_id)
+    if col_scen.button("Add Scenario"):
+        st.session_state.pop("_scen_tile", None)
+        go_to("scenario_setup", account_id=account_id)
 
     if not account_id:
         st.error("Missing retailer id.")

@@ -185,7 +185,7 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
     stores_df = pd.DataFrame(resp.get("stores_meta", []))
     dcs_df = pd.DataFrame(resp.get("dcs_meta", []))
 
-    for col in ["demand_qty", "sales_qty", "lost_sales_qty", "sales_amount"]:
+    for col in ["demand_qty", "realized_demand_qty", "sales_qty", "lost_sales_qty", "sales_amount"]:
         if col in sales_daily_df.columns:
             sales_daily_df[col] = pd.to_numeric(sales_daily_df[col], errors="coerce")
     for col in ["on_hand_qty", "on_order_qty", "woc"]:
@@ -425,6 +425,10 @@ def _render_results():
     store_reorder_weeks = r.get("store_reorder_weeks", 2)
     store_target_weeks = r.get("store_target_weeks", 3)
 
+    scenario_meta = st.session_state.get("_scenario_meta")
+    scen_start_ts = pd.Timestamp(scenario_meta["start_date"]) if scenario_meta else None
+    scen_end_ts   = pd.Timestamp(scenario_meta["end_date"])   if scenario_meta else None
+
     # Counts row
     def _tile(label, value):
         return f"""
@@ -447,6 +451,34 @@ def _render_results():
         + '</div>',
         unsafe_allow_html=True,
     )
+
+    if scenario_meta:
+        stype = scenario_meta.get("type", "")
+        if stype == "promo_forecast":
+            factor = scenario_meta.get("factor", 1.0)
+            pct    = abs(round((factor - 1) * 100))
+            direction = "underperforms" if factor < 1 else "overperforms"
+            effect    = ("overstock — trailing average drops → under-ordering post-promo"
+                         if factor < 1
+                         else "stockout risk — trailing average spikes → over-ordering post-promo")
+            st.info(
+                f"**Scenario: Promo Forecast Behavior** — "
+                f"Promo *{scenario_meta.get('promo_name', '')}* "
+                f"({scenario_meta.get('start_date', '')} to {scenario_meta.get('end_date', '')}): "
+                f"actual demand **{direction} by {pct}%** (factor {factor:.2f}x). "
+                f"System ordered for the forecast; shelf demand differed → **{effect}**. "
+                f"Red shading = anomaly window."
+            )
+        elif stype == "hidden_lost_sales":
+            shortage_pct = scenario_meta.get("shortage_pct", 100)
+            st.info(
+                f"**Scenario: Hidden Lost Sales** — "
+                f"DC deliveries cut by **{shortage_pct}%** during "
+                f"{scenario_meta.get('start_date', '')} to {scenario_meta.get('end_date', '')}. "
+                f"Replenishment signal = observable sales. Suppressed sales corrupt the "
+                f"trailing average — watch for under-ordering in subsequent weeks. "
+                f"Red shading = shortage window."
+            )
 
     if sales_daily_df.empty and sales_hist_df.empty:
         st.warning("Simulation returned no sales data.")
@@ -586,28 +618,69 @@ def _render_results():
     if not s_demand.empty and "is_promo_demand" in s_demand.columns and "demand_week" in s_demand.columns:
         promo_weeks = set(s_demand[s_demand["is_promo_demand"] == True]["demand_week"].unique())
 
+    def _overlaps_anomaly(x0, x1):
+        """True if promo date range overlaps with the scenario anomaly window."""
+        if scen_start_ts is None:
+            return False
+        return x0 <= scen_end_ts + pd.Timedelta(days=1) and x1 >= scen_start_ts
+
     def _add_promo_daily(fig):
-        added = False
+        added_promo = added_anom = False
         for x0, x1 in promo_date_ranges:
+            if _overlaps_anomaly(x0, x1):
+                fig.add_vrect(
+                    x0=x0, x1=x1 + pd.Timedelta(days=1),
+                    fillcolor="rgba(220,30,30,0.35)", layer="below",
+                    line_color="rgba(255,60,60,0.9)", line_width=1,
+                    name="Anomaly Window" if not added_anom else None,
+                    showlegend=not added_anom, legendgroup="anom",
+                )
+                added_anom = True
+            else:
+                fig.add_vrect(
+                    x0=x0, x1=x1 + pd.Timedelta(days=1),
+                    fillcolor="rgba(255,180,0,0.18)", layer="below", line_width=0,
+                    name="Promo Period" if not added_promo else None,
+                    showlegend=not added_promo, legendgroup="promo",
+                )
+                added_promo = True
+        # HLS scenario: shortage week is not a promo, add red highlight directly
+        if scen_start_ts is not None and not added_anom:
             fig.add_vrect(
-                x0=x0, x1=x1 + pd.Timedelta(days=1),
-                fillcolor="rgba(255,180,0,0.18)", layer="below", line_width=0,
-                name="Promo Period" if not added else None,
-                showlegend=not added, legendgroup="promo",
+                x0=scen_start_ts, x1=scen_end_ts + pd.Timedelta(days=1),
+                fillcolor="rgba(220,30,30,0.35)", layer="below",
+                line_color="rgba(255,60,60,0.9)", line_width=1,
+                name="Anomaly Window", showlegend=True, legendgroup="anom",
             )
-            added = True
 
     def _add_promo_weekly(fig, weeks_list):
-        added = False
+        added_promo = added_anom = False
+        anom_weeks: set = set()
+        if scen_start_ts is not None:
+            d = scen_start_ts.date()
+            end = scen_end_ts.date()
+            while d <= end:
+                iso = d.isocalendar()
+                anom_weeks.add(f"{iso[0]}-W{iso[1]:02d}")
+                d += pd.Timedelta(days=1).to_pytimedelta()
         for i, w in enumerate(weeks_list):
-            if w in promo_weeks:
+            if w in anom_weeks:
+                fig.add_vrect(
+                    x0=i - 0.5, x1=i + 0.5,
+                    fillcolor="rgba(220,30,30,0.35)", layer="below",
+                    line_color="rgba(255,60,60,0.9)", line_width=1,
+                    name="Anomaly Week" if not added_anom else None,
+                    showlegend=not added_anom, legendgroup="anom_w",
+                )
+                added_anom = True
+            elif w in promo_weeks:
                 fig.add_vrect(
                     x0=i - 0.5, x1=i + 0.5,
                     fillcolor="rgba(255,180,0,0.22)", layer="below", line_width=0,
-                    name="Promo Week" if not added else None,
-                    showlegend=not added, legendgroup="promo_w",
+                    name="Promo Week" if not added_promo else None,
+                    showlegend=not added_promo, legendgroup="promo_w",
                 )
-                added = True
+                added_promo = True
 
     # Daily chart
     st.divider()
@@ -652,6 +725,14 @@ def _render_results():
             customdata=inv_lbl,
         ))
         _add_promo_daily(fig_daily)
+        if scenario_meta and "realized_demand_qty" in s_daily.columns:
+            fig_daily.add_trace(go.Scatter(
+                x=s_daily["date"], y=s_daily["realized_demand_qty"],
+                name="Actual Demand (realized)", mode="lines",
+                line=dict(color="rgba(220,30,30,0.9)", width=2, dash="dot"),
+                hovertemplate="<b>%{customdata}</b><br>Actual Demand: %{y}<extra></extra>",
+                customdata=day_lbl,
+            ))
         fig_daily.update_layout(
             barmode="group",
             xaxis=dict(title="Date"),
@@ -847,6 +928,55 @@ def _render_results():
 # Page entry
 # =============================================================================
 
+def _restore_scenario_meta_from_config(run_id: str, account_id: str):
+    """Parse [SCENARIO:...] tag from saved run notes and rebuild _scenario_meta."""
+    import re as _re
+    try:
+        cfg_resp = api.fetch_run_config(run_id)
+        notes = (cfg_resp.get("full_config") or {}).get("notes", "")
+        if not notes:
+            return
+        m_type = _re.search(r"\[SCENARIO:(\w+)\]", notes)
+        if not m_type:
+            return
+        stype = m_type.group(1)
+
+        if stype == "hidden_lost_sales":
+            ms = _re.search(r"shortage_start=([\d-]+)", notes)
+            me = _re.search(r"shortage_end=([\d-]+)", notes)
+            mf = _re.search(r"shortage_factor=([\d.]+)", notes)
+            if not ms or not me:
+                return
+            sf = float(mf.group(1)) if mf else 0.0
+            st.session_state["_scenario_meta"] = {
+                "type":         "hidden_lost_sales",
+                "start_date":   ms.group(1),
+                "end_date":     me.group(1),
+                "shortage_pct": round((1.0 - sf) * 100),
+            }
+            return
+
+        # promo_forecast
+        m = _re.search(r"promo_id=([\w-]+).*?factor=([\d.]+)", notes)
+        if not m:
+            return
+        promo_id, factor = m.group(1), float(m.group(2))
+        promos = api.fetch_promos(account_id)
+        promo = next((p for p in promos if p["promo_id"] == promo_id), None)
+        if not promo:
+            return
+        st.session_state["_scenario_meta"] = {
+            "type":       stype,
+            "promo_name": promo["promo_name"],
+            "promo_id":   promo_id,
+            "factor":     factor,
+            "start_date": promo["start_date"],
+            "end_date":   promo["end_date"],
+        }
+    except Exception:
+        pass
+
+
 def render():
     account_id = st.query_params.get("account_id") or st.session_state.get("account_id")
     user_id = st.session_state.get("user_id")
@@ -856,12 +986,18 @@ def render():
         st.error("No account in session. Please sign in again.")
         return
 
-    # Auto-load a past run if a run_id was passed and it isn't already loaded
+    # Auto-load a past run if needed.
+    # Skip when sim_results is already populated with this run's fresh response
+    # (e.g. just returned from the scenario wizard — live response has realized_demand_qty).
     active = st.session_state.get("_active_run_id")
-    if run_id and active != run_id:
+    already_fresh = st.session_state.get("sim_results", {}).get("sim_id") == run_id
+    if run_id and active != run_id and not already_fresh:
         loaded = _load_past_run(run_id)
         if loaded:
             st.session_state["_active_run_id"] = run_id
+            _restore_scenario_meta_from_config(run_id, account_id)
+    elif run_id and already_fresh:
+        st.session_state["_active_run_id"] = run_id
 
     # Header
     sim_results = st.session_state.get("sim_results")
