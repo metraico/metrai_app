@@ -474,13 +474,22 @@ def _render_results():
     store_code_map = stores_df.set_index("store_id")["store_code"].to_dict() if not stores_df.empty else {}
     stores_display = {store_code_map.get(sid, sid): sid for sid in stores_list}
 
-    if "item_description" in items_df.columns:
-        item_label_map = items_df.set_index("item_id").apply(
-            lambda r: r["item_description"] if r.get("item_description") else r["item_code"], axis=1
-        ).to_dict() if not items_df.empty else {}
-    else:
-        item_label_map = items_df.set_index("item_id")["item_code"].to_dict() if not items_df.empty else {}
-    items_display = {item_label_map.get(iid, iid): iid for iid in items_list}
+    desc_by_code = (
+        items_df.set_index("item_code")["item_description"].dropna().to_dict()
+        if not items_df.empty and "item_description" in items_df.columns
+        else {}
+    )
+    code_by_id = (
+        items_df.set_index("item_id")["item_code"].to_dict()
+        if not items_df.empty
+        else {}
+    )
+
+def _item_label(iid):
+        code = code_by_id.get(iid, iid)
+        return desc_by_code.get(code) or code
+
+    items_display = {_item_label(iid): iid for iid in items_list}
 
     if not stores_list or not items_list:
         st.warning("No store/item identifiers found in any of the result tables.")
@@ -856,9 +865,17 @@ def render():
         st.error("No account in session. Please sign in again.")
         return
 
-    # Auto-load a past run if a run_id was passed and it isn't already loaded
+    # Auto-load a past run if a run_id was passed and it isn't already loaded,
+    # or if the cached data is missing item_description (stale cache from before engine update)
     active = st.session_state.get("_active_run_id")
-    if run_id and active != run_id:
+    cached = st.session_state.get("sim_results", {})
+    cached_items_df = cached.get("items_df")
+    stale = (
+        cached_items_df is not None
+        and not cached_items_df.empty
+        and "item_description" not in cached_items_df.columns
+    )
+    if run_id and (active != run_id or stale):
         loaded = _load_past_run(run_id)
         if loaded:
             st.session_state["_active_run_id"] = run_id
