@@ -20,7 +20,7 @@ def _apply_session(data: dict):
 def render():
     st.title("Metrai")
 
-    tab_login, tab_register = st.tabs(["Sign in", "Create account"])
+    tab_login, tab_register = st.tabs(["Sign In", "Sign Up"])
 
     with tab_login:
         with st.form("login_form"):
