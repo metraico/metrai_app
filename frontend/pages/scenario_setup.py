@@ -146,16 +146,39 @@ def _render_sim_config_form(key_prefix: str) -> dict:
 # ─── Tile picker ─────────────────────────────────────────────────────────────
 
 def _render_tile_picker():
-    st.subheader("Choose a Scenario")
-    cols = st.columns(len(_TILES))
+    card_cols = st.columns(3)
+
     for i, tile in enumerate(_TILES):
-        with cols[i]:
-            with st.container(border=True):
-                st.markdown(f"**{tile['title']}**")
-                st.caption(tile["description"])
-                if st.button("Select", key=f"sel_{tile['id']}", use_container_width=True):
-                    st.session_state["_scen_tile"] = tile["id"]
-                    st.rerun()
+        with card_cols[i]:
+            st.markdown(
+                f"""
+                <div style="border:1px solid #2e2e3e;border-left:3px solid #f59e0b;
+                            border-radius:8px;padding:20px 18px 14px;background:#1e1e2e;
+                            min-height:150px;">
+                    <div style="font-weight:700;font-size:1rem;color:#ffffff;
+                                margin-bottom:10px;">{tile['title']}</div>
+                    <p style="color:#8888aa;font-size:13px;margin:0;">{tile['description']}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Open assessment →", key=f"sel_{tile['id']}", use_container_width=True):
+                st.session_state["_scen_tile"] = tile["id"]
+                st.rerun()
+
+    with card_cols[2]:
+        st.markdown(
+            """
+            <div style="border:1px solid #2e2e3e;border-left:3px solid #3e3e4e;
+                        border-radius:8px;padding:20px 18px 14px;background:#1a1a28;
+                        min-height:150px;opacity:0.5;">
+                <div style="font-weight:700;font-size:1rem;color:#8888aa;margin-bottom:10px;">
+                    More in development</div>
+                <p style="color:#666677;font-size:13px;margin:0;">Coming soon</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 # ─── Scenario 1: Promo Forecast Behavior ────────────────────────────────────
@@ -173,9 +196,17 @@ def _render_promo_forecast_config(account_id, user_id):
         st.warning("No base promos found. Seed promos in the database first.")
         return
 
+    def _promo_sort_key(p):
+        n = p["promo_name"].upper()
+        if n.startswith("PEPSI"):   return (0, n)
+        if n.startswith("LAYS"):    return (1, n)
+        if n.startswith("COLA_2"):  return (3, n)
+        return (2, n)
+
+    promos_sorted = sorted(promos, key=_promo_sort_key)
     promo_opts = {
         f"{p['promo_name']}  ({p['start_date']} → {p['end_date']},  x{p['demand_multiplier']} uplift)": p
-        for p in promos
+        for p in promos_sorted
     }
     sel_label = st.selectbox("Promo event to inject anomaly into", list(promo_opts.keys()))
     sel_promo = promo_opts[sel_label]
@@ -237,6 +268,7 @@ def _render_promo_forecast_config(account_id, user_id):
                 "factor":     factor,
                 "start_date": sel_promo["start_date"],
                 "end_date":   sel_promo["end_date"],
+                "promo_items": sel_promo.get("item_ids") or [],
             }
             go_to("simulation", account_id=account_id, run_id=sim_id)
 
@@ -352,15 +384,20 @@ def render():
     account_id = st.query_params.get("account_id")
     user_id    = st.session_state.get("user_id")
 
-    st.title("Add Scenario")
-
     tile = st.session_state.get("_scen_tile")
 
+    col_back, col_title = st.columns([1, 5])
     if tile:
-        if st.button("← Back to scenario selection"):
+        if col_back.button("← Back"):
             st.session_state.pop("_scen_tile", None)
             st.rerun()
-        st.divider()
+        col_title.subheader(_TILES[[t["id"] for t in _TILES].index(tile)]["title"] if tile in [t["id"] for t in _TILES] else "Scenario")
+    else:
+        if col_back.button("← Back"):
+            go_to("simulation", account_id=account_id)
+        col_title.subheader("Choose a Scenario")
+
+    st.divider()
 
     if not tile:
         _render_tile_picker()

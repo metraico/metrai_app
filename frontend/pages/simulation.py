@@ -290,6 +290,8 @@ def _execute_run(config):
         store_reorder_weeks=config["_store_reorder_weeks"],
         store_target_weeks=config["_store_target_weeks"],
     )
+    # Non-scenario run — clear any stale scenario meta from a previous run
+    st.session_state.pop("_scenario_meta", None)
     st.success(f"Simulation complete. Run ID: `{st.session_state['sim_results']['sim_id']}`")
 
 
@@ -426,8 +428,6 @@ def _render_results():
     store_target_weeks = r.get("store_target_weeks", 3)
 
     scenario_meta = st.session_state.get("_scenario_meta")
-    scen_start_ts = pd.Timestamp(scenario_meta["start_date"]) if scenario_meta else None
-    scen_end_ts   = pd.Timestamp(scenario_meta["end_date"])   if scenario_meta else None
 
     # Counts row
     def _tile(label, value):
@@ -523,6 +523,15 @@ def _render_results():
     sel_store = stores_display[sel_store_label]
     sel_item_label = col_sel2.selectbox("Item", list(items_display.keys()))
     sel_item = items_display[sel_item_label]
+
+    # Determine whether the scenario anomaly window applies to the selected item.
+    # For promo_forecast: only if the item is in the promo's group item list.
+    _scen_active = scenario_meta is not None
+    if _scen_active and scenario_meta.get("type") == "promo_forecast":
+        promo_items = scenario_meta.get("promo_items") or []
+        _scen_active = (not promo_items) or (sel_item in promo_items)
+    scen_start_ts = pd.Timestamp(scenario_meta["start_date"]) if _scen_active else None
+    scen_end_ts   = pd.Timestamp(scenario_meta["end_date"])   if _scen_active else None
 
     # Filter dataframes for selection. Always sort by the time column afterwards —
     # Plotly draws scatter lines in array order, and dataframe filters preserve whatever
@@ -645,7 +654,8 @@ def _render_results():
                 )
                 added_promo = True
         # HLS scenario: shortage week is not a promo, add red highlight directly
-        if scen_start_ts is not None and not added_anom:
+        stype = (scenario_meta or {}).get("type", "")
+        if stype == "hidden_lost_sales" and scen_start_ts is not None and not added_anom:
             fig.add_vrect(
                 x0=scen_start_ts, x1=scen_end_ts + pd.Timedelta(days=1),
                 fillcolor="rgba(220,30,30,0.35)", layer="below",
@@ -656,6 +666,10 @@ def _render_results():
     def _add_promo_weekly(fig, weeks_list):
         added_promo = added_anom = False
         anom_weeks: set = set()
+        stype_w = (scenario_meta or {}).get("type", "")
+        # For HLS: mark the shortage window as anomaly regardless of promo status.
+        # For promo_forecast: anomaly weeks are promo weeks that overlap the scenario window
+        # (handled below via _overlaps_anomaly on promo_weeks); no direct range injection needed.
         if scen_start_ts is not None:
             d = scen_start_ts.date()
             end = scen_end_ts.date()
@@ -663,6 +677,9 @@ def _render_results():
                 iso = d.isocalendar()
                 anom_weeks.add(f"{iso[0]}-W{iso[1]:02d}")
                 d += pd.Timedelta(days=1).to_pytimedelta()
+            # promo_forecast: only weeks where this item actually has promo demand are anomalous
+            if stype_w == "promo_forecast":
+                anom_weeks = anom_weeks & promo_weeks
         for i, w in enumerate(weeks_list):
             if w in anom_weeks:
                 fig.add_vrect(
@@ -966,12 +983,13 @@ def _restore_scenario_meta_from_config(run_id: str, account_id: str):
         if not promo:
             return
         st.session_state["_scenario_meta"] = {
-            "type":       stype,
-            "promo_name": promo["promo_name"],
-            "promo_id":   promo_id,
-            "factor":     factor,
-            "start_date": promo["start_date"],
-            "end_date":   promo["end_date"],
+            "type":        stype,
+            "promo_name":  promo["promo_name"],
+            "promo_id":    promo_id,
+            "factor":      factor,
+            "start_date":  promo["start_date"],
+            "end_date":    promo["end_date"],
+            "promo_items": promo.get("item_ids") or [],
         }
     except Exception:
         pass
@@ -1028,6 +1046,20 @@ def render():
         col_title.title("Simulation Run")
     else:
         col_title.title("New Simulation")
+
+    # Scenario shortcut
+    st.markdown(
+        "<div style='background:#1e1e2e;border:1px solid #f59e0b;border-left:3px solid #f59e0b;"
+        "border-radius:8px;padding:12px 16px;margin-bottom:16px;'>"
+        "<span style='color:#f59e0b;font-size:14px;font-weight:600;'>Scenarios</span>"
+        "<span style='color:#8888aa;font-size:14px;'> — inject promo anomalies or supply disruptions "
+        "and observe how your replenishment system responds.</span></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("Run a Scenario instead", use_container_width=False):
+        go_to("scenario_setup", account_id=account_id)
+
+    st.divider()
 
     # Default: new-run flow with the config form
     run_btn, config = _render_config_form(account_id, user_id)

@@ -39,6 +39,29 @@ def register(body: dict):
     return r.json()
 
 
+def fetch_accounts():
+    r = httpx.get(f"{BACKEND_URL}/accounts", headers=_auth_headers(), timeout=10.0)
+    r.raise_for_status()
+    return r.json()
+
+
+def create_account(body: dict):
+    r = httpx.post(f"{BACKEND_URL}/accounts", json=body, headers=_auth_headers(), timeout=10.0)
+    r.raise_for_status()
+    return r.json()
+
+
+def switch_account(account_id: str):
+    r = httpx.post(
+        f"{BACKEND_URL}/switch-account",
+        json={"account_id": account_id},
+        headers=_auth_headers(),
+        timeout=10.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def logout_session(refresh_token: str):
     try:
         httpx.post(
