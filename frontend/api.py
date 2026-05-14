@@ -4,6 +4,7 @@ import httpx
 import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080")
+SIMULATION_ENGINE_URL = os.getenv("SIMULATION_ENGINE_URL", "http://localhost:8000")
 
 
 def _auth_headers() -> dict:
@@ -141,6 +142,15 @@ def fetch_simulation(simulation_id):
     )
     r.raise_for_status()
     return r.json()
+
+
+def delete_simulation(simulation_id: str):
+    r = httpx.delete(
+        f"{SIMULATION_ENGINE_URL}/simulation/{simulation_id}",
+        headers=_auth_headers(),
+        timeout=10.0,
+    )
+    r.raise_for_status()
 
 
 def fetch_run_config(simulation_id):
