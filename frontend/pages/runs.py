@@ -68,11 +68,9 @@ def render():
                 st.write(f"Period: {period}")
                 st.write(f"Status: {status}")
 
-                if st.button(
-                    "Open",
-                    key=f"open_{sim_id or index}",
-                ):
-                    # Clear cached results so the simulation page loads fresh
+                col_open, col_del = st.columns(2)
+
+                if col_open.button("Open", key=f"open_{sim_id or index}"):
                     st.session_state.pop("sim_results", None)
                     st.session_state.pop("_active_run_id", None)
                     go_to(
@@ -80,3 +78,11 @@ def render():
                         account_id=account_id,
                         run_id=sim_id,
                     )
+
+                if col_del.button("Delete", key=f"delete_{sim_id or index}", type="secondary"):
+                    try:
+                        api.delete_simulation(sim_id)
+                        st.session_state.pop(f"runs_list_{account_id}", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to delete run: {e}")
