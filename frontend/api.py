@@ -111,6 +111,17 @@ def fetch_promos(account_id=None):
     return r.json()
 
 
+def validate_scenario(start_date: str, end_date: str, scenario_yaml: str):
+    r = httpx.post(
+        f"{BACKEND_URL}/scenario/validate",
+        json={"start_date": start_date, "end_date": end_date, "scenario_yaml": scenario_yaml},
+        headers=_auth_headers(),
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def run_simulation(config):
     r = httpx.post(
         f"{BACKEND_URL}/run",
