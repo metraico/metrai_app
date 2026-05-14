@@ -700,3 +700,16 @@ async def get_run_config(simulation_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.delete("/simulation/{simulation_id}")
+async def delete_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)

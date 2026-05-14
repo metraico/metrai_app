@@ -135,9 +135,9 @@ def fetch_simulation(simulation_id):
 
 def delete_simulation(simulation_id: str):
     r = httpx.delete(
-        f"{SIMULATION_ENGINE_URL}/simulation/{simulation_id}",
+        f"{BACKEND_URL}/simulation/{simulation_id}",
         headers=_auth_headers(),
-        timeout=10.0,
+        timeout=30.0,
     )
     r.raise_for_status()
 
