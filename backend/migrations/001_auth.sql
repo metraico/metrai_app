@@ -2,21 +2,35 @@
 -- Safe to run on both fresh and existing databases.
 
 -- Auth columns on users table
-ALTER TABLE users ADD COLUMN IF NOT EXISTS username      VARCHAR;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS account_id    UUID;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username           VARCHAR;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash      VARCHAR;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS retailer_account_id UUID;
 
--- FK from users.account_id → retailer_accounts (skip if already exists)
+-- Drop old account_id column and FK if it exists (for schema migration)
 DO $$
 BEGIN
-    IF NOT EXISTS (
+    IF EXISTS (
         SELECT 1 FROM information_schema.table_constraints
         WHERE constraint_name = 'fk_users_account'
           AND table_name = 'users'
     ) THEN
+        ALTER TABLE users DROP CONSTRAINT fk_users_account;
+    END IF;
+END $$;
+
+ALTER TABLE users DROP COLUMN IF EXISTS account_id;
+
+-- FK from users.retailer_account_id → retailer_accounts
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_users_retailer_account'
+          AND table_name = 'users'
+    ) THEN
         ALTER TABLE users
-            ADD CONSTRAINT fk_users_account
-            FOREIGN KEY (account_id) REFERENCES retailer_accounts(account_id);
+            ADD CONSTRAINT fk_users_retailer_account
+            FOREIGN KEY (retailer_account_id) REFERENCES retailer_accounts(retailer_account_id);
     END IF;
 END $$;
 
@@ -48,9 +62,26 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 CREATE INDEX IF NOT EXISTS idx_lat_user_time
     ON login_attempts(username, attempted_at DESC);
 
+-- Create user_accounts junction table (many-to-many users ↔ retailer_accounts)
+CREATE TABLE IF NOT EXISTS user_accounts (
+    user_id             UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    retailer_account_id UUID NOT NULL REFERENCES retailer_accounts(retailer_account_id) ON DELETE CASCADE,
+    role                VARCHAR DEFAULT 'USER',
+    added_at            TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, retailer_account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ua_user ON user_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_ua_account ON user_accounts(retailer_account_id);
+
 -- Link the demo seed user to the demo account and assign a username
 UPDATE users
 SET    username   = 'demo',
-       account_id = 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'
+       retailer_account_id = 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'
 WHERE  user_id   = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'
   AND  username  IS NULL;
+
+-- Link demo user to demo account in junction table
+INSERT INTO user_accounts (user_id, retailer_account_id, role)
+VALUES ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'ADMIN')
+ON CONFLICT DO NOTHING;
