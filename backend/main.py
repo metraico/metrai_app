@@ -192,25 +192,25 @@ def register(body: dict):
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail="Username already taken")
 
-            # Auto-join the single demo account (all users share the same data in Phase 1)
-            cur.execute("SELECT account_id::text FROM retailer_accounts ORDER BY account_id LIMIT 1")
+            # Auto-join the SALTYSNACK demo account on registration
+            cur.execute("SELECT retailer_account_id::text FROM retailer_accounts WHERE retailer_account_code = 'SALTYSNACK' LIMIT 1")
             row = cur.fetchone()
-            account_id = row[0] if row else None
+            retailer_account_id = row[0] if row else None
 
             cur.execute(
                 """
-                INSERT INTO users (username, email, full_name, password_hash, account_id, auth_provider, role)
+                INSERT INTO users (username, email, full_name, password_hash, retailer_account_id, auth_provider, role)
                 VALUES (%s, %s, %s, %s, %s, 'local', 'ADMIN')
                 RETURNING user_id::text
                 """,
-                (username, email or None, full_name or username, _ph.hash(password), account_id),
+                (username, email or None, full_name or username, _ph.hash(password), retailer_account_id),
             )
             user_id = cur.fetchone()[0]
 
-            if account_id:
+            if retailer_account_id:
                 cur.execute(
-                    "INSERT INTO user_accounts (user_id, account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                    (user_id, account_id),
+                    "INSERT INTO user_accounts (user_id, retailer_account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (user_id, retailer_account_id),
                 )
 
         conn.commit()
@@ -223,7 +223,7 @@ def register(body: dict):
     finally:
         conn.close()
 
-    access_token    = _create_access_token(user_id, account_id or "", "ADMIN")
+    access_token    = _create_access_token(user_id, retailer_account_id or "", "ADMIN")
     raw_rt, rt_hash = _make_refresh_token()
     _store_refresh_token(user_id, rt_hash, datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
 
@@ -232,7 +232,7 @@ def register(body: dict):
         "refresh_token": raw_rt,
         "token_type":    "bearer",
         "user_id":       user_id,
-        "account_id":    account_id,
+        "account_id":    retailer_account_id,
         "full_name":     full_name or username,
     }
 
@@ -247,13 +247,16 @@ def get_accounts(current_user: dict = Depends(get_current_user)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT ra.account_id::text, ra.account_code, ra.account_name,
-                       ra.account_type, ra.country_code, ra.region,
+                SELECT ra.retailer_account_id::text AS account_id,
+                       ra.retailer_account_code AS account_code,
+                       ra.retailer_account_name AS account_name,
+                       ra.retailer_account_type AS account_type,
+                       ra.country_code, ra.region,
                        ra.currency_code, ra.is_active
                 FROM retailer_accounts ra
-                JOIN user_accounts ua ON ra.account_id = ua.account_id
+                JOIN user_accounts ua ON ra.retailer_account_id = ua.retailer_account_id
                 WHERE ua.user_id = %s
-                ORDER BY ra.account_name
+                ORDER BY ra.retailer_account_name
                 """,
                 (user_id,),
             )
@@ -286,7 +289,7 @@ def create_account(body: dict, current_user: dict = Depends(get_current_user)):
             account_id_c = base
             suffix = 1
             while True:
-                cur.execute("SELECT 1 FROM retailer_accounts WHERE account_code = %s", (account_id_c,))
+                cur.execute("SELECT 1 FROM retailer_accounts WHERE retailer_account_code = %s", (account_id_c,))
                 if not cur.fetchone():
                     break
                 account_id_c = f"{base}_{suffix}"
@@ -295,9 +298,9 @@ def create_account(body: dict, current_user: dict = Depends(get_current_user)):
             cur.execute(
                 """
                 INSERT INTO retailer_accounts
-                    (account_code, account_name, account_type, country_code, region, currency_code, is_active)
+                    (retailer_account_code, retailer_account_name, retailer_account_type, country_code, region, currency_code, is_active)
                 VALUES (%s, %s, %s, %s, %s, %s, true)
-                RETURNING account_id::text
+                RETURNING retailer_account_id::text
                 """,
                 (account_id_c, account_name, account_type,
                  country_code or None, region or None, currency),
@@ -305,7 +308,7 @@ def create_account(body: dict, current_user: dict = Depends(get_current_user)):
             new_account_id = cur.fetchone()[0]
 
             cur.execute(
-                "INSERT INTO user_accounts (user_id, account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                "INSERT INTO user_accounts (user_id, retailer_account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (user_id, new_account_id),
             )
         conn.commit()
@@ -334,12 +337,12 @@ def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM user_accounts WHERE user_id = %s AND account_id = %s",
+                "SELECT 1 FROM user_accounts WHERE user_id = %s AND retailer_account_id = %s",
                 (user_id, account_id),
             )
             if not cur.fetchone():
                 raise HTTPException(status_code=403, detail="Access denied to this account")
-            cur.execute("UPDATE users SET account_id = %s WHERE user_id = %s", (account_id, user_id))
+            cur.execute("UPDATE users SET retailer_account_id = %s WHERE user_id = %s", (account_id, user_id))
         conn.commit()
     finally:
         conn.close()
@@ -371,7 +374,7 @@ def login(credentials: dict):
             cur.execute(
                 """
                 SELECT user_id::text, password_hash, full_name, role, is_active,
-                       account_id::text
+                       retailer_account_id::text
                 FROM users WHERE username = %s
                 """,
                 (username,),
@@ -438,7 +441,7 @@ def refresh_token(body: dict):
             cur.execute(
                 """
                 SELECT rt.user_id::text, rt.expires_at, rt.revoked,
-                       u.account_id::text, u.role, u.is_active
+                       u.retailer_account_id::text, u.role, u.is_active
                 FROM refresh_tokens rt
                 JOIN users u ON rt.user_id = u.user_id
                 WHERE rt.token_hash = %s
@@ -487,7 +490,8 @@ def logout(body: dict, current_user: dict = Depends(get_current_user)):
 
 @app.get("/runs")
 def get_runs(current_user: dict = Depends(get_current_user)):
-    account_id = current_user["account_id"]
+    retailer_account_id = current_user["account_id"]
+    user_id             = current_user["user_id"]
     if not POSTGRES_DSN:
         return []
     conn = _pg_connect()
@@ -498,11 +502,11 @@ def get_runs(current_user: dict = Depends(get_current_user)):
                 SELECT simulation_id::text, simulation_name, simulation_status,
                        created_at, start_week, end_week, random_seed, notes
                 FROM simulation_config
-                WHERE account_id = %s
+                WHERE retailer_account_id = %s AND user_id = %s
                 ORDER BY created_at DESC
                 LIMIT 50
                 """,
-                (account_id,),
+                (retailer_account_id, user_id),
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -517,25 +521,25 @@ def get_runs(current_user: dict = Depends(get_current_user)):
 
 # ── Entity catalogue ──────────────────────────────────────────────────────────
 
-def _resolve_data_account(cur, account_id: str) -> str:
-    """Return account_id to use for catalog data. Falls back to demo account if this account has no items."""
-    cur.execute("SELECT 1 FROM items WHERE account_id = %s LIMIT 1", (account_id,))
+def _resolve_data_account(cur, retailer_account_id: str) -> str:
+    """Return retailer_account_id to use for catalog data. Falls back to demo account if this account has no items."""
+    cur.execute("SELECT 1 FROM items WHERE retailer_account_id = %s LIMIT 1", (retailer_account_id,))
     if cur.fetchone():
-        return account_id
-    cur.execute("SELECT account_id::text FROM items LIMIT 1")
+        return retailer_account_id
+    cur.execute("SELECT retailer_account_id::text FROM items LIMIT 1")
     row = cur.fetchone()
-    return row[0] if row else account_id
+    return row[0] if row else retailer_account_id
 
 
 @app.get("/entities")
 def get_entities(current_user: dict = Depends(get_current_user)):
-    account_id = current_user["account_id"]
+    retailer_account_id = current_user["account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, account_id)
+            data_acct = _resolve_data_account(cur, retailer_account_id)
 
             def q(sql, params):
                 cur.execute(sql, params)
@@ -544,10 +548,10 @@ def get_entities(current_user: dict = Depends(get_current_user)):
 
             acct = (data_acct,)
             return {
-                "items":     q("SELECT item_id::text, item_code, item_description FROM items WHERE account_id = %s ORDER BY item_code", acct),
-                "stores":    q("SELECT store_id::text, store_code, store_name FROM stores WHERE account_id = %s ORDER BY store_code", acct),
-                "dcs":       q("SELECT dc_id::text, dc_code, dc_name FROM distribution_centers WHERE account_id = %s ORDER BY dc_code", acct),
-                "suppliers": q("SELECT supplier_id::text, supplier_code, supplier_name FROM suppliers WHERE account_id = %s ORDER BY supplier_code", acct),
+                "items":     q("SELECT item_id::text, item_code, item_description FROM items WHERE retailer_account_id = %s ORDER BY item_code", acct),
+                "stores":    q("SELECT store_id::text, store_code, store_name FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct),
+                "dcs":       q("SELECT dc_id::text, dc_code, dc_name FROM distribution_centers WHERE retailer_account_id = %s ORDER BY dc_code", acct),
+                "suppliers": q("SELECT supplier_id::text, supplier_code, supplier_name FROM suppliers WHERE retailer_account_id = %s ORDER BY supplier_code", acct),
             }
     finally:
         conn.close()
@@ -557,13 +561,13 @@ def get_entities(current_user: dict = Depends(get_current_user)):
 
 @app.get("/mappings")
 def get_mappings(current_user: dict = Depends(get_current_user)):
-    account_id = current_user["account_id"]
+    retailer_account_id = current_user["account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, account_id)
+            data_acct = _resolve_data_account(cur, retailer_account_id)
 
             def q(sql, params):
                 cur.execute(sql, params)
@@ -572,11 +576,11 @@ def get_mappings(current_user: dict = Depends(get_current_user)):
 
             acct = (data_acct,)
             return {
-                "store_items":    q("SELECT si.store_id::text, si.item_id::text FROM store_items si JOIN stores s ON si.store_id = s.store_id WHERE s.account_id = %s", acct),
-                "dc_items":       q("SELECT di.dc_id::text, di.item_id::text FROM dc_items di JOIN distribution_centers dc ON di.dc_id = dc.dc_id WHERE dc.account_id = %s", acct),
-                "supplier_items": q("SELECT si.supplier_id::text, si.item_id::text FROM supplier_items si JOIN suppliers s ON si.supplier_id = s.supplier_id WHERE s.account_id = %s", acct),
-                "store_mappings": q("SELECT sm.from_store_id::text, sm.to_dc_id::text, sm.mapping_type FROM store_mappings sm JOIN stores s ON sm.from_store_id = s.store_id WHERE s.account_id = %s", acct),
-                "dc_mappings":    q("SELECT dm.from_dc_id::text, dm.to_node_id::text, dm.mapping_type FROM dc_mappings dm JOIN distribution_centers dc ON dm.from_dc_id = dc.dc_id WHERE dc.account_id = %s", acct),
+                "store_items":    q("SELECT si.store_id::text, si.item_id::text FROM store_items si JOIN stores s ON si.store_id = s.store_id WHERE s.retailer_account_id = %s", acct),
+                "dc_items":       q("SELECT di.dc_id::text, di.item_id::text FROM dc_items di JOIN distribution_centers dc ON di.dc_id = dc.dc_id WHERE dc.retailer_account_id = %s", acct),
+                "supplier_items": q("SELECT si.supplier_id::text, si.item_id::text FROM supplier_items si JOIN suppliers s ON si.supplier_id = s.supplier_id WHERE s.retailer_account_id = %s", acct),
+                "store_mappings": q("SELECT sm.from_store_id::text, sm.to_dc_id::text, sm.mapping_type FROM store_mappings sm JOIN stores s ON sm.from_store_id = s.store_id WHERE s.retailer_account_id = %s", acct),
+                "dc_mappings":    q("SELECT dm.from_dc_id::text, dm.to_node_id::text, dm.mapping_type FROM dc_mappings dm JOIN distribution_centers dc ON dm.from_dc_id = dc.dc_id WHERE dc.retailer_account_id = %s", acct),
             }
     finally:
         conn.close()
@@ -584,18 +588,18 @@ def get_mappings(current_user: dict = Depends(get_current_user)):
 
 @app.post("/mappings")
 def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
-    account_id = current_user["account_id"]   # always from JWT, never from body
+    retailer_account_id = current_user["account_id"]   # always from JWT, never from body
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
-            acct = (account_id,)
-            cur.execute("DELETE FROM store_items WHERE store_id IN (SELECT store_id FROM stores WHERE account_id = %s)", acct)
-            cur.execute("DELETE FROM dc_items WHERE dc_id IN (SELECT dc_id FROM distribution_centers WHERE account_id = %s)", acct)
-            cur.execute("DELETE FROM supplier_items WHERE supplier_id IN (SELECT supplier_id FROM suppliers WHERE account_id = %s)", acct)
-            cur.execute("DELETE FROM store_mappings WHERE from_store_id IN (SELECT store_id FROM stores WHERE account_id = %s)", acct)
-            cur.execute("DELETE FROM dc_mappings WHERE from_dc_id IN (SELECT dc_id FROM distribution_centers WHERE account_id = %s)", acct)
+            acct = (retailer_account_id,)
+            cur.execute("DELETE FROM store_items WHERE store_id IN (SELECT store_id FROM stores WHERE retailer_account_id = %s)", acct)
+            cur.execute("DELETE FROM dc_items WHERE dc_id IN (SELECT dc_id FROM distribution_centers WHERE retailer_account_id = %s)", acct)
+            cur.execute("DELETE FROM supplier_items WHERE supplier_id IN (SELECT supplier_id FROM suppliers WHERE retailer_account_id = %s)", acct)
+            cur.execute("DELETE FROM store_mappings WHERE from_store_id IN (SELECT store_id FROM stores WHERE retailer_account_id = %s)", acct)
+            cur.execute("DELETE FROM dc_mappings WHERE from_dc_id IN (SELECT dc_id FROM distribution_centers WHERE retailer_account_id = %s)", acct)
 
             def bulk_insert(table: str, cols: list[str], rows: list[dict]):
                 if not rows:
@@ -623,13 +627,13 @@ def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
 
 @app.get("/promos")
 def get_promos(current_user: dict = Depends(get_current_user)):
-    account_id = current_user["account_id"]
+    retailer_account_id = current_user["account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, account_id)
+            data_acct = _resolve_data_account(cur, retailer_account_id)
             cur.execute(
                 """
                 SELECT p.promo_id::text, p.promo_name, p.start_date::text, p.end_date::text,
@@ -638,7 +642,7 @@ def get_promos(current_user: dict = Depends(get_current_user)):
                 FROM promos p
                 JOIN promo_groups pg ON p.promo_group_id = pg.promo_group_id
                 JOIN promo_group_items pgi ON pg.promo_group_id = pgi.promo_group_id
-                WHERE p.account_id = %s AND p.simulation_id IS NULL
+                WHERE p.retailer_account_id = %s AND p.simulation_id IS NULL
                 GROUP BY p.promo_id, p.promo_name, p.start_date, p.end_date,
                          p.demand_multiplier, pg.promo_group_name
                 ORDER BY p.start_date
@@ -660,7 +664,8 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 
 @app.post("/run")
 async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
-    req["account_id"] = current_user["account_id"]  # enforce from JWT
+    req["retailer_account_id"] = current_user["account_id"]  # enforce from JWT
+    req["user_id"]             = current_user["user_id"]
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(f"{SIM_ENGINE_URL}/simulate", json=req)
