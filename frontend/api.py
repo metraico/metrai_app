@@ -52,10 +52,10 @@ def create_account(body: dict):
     return r.json()
 
 
-def switch_account(account_id: str):
+def switch_account(retailer_account_id: str):
     r = httpx.post(
         f"{BACKEND_URL}/switch-account",
-        json={"account_id": account_id},
+        json={"retailer_account_id": retailer_account_id},
         headers=_auth_headers(),
         timeout=10.0,
     )
@@ -77,19 +77,19 @@ def logout_session(refresh_token: str):
 
 # ── Data endpoints ────────────────────────────────────────────────────────────
 
-def fetch_runs(account_id=None):
+def fetch_runs():
     r = httpx.get(f"{BACKEND_URL}/runs", headers=_auth_headers(), timeout=10.0)
     r.raise_for_status()
     return r.json()
 
 
-def fetch_entities(account_id=None):
+def fetch_entities():
     r = httpx.get(f"{BACKEND_URL}/entities", headers=_auth_headers(), timeout=15.0)
     r.raise_for_status()
     return r.json()
 
 
-def fetch_mappings(account_id=None):
+def fetch_mappings():
     r = httpx.get(f"{BACKEND_URL}/mappings", headers=_auth_headers(), timeout=15.0)
     r.raise_for_status()
     return r.json()
@@ -106,7 +106,7 @@ def save_mappings(payload):
     return r.json()
 
 
-def fetch_promos(account_id=None):
+def fetch_promos():
     r = httpx.get(f"{BACKEND_URL}/promos", headers=_auth_headers(), timeout=15.0)
     r.raise_for_status()
     return r.json()

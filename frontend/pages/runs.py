@@ -4,11 +4,11 @@ import api
 from router import go_to
 
 
-def _get_runs(account_id):
-    cache_key = f"runs_list_{account_id}"
+def _get_runs(retailer_account_id):
+    cache_key = f"runs_list_{retailer_account_id}"
     if cache_key not in st.session_state:
         try:
-            st.session_state[cache_key] = api.fetch_runs(account_id)
+            st.session_state[cache_key] = api.fetch_runs()
         except Exception as e:
             st.error(f"Could not load runs: {e}")
             st.session_state[cache_key] = []
@@ -29,7 +29,7 @@ def _format_run(r):
 
 def render():
 
-    account_id = st.query_params.get("id")
+    retailer_account_id = st.query_params.get("id")
 
     st.title("Simulation Runs")
 
@@ -39,16 +39,16 @@ def render():
     if col_new.button("+ New Run", type="primary"):
         st.session_state.pop("sim_results", None)
         st.session_state.pop("_active_run_id", None)
-        go_to("simulation", account_id=account_id)
+        go_to("simulation", retailer_account_id=retailer_account_id)
     if col_scen.button("Add Scenario"):
         st.session_state.pop("_scen_tile", None)
-        go_to("scenario_setup", account_id=account_id)
+        go_to("scenario_setup", retailer_account_id=retailer_account_id)
 
-    if not account_id:
+    if not retailer_account_id:
         st.error("Missing retailer id.")
         return
 
-    runs = _get_runs(account_id)
+    runs = _get_runs(retailer_account_id)
 
     if not runs:
         st.info("No simulation runs yet.")
@@ -75,14 +75,14 @@ def render():
                     st.session_state.pop("_active_run_id", None)
                     go_to(
                         "simulation",
-                        account_id=account_id,
+                        retailer_account_id=retailer_account_id,
                         run_id=sim_id,
                     )
 
                 if col_del.button("Delete", key=f"delete_{sim_id or index}", type="secondary"):
                     try:
                         api.delete_simulation(sim_id)
-                        st.session_state.pop(f"runs_list_{account_id}", None)
+                        st.session_state.pop(f"runs_list_{retailer_account_id}", None)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed to delete run: {e}")

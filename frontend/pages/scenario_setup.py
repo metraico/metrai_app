@@ -326,7 +326,7 @@ def _render_tile_picker():
 
 # ── YAML editor ───────────────────────────────────────────────────────────────
 
-def _render_yaml_editor(tile_id: str, default_template: str, account_id: str, user_id: str):
+def _render_yaml_editor(tile_id: str, default_template: str, retailer_account_id: str, user_id: str):
     template_key = f"_yaml_{tile_id}"
     preview_key  = f"_yaml_preview_{tile_id}"
 
@@ -407,9 +407,9 @@ def _render_yaml_editor(tile_id: str, default_template: str, account_id: str, us
             scenario_yaml = _extract_scenario_yaml(yaml_text)
             config = {
                 **run_params,
-                "account_id":    account_id,
-                "created_by":    user_id,
-                "scenario_yaml": scenario_yaml,
+                "retailer_account_id": retailer_account_id,
+                "created_by":          user_id,
+                "scenario_yaml":       scenario_yaml,
             }
             if sim_name.strip():
                 config["simulation_name"] = sim_name.strip()
@@ -432,13 +432,13 @@ def _render_yaml_editor(tile_id: str, default_template: str, account_id: str, us
 
             if resp:
                 sim_id = resp.get("simulation_id")
-                st.session_state.pop(f"runs_list_{account_id}", None)
+                st.session_state.pop(f"runs_list_{retailer_account_id}", None)
                 st.session_state["sim_results"] = resp
                 st.session_state.pop("_scenario_meta", None)
                 st.session_state.pop(preview_key, None)
                 # Save full edited YAML (with run: block + comments) for the audit expander
                 st.session_state[f"_full_yaml_{sim_id}"] = yaml_text
-                go_to("simulation", account_id=account_id, run_id=sim_id)
+                go_to("simulation", retailer_account_id=retailer_account_id, run_id=sim_id)
 
     # ── Preview (shown after validate) ────────────────────────────────────────
     if preview:
@@ -456,7 +456,7 @@ def _render_yaml_editor(tile_id: str, default_template: str, account_id: str, us
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render():
-    account_id = st.query_params.get("account_id")
+    retailer_account_id = st.query_params.get("retailer_account_id")
     user_id    = st.session_state.get("user_id")
     tile       = st.session_state.get("_scen_tile")
 
@@ -469,7 +469,7 @@ def render():
         col_title.subheader(tile_title)
     else:
         if col_back.button("← Back"):
-            go_to("simulation", account_id=account_id)
+            go_to("simulation", retailer_account_id=retailer_account_id)
         col_title.subheader("Choose a Scenario")
 
     st.divider()
@@ -479,4 +479,4 @@ def render():
         return
 
     template = _PF_TEMPLATE if tile == "promo_forecast" else _HLS_TEMPLATE
-    _render_yaml_editor(tile, template, account_id, user_id)
+    _render_yaml_editor(tile, template, retailer_account_id, user_id)

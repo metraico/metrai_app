@@ -70,10 +70,10 @@ def _clear_rate(username: str):
     _rate.pop(username, None)
 
 
-def _create_access_token(user_id: str, account_id: str, role: str) -> str:
+def _create_access_token(user_id: str, retailer_account_id: str, role: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(minutes=_ACCESS_MINUTES)
     return jwt.encode(
-        {"sub": user_id, "account_id": account_id, "role": role,
+        {"sub": user_id, "retailer_account_id": retailer_account_id, "role": role,
          "type": "access", "exp": exp},
         JWT_SECRET, algorithm=JWT_ALGORITHM,
     )
@@ -120,7 +120,7 @@ async def get_current_user(
         payload = jwt.decode(
             creds.credentials, JWT_SECRET,
             algorithms=[JWT_ALGORITHM],
-            options={"require": ["sub", "account_id", "exp"]},
+            options={"require": ["sub", "exp"]},
         )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -192,25 +192,25 @@ def register(body: dict):
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail="Username already taken")
 
-            # Auto-join the SALTYSNACK demo account on registration
-            cur.execute("SELECT retailer_account_id::text FROM retailer_accounts WHERE retailer_account_code = 'SALTYSNACK' LIMIT 1")
-            row = cur.fetchone()
-            retailer_account_id = row[0] if row else None
-
             cur.execute(
                 """
-                INSERT INTO users (username, email, full_name, password_hash, retailer_account_id, auth_provider, role)
-                VALUES (%s, %s, %s, %s, %s, 'local', 'ADMIN')
+                INSERT INTO users (username, email, full_name, password_hash, auth_provider, role)
+                VALUES (%s, %s, %s, %s, 'local', 'ADMIN')
                 RETURNING user_id::text
                 """,
-                (username, email or None, full_name or username, _ph.hash(password), retailer_account_id),
+                (username, email or None, full_name or username, _ph.hash(password)),
             )
             user_id = cur.fetchone()[0]
 
-            if retailer_account_id:
+            # Auto-join the shared SALTYSNACK demo account on registration
+            cur.execute(
+                "SELECT retailer_account_id::text FROM retailer_accounts WHERE retailer_account_code = 'SALTYSNACK' LIMIT 1"
+            )
+            row = cur.fetchone()
+            if row:
                 cur.execute(
                     "INSERT INTO user_accounts (user_id, retailer_account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                    (user_id, retailer_account_id),
+                    (user_id, row[0]),
                 )
 
         conn.commit()
@@ -223,17 +223,17 @@ def register(body: dict):
     finally:
         conn.close()
 
-    access_token    = _create_access_token(user_id, retailer_account_id or "", "ADMIN")
+    access_token    = _create_access_token(user_id, "", "ADMIN")
     raw_rt, rt_hash = _make_refresh_token()
     _store_refresh_token(user_id, rt_hash, datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
 
     return {
-        "access_token":  access_token,
-        "refresh_token": raw_rt,
-        "token_type":    "bearer",
-        "user_id":       user_id,
-        "account_id":    retailer_account_id,
-        "full_name":     full_name or username,
+        "access_token":        access_token,
+        "refresh_token":       raw_rt,
+        "token_type":          "bearer",
+        "user_id":             user_id,
+        "retailer_account_id": None,
+        "full_name":           full_name or username,
     }
 
 
@@ -247,10 +247,10 @@ def get_accounts(current_user: dict = Depends(get_current_user)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT ra.retailer_account_id::text AS account_id,
-                       ra.retailer_account_code AS account_code,
-                       ra.retailer_account_name AS account_name,
-                       ra.retailer_account_type AS account_type,
+                SELECT ra.retailer_account_id::text AS retailer_account_id,
+                       ra.retailer_account_code AS retailer_account_code,
+                       ra.retailer_account_name AS retailer_account_name,
+                       ra.retailer_account_type AS retailer_account_type,
                        ra.country_code, ra.region,
                        ra.currency_code, ra.is_active
                 FROM retailer_accounts ra
@@ -321,15 +321,15 @@ def create_account(body: dict, current_user: dict = Depends(get_current_user)):
     finally:
         conn.close()
 
-    return {"account_id": new_account_id, "account_code": account_id_c, "account_name": account_name}
+    return {"retailer_account_id": new_account_id, "retailer_account_code": account_id_c, "retailer_account_name": account_name}
 
 
 @app.post("/switch-account")
 def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
-    user_id    = current_user["user_id"]
-    account_id = (body.get("account_id") or "").strip()
-    if not account_id:
-        raise HTTPException(status_code=422, detail="account_id is required")
+    user_id             = current_user["user_id"]
+    retailer_account_id = (body.get("retailer_account_id") or "").strip()
+    if not retailer_account_id:
+        raise HTTPException(status_code=422, detail="retailer_account_id is required")
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No database configured")
 
@@ -338,24 +338,23 @@ def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM user_accounts WHERE user_id = %s AND retailer_account_id = %s",
-                (user_id, account_id),
+                (user_id, retailer_account_id),
             )
             if not cur.fetchone():
                 raise HTTPException(status_code=403, detail="Access denied to this account")
-            cur.execute("UPDATE users SET retailer_account_id = %s WHERE user_id = %s", (account_id, user_id))
         conn.commit()
     finally:
         conn.close()
 
     role = current_user.get("role", "ADMIN")
-    access_token    = _create_access_token(user_id, account_id, role)
+    access_token    = _create_access_token(user_id, retailer_account_id, role)
     raw_rt, rt_hash = _make_refresh_token()
     _store_refresh_token(user_id, rt_hash, datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
     return {
-        "access_token":  access_token,
-        "refresh_token": raw_rt,
-        "token_type":    "bearer",
-        "account_id":    account_id,
+        "access_token":       access_token,
+        "refresh_token":      raw_rt,
+        "token_type":         "bearer",
+        "retailer_account_id": retailer_account_id,
     }
 
 @app.post("/login")
@@ -372,11 +371,7 @@ def login(credentials: dict):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT user_id::text, password_hash, full_name, role, is_active,
-                       retailer_account_id::text
-                FROM users WHERE username = %s
-                """,
+                "SELECT user_id::text, password_hash, full_name, role, is_active FROM users WHERE username = %s",
                 (username,),
             )
             row = cur.fetchone()
@@ -387,7 +382,7 @@ def login(credentials: dict):
         _record_fail(username)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    user_id, pw_hash, full_name, role, is_active, account_id = row
+    user_id, pw_hash, full_name, role, is_active = row
 
     if not is_active:
         raise HTTPException(status_code=401, detail="Account disabled")
@@ -413,18 +408,18 @@ def login(credentials: dict):
 
     _clear_rate(username)
 
-    access_token       = _create_access_token(user_id, account_id, role)
+    access_token       = _create_access_token(user_id, "", role)
     raw_rt, rt_hash    = _make_refresh_token()
     expires_at         = datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS)
     _store_refresh_token(user_id, rt_hash, expires_at)
 
     return {
-        "access_token":  access_token,
-        "refresh_token": raw_rt,
-        "token_type":    "bearer",
-        "user_id":       user_id,
-        "account_id":    account_id,
-        "full_name":     full_name or "User",
+        "access_token":        access_token,
+        "refresh_token":       raw_rt,
+        "token_type":          "bearer",
+        "user_id":             user_id,
+        "retailer_account_id": None,
+        "full_name":           full_name or "User",
     }
 
 
@@ -455,7 +450,7 @@ def refresh_token(body: dict):
     if not row:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    user_id, expires_at, revoked, account_id, role, is_active = row
+    user_id, expires_at, revoked, retailer_account_id, role, is_active = row
 
     if revoked or not is_active:
         raise HTTPException(status_code=401, detail="Token revoked")
@@ -466,7 +461,7 @@ def refresh_token(body: dict):
 
     # Rotate: revoke old token, issue new pair
     _revoke_refresh_token(token_hash)
-    new_access          = _create_access_token(user_id, account_id, role)
+    new_access          = _create_access_token(user_id, retailer_account_id, role)
     new_raw, new_hash   = _make_refresh_token()
     _store_refresh_token(user_id, new_hash,
                          datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
@@ -490,9 +485,9 @@ def logout(body: dict, current_user: dict = Depends(get_current_user)):
 
 @app.get("/runs")
 def get_runs(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["account_id"]
+    retailer_account_id = current_user.get("retailer_account_id") or ""
     user_id             = current_user["user_id"]
-    if not POSTGRES_DSN:
+    if not POSTGRES_DSN or not retailer_account_id:
         return []
     conn = _pg_connect()
     try:
@@ -533,7 +528,7 @@ def _resolve_data_account(cur, retailer_account_id: str) -> str:
 
 @app.get("/entities")
 def get_entities(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["account_id"]
+    retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
@@ -561,7 +556,7 @@ def get_entities(current_user: dict = Depends(get_current_user)):
 
 @app.get("/mappings")
 def get_mappings(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["account_id"]
+    retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
@@ -588,7 +583,7 @@ def get_mappings(current_user: dict = Depends(get_current_user)):
 
 @app.post("/mappings")
 def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["account_id"]   # always from JWT, never from body
+    retailer_account_id = current_user["retailer_account_id"]   # always from JWT, never from body
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
@@ -627,7 +622,7 @@ def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
 
 @app.get("/promos")
 def get_promos(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["account_id"]
+    retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
     conn = _pg_connect()
@@ -664,7 +659,7 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 
 @app.post("/run")
 async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
-    req["retailer_account_id"] = current_user["account_id"]  # enforce from JWT
+    req["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     req["user_id"]             = current_user["user_id"]
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -683,7 +678,7 @@ async def run_simulation(req: dict, current_user: dict = Depends(get_current_use
 
 @app.post("/scenario/validate")
 async def validate_scenario(body: dict, current_user: dict = Depends(get_current_user)):
-    body["account_id"] = current_user["account_id"]  # enforce from JWT
+    body["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SIM_ENGINE_URL}/scenario/validate", json=body)

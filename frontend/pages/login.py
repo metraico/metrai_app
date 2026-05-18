@@ -10,7 +10,7 @@ from router import go_to
 def _apply_session(data: dict):
     st.session_state.logged_in     = True
     st.session_state.user_id       = data.get("user_id")
-    st.session_state.account_id    = data.get("account_id")
+    st.session_state.retailer_account_id = data.get("retailer_account_id")
     st.session_state.full_name     = data.get("full_name", "User")
     st.session_state.access_token  = data.get("access_token", "")
     st.session_state.refresh_token = data.get("refresh_token", "")
@@ -52,8 +52,10 @@ def render():
     with tab_register:
         with st.form("register_form"):
             r_username  = st.text_input("Username *")
-            r_full_name = st.text_input("Full name (optional)")
-            r_email     = st.text_input("Email (optional)")
+            r_full_name = ""
+            r_email    = ""
+            #r_full_name = st.text_input("Full name (optional)")
+            #r_email     = st.text_input("Email (optional)")
             r_password  = st.text_input("Password * (min 8 chars)", type="password")
             r_confirm   = st.text_input("Confirm password *", type="password")
             submitted_r = st.form_submit_button("Create account", type="primary", use_container_width=True)
