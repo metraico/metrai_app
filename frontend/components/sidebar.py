@@ -18,13 +18,6 @@ def render_sidebar():
         if st.button("Retailers", use_container_width=True):
             go_to("retailers")
 
-        retailer_account_id = st.session_state.get("retailer_account_id")
-        if retailer_account_id:
-            if st.button("New Simulation", use_container_width=True):
-                st.session_state.pop("sim_results", None)
-                st.session_state.pop("_active_run_id", None)
-                go_to("simulation", retailer_account_id=retailer_account_id)
-
         st.divider()
 
         full_name = st.session_state.get("full_name") or "User"
@@ -37,6 +30,7 @@ def render_sidebar():
                     del st.session_state[key]
             for key in ["logged_in", "user_id", "retailer_account_id", "full_name",
                         "access_token", "refresh_token", "token_expiry",
-                        "sim_results", "_active_run_id", "_scenario_meta", "_scen_tile"]:
+                        "sim_results", "_active_run_id", "_scenario_meta", "_scen_tile",
+                        "accounts_list"]:
                 st.session_state.pop(key, None)
             go_to("login")

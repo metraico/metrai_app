@@ -52,8 +52,10 @@ def render():
     with tab_register:
         with st.form("register_form"):
             r_username  = st.text_input("Username *")
-            r_full_name = st.text_input("Full name (optional)")
-            r_email     = st.text_input("Email (optional)")
+            r_full_name = ""
+            r_email    = ""
+            #r_full_name = st.text_input("Full name (optional)")
+            #r_email     = st.text_input("Email (optional)")
             r_password  = st.text_input("Password * (min 8 chars)", type="password")
             r_confirm   = st.text_input("Confirm password *", type="password")
             submitted_r = st.form_submit_button("Create account", type="primary", use_container_width=True)

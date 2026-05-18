@@ -26,15 +26,6 @@ def _fetch_accounts():
     return st.session_state[key]
 
 
-def _fetch_runs(retailer_account_id):
-    key = f"runs_list_{retailer_account_id}"
-    if key not in st.session_state:
-        try:
-            st.session_state[key] = api.fetch_runs()
-        except Exception:
-            st.session_state[key] = []
-    return st.session_state[key]
-
 
 def _switch(retailer_account_id: str):
     try:
@@ -44,6 +35,7 @@ def _switch(retailer_account_id: str):
         st.session_state.token_expiry        = time.time() + 15 * 60 - 30
         st.session_state.retailer_account_id = data["retailer_account_id"]
         st.session_state.pop("accounts_list", None)
+        st.session_state.pop(f"runs_list_{retailer_account_id}", None)
         go_to("runs", id=retailer_account_id)
     except Exception as e:
         st.error(f"Could not switch account: {e}")
@@ -121,8 +113,6 @@ def render():
         curr    = acct.get("currency_code", "USD")
         active  = acct.get("is_active", True)
 
-        runs     = _fetch_runs(aid)
-        n_runs   = len(runs)
         is_active_acct = aid == active_id
 
         row = st.columns([2, 2, 1.5, 1, 1.5, 1, 1.5, 1.5])
@@ -134,7 +124,7 @@ def render():
         row[5].write(curr)
         row[6].write("Active" if active else "Inactive")
 
-        btn_label = f"Open ({n_runs} runs)" if n_runs else "Open"
+        btn_label = "Open"
         if is_active_acct:
             if row[7].button(btn_label, key=f"open_{aid}", use_container_width=True, type="primary"):
                 go_to("runs", id=aid)
