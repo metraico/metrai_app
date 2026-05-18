@@ -18,12 +18,12 @@ def render_sidebar():
         if st.button("Retailers", use_container_width=True):
             go_to("retailers")
 
-        account_id = st.session_state.get("account_id")
-        if account_id:
+        retailer_account_id = st.session_state.get("retailer_account_id")
+        if retailer_account_id:
             if st.button("New Simulation", use_container_width=True):
                 st.session_state.pop("sim_results", None)
                 st.session_state.pop("_active_run_id", None)
-                go_to("simulation", account_id=account_id)
+                go_to("simulation", retailer_account_id=retailer_account_id)
 
         st.divider()
 
@@ -35,7 +35,7 @@ def render_sidebar():
             for key in list(st.session_state.keys()):
                 if key.startswith(("runs_list_", "entities_", "mappings_", "promos_")):
                     del st.session_state[key]
-            for key in ["logged_in", "user_id", "account_id", "full_name",
+            for key in ["logged_in", "user_id", "retailer_account_id", "full_name",
                         "access_token", "refresh_token", "token_expiry",
                         "sim_results", "_active_run_id", "_scenario_meta", "_scen_tile"]:
                 st.session_state.pop(key, None)

@@ -4,11 +4,11 @@ import api
 from router import go_to
 
 
-def _get_runs(account_id):
-    cache_key = f"runs_list_{account_id}"
+def _get_runs(retailer_account_id):
+    cache_key = f"runs_list_{retailer_account_id}"
     if cache_key not in st.session_state:
         try:
-            st.session_state[cache_key] = api.fetch_runs(account_id)
+            st.session_state[cache_key] = api.fetch_runs()
         except Exception as e:
             st.error(f"Could not load runs: {e}")
             st.session_state[cache_key] = []
@@ -55,4 +55,4 @@ def render():
     if col_back.button("← Back"):
         go_to("runs", id=retailer_id)
     if col_open.button("Open in Simulation", type="primary"):
-        go_to("simulation", account_id=retailer_id)
+        go_to("simulation", retailer_account_id=retailer_id)

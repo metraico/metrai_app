@@ -23,11 +23,11 @@ from utils.export import (
 # Data loading helpers (cached in session_state)
 # =============================================================================
 
-def _ensure_entities(account_id):
-    key = f"entities_{account_id}"
+def _ensure_entities(retailer_account_id):
+    key = f"entities_{retailer_account_id}"
     if key not in st.session_state:
         try:
-            st.session_state[key] = api.fetch_entities(account_id)
+            st.session_state[key] = api.fetch_entities()
         except httpx.HTTPStatusError as e:
             show_error("Could not load entity catalogue", e, e.response)
             st.session_state[key] = {}
@@ -41,7 +41,7 @@ def _ensure_entities(account_id):
 # Run Simulation form
 # =============================================================================
 
-def _render_config_form(account_id, user_id):
+def _render_config_form(retailer_account_id, user_id):
     """Render the simulation config form. Returns (run_btn, config_dict)."""
     with st.container(border=True):
         st.subheader("Simulation Config")
@@ -98,7 +98,7 @@ def _render_config_form(account_id, user_id):
                 dc_on_time = st.slider("DC → Store on-time rate", 0.5, 1.0, 0.95, 0.05)
                 dc_partial = st.slider("DC → Store partial-delivery rate", 0.0, 0.3, 0.05, 0.05)
 
-            entities = _ensure_entities(account_id) or {}
+            entities = _ensure_entities(retailer_account_id) or {}
             dcs = entities.get("dcs", [])
             dc_on_time_by_dc = {}
             dc_partial_by_dc = {}
@@ -126,10 +126,10 @@ def _render_config_form(account_id, user_id):
         run_btn = st.button("▶ Run Simulation", type="primary", use_container_width=True)
 
     config = {
-        "account_id": account_id,
-        "created_by": user_id,
-        "simulation_name": sim_name,
-        "notes": sim_notes,
+        "retailer_account_id": retailer_account_id,
+        "created_by":          user_id,
+        "simulation_name":     sim_name,
+        "notes":               sim_notes,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "replenishment_policy": replenishment_policy,
@@ -336,7 +336,7 @@ def _load_past_run(run_id):
     return True
 
 
-def _execute_rerun(run_id, account_id, user_id):
+def _execute_rerun(run_id, retailer_account_id, user_id):
     """Fetch the saved config for `run_id` and POST /run with it (new sim_id)."""
     try:
         cfg_resp = api.fetch_run_config(run_id)
@@ -354,7 +354,7 @@ def _execute_rerun(run_id, account_id, user_id):
 
     # Ensure the rerun is attributed to the current user/account
     config_block = dict(config_block)
-    config_block["account_id"] = account_id
+    config_block["retailer_account_id"] = retailer_account_id
     if user_id:
         config_block["created_by"] = user_id
 
@@ -1021,7 +1021,7 @@ def _render_results():
 # Page entry
 # =============================================================================
 
-def _restore_scenario_meta_from_config(run_id: str, account_id: str):
+def _restore_scenario_meta_from_config(run_id: str, retailer_account_id: str):
     """Rebuild _scenario_meta from stored run config so highlights work on past runs."""
     import re as _re
     try:
@@ -1101,7 +1101,7 @@ def _restore_scenario_meta_from_config(run_id: str, account_id: str):
         if not m:
             return
         promo_id, factor = m.group(1), float(m.group(2))
-        promos = api.fetch_promos(account_id)
+        promos = api.fetch_promos()
         promo  = next((p for p in promos if p["promo_id"] == promo_id), None)
         if not promo:
             return
@@ -1118,11 +1118,11 @@ def _restore_scenario_meta_from_config(run_id: str, account_id: str):
 
 
 def render():
-    account_id = st.query_params.get("account_id") or st.session_state.get("account_id")
+    retailer_account_id = st.query_params.get("retailer_account_id") or st.session_state.get("retailer_account_id")
     user_id = st.session_state.get("user_id")
     run_id = st.query_params.get("run_id")
 
-    if not account_id:
+    if not retailer_account_id:
         st.error("No account in session. Please sign in again.")
         return
 
@@ -1135,7 +1135,7 @@ def render():
         loaded = _load_past_run(run_id)
         if loaded:
             st.session_state["_active_run_id"] = run_id
-            _restore_scenario_meta_from_config(run_id, account_id)
+            _restore_scenario_meta_from_config(run_id, retailer_account_id)
     elif run_id and already_fresh:
         st.session_state["_active_run_id"] = run_id
 
@@ -1146,24 +1146,24 @@ def render():
         col_back, col_title, col_rerun, col_new = st.columns([1, 4, 2, 2])
         if col_back.button("← Back"):
             st.session_state.pop("_active_run_id", None)
-            go_to("runs", id=account_id)
+            go_to("runs", id=retailer_account_id)
         col_title.subheader("Simulation Run")
         col_title.caption(f"Run: `{run_id}`")
         if col_rerun.button("↻ Rerun this configuration", type="primary", use_container_width=True):
-            _execute_rerun(run_id, account_id, user_id)
-            st.session_state.pop(f"runs_list_{account_id}", None)
+            _execute_rerun(run_id, retailer_account_id, user_id)
+            st.session_state.pop(f"runs_list_{retailer_account_id}", None)
             st.rerun()
         if col_new.button("+ New Simulation", use_container_width=True):
             st.session_state.pop("sim_results", None)
             st.session_state.pop("_active_run_id", None)
-            go_to("simulation", account_id=account_id)
+            go_to("simulation", retailer_account_id=retailer_account_id)
         _render_results()
         return
 
     col_back, col_title = st.columns([1, 5])
     if col_back.button("← Back to runs"):
         st.session_state.pop("_active_run_id", None)
-        go_to("runs", id=account_id)
+        go_to("runs", id=retailer_account_id)
     if run_id:
         col_title.title("Simulation Run")
     else:
@@ -1180,15 +1180,15 @@ def render():
     )
     if st.button("Run a Scenario instead", use_container_width=False):
         st.session_state.pop("_scen_tile", None)
-        go_to("scenario_setup", account_id=account_id)
+        go_to("scenario_setup", retailer_account_id=retailer_account_id)
 
     st.divider()
 
     # Default: new-run flow with the config form
-    run_btn, config = _render_config_form(account_id, user_id)
+    run_btn, config = _render_config_form(retailer_account_id, user_id)
     if run_btn:
         _execute_run(config)
         # Invalidate cached runs list so the runs page refetches
-        st.session_state.pop(f"runs_list_{account_id}", None)
+        st.session_state.pop(f"runs_list_{retailer_account_id}", None)
 
     _render_results()

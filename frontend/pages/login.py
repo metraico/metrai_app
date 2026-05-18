@@ -10,7 +10,7 @@ from router import go_to
 def _apply_session(data: dict):
     st.session_state.logged_in     = True
     st.session_state.user_id       = data.get("user_id")
-    st.session_state.account_id    = data.get("account_id")
+    st.session_state.retailer_account_id = data.get("retailer_account_id")
     st.session_state.full_name     = data.get("full_name", "User")
     st.session_state.access_token  = data.get("access_token", "")
     st.session_state.refresh_token = data.get("refresh_token", "")

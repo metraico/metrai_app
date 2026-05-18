@@ -19,7 +19,7 @@ st.markdown("""
 for key, default in [
     ("logged_in",     False),
     ("user_id",       None),
-    ("account_id",    None),
+    ("retailer_account_id", None),
     ("full_name",     None),
     ("access_token",  ""),
     ("refresh_token", ""),

@@ -43,16 +43,16 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, account_id: str, role: str) -> str:
+def create_access_token(user_id: str, retailer_account_id: str, role: str) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
-            "sub":        user_id,
-            "account_id": account_id,
-            "role":       role,
-            "iat":        int(now.timestamp()),
-            "exp":        int((now + ACCESS_TTL).timestamp()),
-            "type":       "access",
+            "sub":                 user_id,
+            "retailer_account_id": retailer_account_id,
+            "role":                role,
+            "iat":                 int(now.timestamp()),
+            "exp":                 int((now + ACCESS_TTL).timestamp()),
+            "type":                "access",
         },
         _JWT_SECRET,
         algorithm=_JWT_ALG,

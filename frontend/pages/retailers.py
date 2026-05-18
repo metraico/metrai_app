@@ -26,25 +26,25 @@ def _fetch_accounts():
     return st.session_state[key]
 
 
-def _fetch_runs(account_id):
-    key = f"runs_list_{account_id}"
+def _fetch_runs(retailer_account_id):
+    key = f"runs_list_{retailer_account_id}"
     if key not in st.session_state:
         try:
-            st.session_state[key] = api.fetch_runs(account_id)
+            st.session_state[key] = api.fetch_runs()
         except Exception:
             st.session_state[key] = []
     return st.session_state[key]
 
 
-def _switch(account_id: str):
+def _switch(retailer_account_id: str):
     try:
-        data = api.switch_account(account_id)
-        st.session_state.access_token  = data["access_token"]
-        st.session_state.refresh_token = data["refresh_token"]
-        st.session_state.token_expiry  = time.time() + 15 * 60 - 30
-        st.session_state.account_id    = data["account_id"]
+        data = api.switch_account(retailer_account_id)
+        st.session_state.access_token        = data["access_token"]
+        st.session_state.refresh_token       = data["refresh_token"]
+        st.session_state.token_expiry        = time.time() + 15 * 60 - 30
+        st.session_state.retailer_account_id = data["retailer_account_id"]
         st.session_state.pop("accounts_list", None)
-        go_to("runs", id=account_id)
+        go_to("runs", id=retailer_account_id)
     except Exception as e:
         st.error(f"Could not switch account: {e}")
 
@@ -91,7 +91,7 @@ def render():
     st.title("Retailer Accounts")
 
     accounts = _fetch_accounts()
-    active_id = st.session_state.get("account_id")
+    active_id = st.session_state.get("retailer_account_id")
 
     _render_create_form()
 
@@ -112,10 +112,10 @@ def render():
     st.divider()
 
     for acct in accounts:
-        aid     = acct.get("account_id", "")
-        code    = acct.get("account_code", "")
-        name    = acct.get("account_name", "")
-        atype   = acct.get("account_type", "")
+        aid     = acct.get("retailer_account_id", "")
+        code    = acct.get("retailer_account_code", "")
+        name    = acct.get("retailer_account_name", "")
+        atype   = acct.get("retailer_account_type", "")
         country = acct.get("country_code") or "—"
         region  = acct.get("region") or "—"
         curr    = acct.get("currency_code", "USD")
