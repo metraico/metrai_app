@@ -1,0 +1,32 @@
+name: Deploy Metrai App
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ec2-user/metrai_app
+
+            # Write .env from GitHub secrets
+            cat > .env <<'EOF'
+            SIM_ENGINE_URL=${{ secrets.SIM_ENGINE_URL }}
+            POSTGRES_DSN=${{ secrets.POSTGRES_DSN }}
+            BACKEND_URL=http://backend:8000
+            EOF
+
+            git pull origin dev
+            docker-compose up -d --build --remove-orphans
+            docker image prune -f
