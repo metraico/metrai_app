@@ -5,10 +5,13 @@ services:
       dockerfile: Dockerfile.backend
     container_name: metrai_app_backend
     environment:
-      SIM_ENGINE_URL: "${SIM_ENGINE_URL:-http://host.docker.internal:8000}"
-      POSTGRES_DSN: "${POSTGRES_DSN:-postgresql://metrai:metrai_pass@host.docker.internal:5433/metrai}"
+      SIM_ENGINE_URL: "${DOCKER_SIM_ENGINE_URL:-http://metrai_api:8000}"
+      POSTGRES_DSN: "${DOCKER_POSTGRES_DSN:-postgresql://metrai:metrai_pass@metrai_postgres:5432/metrai}"
     ports:
-      - "8080:8000"   # proxy available at localhost:8080 on your Mac
+      - "8080:8000"
+    networks:
+      - default
+      - metrai_shared
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 5s
@@ -21,9 +24,15 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: metrai_app_frontend
     environment:
-      BACKEND_URL: http://backend:8000
+      BACKEND_URL: "${DOCKER_BACKEND_URL:-http://backend:8000}"
     ports:
-      - "8503:8501"   # Streamlit available at localhost:8503 on your Mac
+      - "8503:8501"
     depends_on:
       backend:
         condition: service_healthy
+
+networks:
+  default:
+  metrai_shared:
+    name: metrai_shared
+    external: true

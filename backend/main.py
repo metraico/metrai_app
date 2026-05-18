@@ -679,6 +679,22 @@ async def run_simulation(req: dict, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
+# ── Scenario validate proxy ───────────────────────────────────────────────────
+
+@app.post("/scenario/validate")
+async def validate_scenario(body: dict, current_user: dict = Depends(get_current_user)):
+    body["account_id"] = current_user["account_id"]  # enforce from JWT
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{SIM_ENGINE_URL}/scenario/validate", json=body)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
 # ── Past simulation retrieval (proxy) ─────────────────────────────────────────
 
 @app.get("/simulation/{simulation_id}")
@@ -699,6 +715,19 @@ async def get_run_config(simulation_id: str, current_user: dict = Depends(get_cu
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(f"{SIM_ENGINE_URL}/run-config/{simulation_id}")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.delete("/simulation/{simulation_id}")
+async def delete_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:

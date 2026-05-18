@@ -4,6 +4,7 @@ import httpx
 import streamlit as st
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080")
+SIMULATION_ENGINE_URL = os.getenv("SIMULATION_ENGINE_URL", "http://localhost:8000")
 
 
 def _auth_headers() -> dict:
@@ -111,6 +112,17 @@ def fetch_promos(account_id=None):
     return r.json()
 
 
+def validate_scenario(start_date: str, end_date: str, scenario_yaml: str):
+    r = httpx.post(
+        f"{BACKEND_URL}/scenario/validate",
+        json={"start_date": start_date, "end_date": end_date, "scenario_yaml": scenario_yaml},
+        headers=_auth_headers(),
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def run_simulation(config):
     r = httpx.post(
         f"{BACKEND_URL}/run",
@@ -130,6 +142,15 @@ def fetch_simulation(simulation_id):
     )
     r.raise_for_status()
     return r.json()
+
+
+def delete_simulation(simulation_id: str):
+    r = httpx.delete(
+        f"{BACKEND_URL}/simulation/{simulation_id}",
+        headers=_auth_headers(),
+        timeout=30.0,
+    )
+    r.raise_for_status()
 
 
 def fetch_run_config(simulation_id):

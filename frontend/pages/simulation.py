@@ -455,30 +455,30 @@ def _render_results():
     if scenario_meta:
         stype = scenario_meta.get("type", "")
         if stype == "promo_forecast":
-            factor = scenario_meta.get("factor", 1.0)
-            pct    = abs(round((factor - 1) * 100))
-            direction = "underperforms" if factor < 1 else "overperforms"
-            effect    = ("overstock — trailing average drops → under-ordering post-promo"
-                         if factor < 1
-                         else "stockout risk — trailing average spikes → over-ordering post-promo")
-            st.info(
-                f"**Scenario: Promo Forecast Behavior** — "
-                f"Promo *{scenario_meta.get('promo_name', '')}* "
-                f"({scenario_meta.get('start_date', '')} to {scenario_meta.get('end_date', '')}): "
-                f"actual demand **{direction} by {pct}%** (factor {factor:.2f}x). "
-                f"System ordered for the forecast; shelf demand differed → **{effect}**. "
-                f"Red shading = anomaly window."
-            )
+            windows = scenario_meta.get("promo_windows") or []
+            if windows:
+                promos_summary = "; ".join(
+                    f"*{pw['promo_name']}* {pw['window_start']}→{pw['window_end']} ({pw['factor']:.2f}x)"
+                    for pw in windows
+                )
+                st.info(
+                    f"**Scenario: Promo Forecast Behavior** — {promos_summary}. "
+                    f"System ordered for the forecast; shelf demand differed. "
+                    f"Red shading = anomaly window."
+                )
         elif stype == "hidden_lost_sales":
-            shortage_pct = scenario_meta.get("shortage_pct", 100)
-            st.info(
-                f"**Scenario: Hidden Lost Sales** — "
-                f"DC deliveries cut by **{shortage_pct}%** during "
-                f"{scenario_meta.get('start_date', '')} to {scenario_meta.get('end_date', '')}. "
-                f"Replenishment signal = observable sales. Suppressed sales corrupt the "
-                f"trailing average — watch for under-ordering in subsequent weeks. "
-                f"Red shading = shortage window."
-            )
+            disruptions = scenario_meta.get("disruptions") or []
+            if disruptions:
+                dc_summary = "; ".join(
+                    f"DC *{d['dc']}* {d['window_start']}→{d['window_end']} ({d['mode']})"
+                    for d in disruptions
+                )
+                st.info(
+                    f"**Scenario: Hidden Lost Sales** — {dc_summary}. "
+                    f"Suppressed deliveries corrupt the trailing average — "
+                    f"watch for under-ordering in subsequent weeks. "
+                    f"Red shading = disruption window."
+                )
 
     if sales_daily_df.empty and sales_hist_df.empty:
         st.warning("Simulation returned no sales data.")
@@ -524,14 +524,35 @@ def _render_results():
     sel_item_label = col_sel2.selectbox("Item", list(items_display.keys()))
     sel_item = items_display[sel_item_label]
 
-    # Determine whether the scenario anomaly window applies to the selected item.
-    # For promo_forecast: only if the item is in the promo's group item list.
-    _scen_active = scenario_meta is not None
-    if _scen_active and scenario_meta.get("type") == "promo_forecast":
-        promo_items = scenario_meta.get("promo_items") or []
-        _scen_active = (not promo_items) or (sel_item in promo_items)
-    scen_start_ts = pd.Timestamp(scenario_meta["start_date"]) if _scen_active else None
-    scen_end_ts   = pd.Timestamp(scenario_meta["end_date"])   if _scen_active else None
+    # Build anomaly windows scoped to the selected store + item.
+    # promo_forecast: each injection has item_ids + store_ids — only show red for matches.
+    # hidden_lost_sales: show window for all stores (whole DC is disrupted).
+    _active_promo_windows: list[tuple] = []
+    scen_start_ts = scen_end_ts = None
+
+    if scenario_meta:
+        stype_m = scenario_meta.get("type", "")
+        if stype_m == "promo_forecast":
+            for pw in (scenario_meta.get("promo_windows") or []):
+                item_ids  = pw.get("item_ids")  or []
+                store_ids = pw.get("store_ids") or []
+                if ((not item_ids)  or sel_item  in item_ids) and \
+                   ((not store_ids) or sel_store in store_ids):
+                    _active_promo_windows.append((
+                        pd.Timestamp(pw["window_start"]),
+                        pd.Timestamp(pw["window_end"]),
+                    ))
+        elif stype_m == "hidden_lost_sales":
+            for d in (scenario_meta.get("disruptions") or []):
+                _active_promo_windows.append((
+                    pd.Timestamp(d["window_start"]),
+                    pd.Timestamp(d["window_end"]),
+                ))
+        if _active_promo_windows:
+            scen_start_ts = _active_promo_windows[0][0]
+            scen_end_ts   = _active_promo_windows[0][1]
+
+    _scen_active = bool(_active_promo_windows)
 
     # Filter dataframes for selection. Always sort by the time column afterwards —
     # Plotly draws scatter lines in array order, and dataframe filters preserve whatever
@@ -627,16 +648,17 @@ def _render_results():
     if not s_demand.empty and "is_promo_demand" in s_demand.columns and "demand_week" in s_demand.columns:
         promo_weeks = set(s_demand[s_demand["is_promo_demand"] == True]["demand_week"].unique())
 
-    def _overlaps_anomaly(x0, x1):
-        """True if promo date range overlaps with the scenario anomaly window."""
-        if scen_start_ts is None:
-            return False
-        return x0 <= scen_end_ts + pd.Timedelta(days=1) and x1 >= scen_start_ts
+    def _overlaps_any_anomaly(x0, x1):
+        """True if date range overlaps with any scenario anomaly window."""
+        for ws, we in _active_promo_windows:
+            if x0 <= we + pd.Timedelta(days=1) and x1 >= ws:
+                return True
+        return False
 
     def _add_promo_daily(fig):
         added_promo = added_anom = False
         for x0, x1 in promo_date_ranges:
-            if _overlaps_anomaly(x0, x1):
+            if _overlaps_any_anomaly(x0, x1):
                 fig.add_vrect(
                     x0=x0, x1=x1 + pd.Timedelta(days=1),
                     fillcolor="rgba(220,30,30,0.35)", layer="below",
@@ -653,33 +675,33 @@ def _render_results():
                     showlegend=not added_promo, legendgroup="promo",
                 )
                 added_promo = True
-        # HLS scenario: shortage week is not a promo, add red highlight directly
+        # HLS scenario: shortage window is not a promo, add red highlights directly
         stype = (scenario_meta or {}).get("type", "")
-        if stype == "hidden_lost_sales" and scen_start_ts is not None and not added_anom:
-            fig.add_vrect(
-                x0=scen_start_ts, x1=scen_end_ts + pd.Timedelta(days=1),
-                fillcolor="rgba(220,30,30,0.35)", layer="below",
-                line_color="rgba(255,60,60,0.9)", line_width=1,
-                name="Anomaly Window", showlegend=True, legendgroup="anom",
-            )
+        if stype == "hidden_lost_sales" and not added_anom:
+            for ws, we in _active_promo_windows:
+                fig.add_vrect(
+                    x0=ws, x1=we + pd.Timedelta(days=1),
+                    fillcolor="rgba(220,30,30,0.35)", layer="below",
+                    line_color="rgba(255,60,60,0.9)", line_width=1,
+                    name="Anomaly Window" if not added_anom else None,
+                    showlegend=not added_anom, legendgroup="anom",
+                )
+                added_anom = True
 
     def _add_promo_weekly(fig, weeks_list):
         added_promo = added_anom = False
         anom_weeks: set = set()
         stype_w = (scenario_meta or {}).get("type", "")
-        # For HLS: mark the shortage window as anomaly regardless of promo status.
-        # For promo_forecast: anomaly weeks are promo weeks that overlap the scenario window
-        # (handled below via _overlaps_anomaly on promo_weeks); no direct range injection needed.
-        if scen_start_ts is not None:
-            d = scen_start_ts.date()
-            end = scen_end_ts.date()
+        for ws, we in _active_promo_windows:
+            d = ws.date()
+            end = we.date()
             while d <= end:
                 iso = d.isocalendar()
                 anom_weeks.add(f"{iso[0]}-W{iso[1]:02d}")
                 d += pd.Timedelta(days=1).to_pytimedelta()
-            # promo_forecast: only weeks where this item actually has promo demand are anomalous
-            if stype_w == "promo_forecast":
-                anom_weeks = anom_weeks & promo_weeks
+        # promo_forecast: only mark weeks where this item actually has promo demand
+        if stype_w == "promo_forecast":
+            anom_weeks = anom_weeks & promo_weeks
         for i, w in enumerate(weeks_list):
             if w in anom_weeks:
                 fig.add_vrect(
@@ -835,6 +857,60 @@ def _render_results():
         "data_quality_report.json": json.dumps(dq_report, indent=2),
     }
 
+    # ── Scenario audit expanders (after charts) ───────────────────────────────
+    _scenario_yaml = sim_config_block.get("scenario_yaml", "").strip()
+    if _scenario_yaml:
+        # Full YAML: prefer session-saved original (has run: block + comments),
+        # fall back to reconstructing from stored config fields
+        _full_yaml_key = f"_full_yaml_{r['sim_id']}"
+        _full_yaml = st.session_state.get(_full_yaml_key)
+        if not _full_yaml:
+            import yaml as _yaml_mod
+            _run_fields = [
+                "simulation_name", "start_date", "end_date", "replenishment_policy",
+                "smoothing_days", "seed", "store_reorder_weeks", "store_target_weeks",
+                "store_start_days", "store_order_dow", "dc_reorder_weeks", "dc_target_weeks",
+                "dc_start_days", "dc_review_dow", "sup_lead_min", "sup_lead_max",
+                "sup_on_time", "sup_partial", "dc_lead_days", "dc_on_time", "dc_partial",
+                "dc_on_time_by_dc", "dc_partial_by_dc",
+            ]
+            _run_block = {k: sim_config_block[k] for k in _run_fields if k in sim_config_block}
+            try:
+                _scen_block = _yaml_mod.safe_load(_scenario_yaml) or {}
+            except Exception:
+                _scen_block = {}
+            _full_yaml = _yaml_mod.dump(
+                {"run": _run_block, "scenario": _scen_block},
+                default_flow_style=False, sort_keys=False,
+            )
+
+        with st.expander("Scenario YAML", expanded=False):
+            st.code(_full_yaml, language="yaml")
+
+        _preview_key = f"_scen_preview_{r['sim_id']}"
+        if _preview_key not in st.session_state:
+            try:
+                _vr = api.validate_scenario(
+                    start_date=sim_config_block.get("start_date", "2024-01-01"),
+                    end_date=sim_config_block.get("end_date", "2024-12-31"),
+                    scenario_yaml=_scenario_yaml,
+                )
+                st.session_state[_preview_key] = _vr
+            except Exception:
+                st.session_state[_preview_key] = None
+
+        _vr = st.session_state.get(_preview_key)
+        if _vr and _vr.get("preview"):
+            with st.expander("Scenario Configuration Preview", expanded=False):
+                if _vr.get("warnings"):
+                    for _w in _vr["warnings"]:
+                        st.warning(_w)
+                st.dataframe(
+                    pd.DataFrame(_vr["preview"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
     st.divider()
     tab_export, tab_debug = st.tabs(["Export", "Debugging"])
 
@@ -946,11 +1022,59 @@ def _render_results():
 # =============================================================================
 
 def _restore_scenario_meta_from_config(run_id: str, account_id: str):
-    """Parse [SCENARIO:...] tag from saved run notes and rebuild _scenario_meta."""
+    """Rebuild _scenario_meta from stored run config so highlights work on past runs."""
     import re as _re
     try:
-        cfg_resp = api.fetch_run_config(run_id)
-        notes = (cfg_resp.get("full_config") or {}).get("notes", "")
+        cfg_resp   = api.fetch_run_config(run_id)
+        full_cfg   = cfg_resp.get("full_config") or {}
+        notes      = full_cfg.get("notes", "")
+        yaml_text  = full_cfg.get("scenario_yaml", "").strip()
+
+        # ── YAML scenario (new path) — re-validate to get promo_windows ──────
+        if yaml_text:
+            try:
+                result = api.validate_scenario(
+                    start_date=full_cfg.get("start_date", "2024-01-01"),
+                    end_date=full_cfg.get("end_date", "2024-12-31"),
+                    scenario_yaml=yaml_text,
+                )
+                stype = result.get("scenario_type", "")
+                if stype == "promo_forecast":
+                    st.session_state["_scenario_meta"] = {
+                        "type": "promo_forecast",
+                        "promo_windows": [
+                            {
+                                "promo_id":     pw.get("promo_id", ""),
+                                "promo_name":   pw.get("promo_name", ""),
+                                "window_start": pw.get("window_start", ""),
+                                "window_end":   pw.get("window_end", ""),
+                                "factor":       pw.get("factor", 1.0),
+                                "item_ids":     pw.get("item_ids", []),
+                                "store_ids":    pw.get("store_ids", []),
+                            }
+                            for pw in result.get("promo_windows", [])
+                        ],
+                    }
+                elif stype == "hidden_lost_sales":
+                    disruptions = result.get("disruptions", [])
+                    if disruptions:
+                        st.session_state["_scenario_meta"] = {
+                            "type":        "hidden_lost_sales",
+                            "disruptions": [
+                                {
+                                    "dc":           d.get("dc", ""),
+                                    "window_start": d.get("window_start", ""),
+                                    "window_end":   d.get("window_end", ""),
+                                    "mode":         d.get("mode", ""),
+                                }
+                                for d in disruptions
+                            ],
+                        }
+            except Exception:
+                pass
+            return
+
+        # ── Legacy scalar scenario (old form-based path) ──────────────────────
         if not notes:
             return
         m_type = _re.search(r"\[SCENARIO:(\w+)\]", notes)
@@ -973,23 +1097,21 @@ def _restore_scenario_meta_from_config(run_id: str, account_id: str):
             }
             return
 
-        # promo_forecast
         m = _re.search(r"promo_id=([\w-]+).*?factor=([\d.]+)", notes)
         if not m:
             return
         promo_id, factor = m.group(1), float(m.group(2))
         promos = api.fetch_promos(account_id)
-        promo = next((p for p in promos if p["promo_id"] == promo_id), None)
+        promo  = next((p for p in promos if p["promo_id"] == promo_id), None)
         if not promo:
             return
         st.session_state["_scenario_meta"] = {
-            "type":        stype,
-            "promo_name":  promo["promo_name"],
-            "promo_id":    promo_id,
-            "factor":      factor,
-            "start_date":  promo["start_date"],
-            "end_date":    promo["end_date"],
-            "promo_items": promo.get("item_ids") or [],
+            "type":       stype,
+            "promo_name": promo["promo_name"],
+            "promo_id":   promo_id,
+            "factor":     factor,
+            "start_date": promo["start_date"],
+            "end_date":   promo["end_date"],
         }
     except Exception:
         pass
@@ -1057,6 +1179,7 @@ def render():
         unsafe_allow_html=True,
     )
     if st.button("Run a Scenario instead", use_container_width=False):
+        st.session_state.pop("_scen_tile", None)
         go_to("scenario_setup", account_id=account_id)
 
     st.divider()
