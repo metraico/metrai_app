@@ -24,8 +24,8 @@ def render():
 
     with tab_login:
         with st.form("login_form"):
-            username  = st.text_input("Username", value="demo")
-            password  = st.text_input("Password", type="password", value="demo123")
+            username  = st.text_input("Username")
+            password  = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
 
         if submitted:
