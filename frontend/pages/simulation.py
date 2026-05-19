@@ -603,17 +603,13 @@ def _render_results():
     stockout_days = (s_inv_d["inventory_status"] == "ZERO").sum() if not s_inv_d.empty else 0
     stockout_days_str = f"{stockout_days:,}" if not s_inv_d.empty else "—"
 
-    st.markdown(
-        f'<div style="display:flex;gap:12px;margin:8px 0;">'
-        + _tile("Total Demand", total_demand_str)
-        + _tile("Total Sales", total_sales_str)
-        + _tile("Lost Sales", total_lost_str)
-        + _tile("Fill Rate", fill_rate_str)
-        + _tile("Stockout Days", stockout_days_str)
-        + _tile("Revenue", total_revenue_str)
-        + '</div>',
-        unsafe_allow_html=True,
-    )
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Total Demand",  total_demand_str)
+    k2.metric("Total Sales",   total_sales_str)
+    k3.metric("Lost Sales",    total_lost_str)
+    k4.metric("Fill Rate",     fill_rate_str)
+    k5.metric("Stockout Days", stockout_days_str)
+    k6.metric("Revenue",       total_revenue_str)
 
     # Promo windows
     promo_date_ranges = []
