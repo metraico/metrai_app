@@ -429,28 +429,15 @@ def _render_results():
 
     scenario_meta = st.session_state.get("_scenario_meta")
 
-    # Counts row
-    def _tile(label, value):
-        return f"""
-        <div style="background:#1e1e2e;border:1px solid #2e2e3e;border-radius:10px;
-                    padding:16px 20px;text-align:center;flex:1;min-width:0;">
-            <div style="color:#8888aa;font-size:13px;margin-bottom:6px;">{label}</div>
-            <div style="color:#ffffff;font-size:28px;font-weight:700;">{value}</div>
-        </div>"""
-
     n_items = len(items_df)
     n_stores = len(stores_df)
     n_dcs = len(set(store_dc_map.values())) if store_dc_map else 0
     n_suppliers = len(dcs_df) if not dcs_df.empty else 0
-    st.markdown(
-        f'<div style="display:flex;gap:12px;margin:8px 0;">'
-        + _tile("Items", n_items)
-        + _tile("Stores", n_stores)
-        + _tile("DCs", n_dcs)
-        + _tile("Suppliers", n_suppliers)
-        + '</div>',
-        unsafe_allow_html=True,
-    )
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Items", n_items)
+    m2.metric("Stores", n_stores)
+    m3.metric("DCs", n_dcs)
+    m4.metric("Suppliers", n_suppliers)
 
     if scenario_meta:
         stype = scenario_meta.get("type", "")
@@ -1169,15 +1156,7 @@ def render():
     else:
         col_title.title("New Simulation")
 
-    # Scenario shortcut
-    st.markdown(
-        "<div style='background:#1e1e2e;border:1px solid #f59e0b;border-left:3px solid #f59e0b;"
-        "border-radius:8px;padding:12px 16px;margin-bottom:16px;'>"
-        "<span style='color:#f59e0b;font-size:14px;font-weight:600;'>Scenarios</span>"
-        "<span style='color:#8888aa;font-size:14px;'> — inject promo anomalies or supply disruptions "
-        "and observe how your replenishment system responds.</span></div>",
-        unsafe_allow_html=True,
-    )
+    st.info("**Scenarios** — inject promo anomalies or supply disruptions and observe how your replenishment system responds.")
     if st.button("Run a Scenario instead", use_container_width=False):
         st.session_state.pop("_scen_tile", None)
         go_to("scenario_setup", retailer_account_id=retailer_account_id)

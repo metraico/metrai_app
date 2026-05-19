@@ -300,28 +300,20 @@ def _render_tile_picker():
     card_cols = st.columns(3)
     for i, tile in enumerate(_TILES):
         with card_cols[i]:
-            st.markdown(
-                f"""<div style="border:1px solid #2e2e3e;border-left:3px solid #f59e0b;
-                        border-radius:8px;padding:20px 18px 14px;background:#1e1e2e;min-height:150px;">
-                    <div style="font-weight:700;font-size:1rem;color:#ffffff;margin-bottom:10px;">{tile['title']}</div>
-                    <p style="color:#8888aa;font-size:13px;margin:0;">{tile['description']}</p>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-            if st.button("Open →", key=f"sel_{tile['id']}", use_container_width=True):
-                st.session_state["_scen_tile"] = tile["id"]
-                st.session_state.pop(f"_yaml_preview_{tile['id']}", None)
-                st.rerun()
+            with st.container(border=True):
+                st.markdown(f"**{tile['title']}**")
+                st.caption(tile["description"])
+                st.divider()
+                if st.button("Open →", key=f"sel_{tile['id']}", use_container_width=True):
+                    st.session_state["_scen_tile"] = tile["id"]
+                    st.session_state.pop(f"_yaml_preview_{tile['id']}", None)
+                    st.rerun()
     with card_cols[2]:
-        st.markdown(
-            """<div style="border:1px solid #2e2e3e;border-left:3px solid #3e3e4e;
-                    border-radius:8px;padding:20px 18px 14px;background:#1a1a28;
-                    min-height:150px;opacity:0.5;">
-                <div style="font-weight:700;font-size:1rem;color:#8888aa;margin-bottom:10px;">More in development</div>
-                <p style="color:#666677;font-size:13px;margin:0;">Coming soon</p>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+        with st.container(border=True):
+            st.markdown("**More in development**")
+            st.caption("Coming soon")
+            st.divider()
+            st.button("Coming soon", key="coming_soon", use_container_width=True, disabled=True)
 
 
 # ── YAML editor ───────────────────────────────────────────────────────────────
@@ -345,15 +337,9 @@ def _render_yaml_editor(tile_id: str, default_template: str, retailer_account_id
         key=f"_snotes_{tile_id}",
     )
 
-    # IDE-style editor
     st.markdown(
         """<style>
-        textarea {
-            font-family: 'Courier New', monospace !important;
-            font-size: 13px !important;
-            background: #0d1117 !important;
-            color: #c9d1d9 !important;
-        }
+        textarea { font-family: 'Courier New', monospace !important; font-size: 13px !important; }
         </style>""",
         unsafe_allow_html=True,
     )
