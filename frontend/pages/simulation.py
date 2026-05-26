@@ -168,8 +168,6 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
     """Convert the engine response into the sim_results dict shape with proper dtypes."""
     sim_id = resp.get("simulation_id", "")
 
-    sales_daily_df = pd.DataFrame(resp.get("store_sales_daily", []))
-    inv_daily_df = pd.DataFrame(resp.get("store_inventory_daily", []))
     sales_hist_df = pd.DataFrame(resp.get("sales_history", []))
     store_inv_df = pd.DataFrame(resp.get("store_inventory", []))
     dc_inv_df = pd.DataFrame(resp.get("dc_inventory", []))
@@ -185,22 +183,12 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
     stores_df = pd.DataFrame(resp.get("stores_meta", []))
     dcs_df = pd.DataFrame(resp.get("dcs_meta", []))
 
-    for col in ["demand_qty", "realized_demand_qty", "sales_qty", "lost_sales_qty", "sales_amount"]:
-        if col in sales_daily_df.columns:
-            sales_daily_df[col] = pd.to_numeric(sales_daily_df[col], errors="coerce")
-    for col in ["on_hand_qty", "on_order_qty", "woc"]:
-        if col in inv_daily_df.columns:
-            inv_daily_df[col] = pd.to_numeric(inv_daily_df[col], errors="coerce")
     for col in ["sales_quantity", "sales_amount"]:
         if col in sales_hist_df.columns:
             sales_hist_df[col] = pd.to_numeric(sales_hist_df[col], errors="coerce")
     for col in ["on_hand_quantity", "on_order_quantity", "woc"]:
         if col in store_inv_df.columns:
             store_inv_df[col] = pd.to_numeric(store_inv_df[col], errors="coerce")
-    if "date" in sales_daily_df.columns:
-        sales_daily_df["date"] = pd.to_datetime(sales_daily_df["date"])
-    if "date" in inv_daily_df.columns:
-        inv_daily_df["date"] = pd.to_datetime(inv_daily_df["date"])
     if "demand_date" in demand_df.columns:
         demand_df["demand_date"] = pd.to_datetime(demand_df["demand_date"])
     if "demand_qty" in demand_df.columns:
@@ -212,9 +200,10 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
 
     # Derive start/end dates from data if not provided (past runs)
     if sim_start_date is None or sim_end_date is None:
-        if "date" in sales_daily_df.columns and not sales_daily_df.empty:
-            sim_start_date = sim_start_date or sales_daily_df["date"].min().date()
-            sim_end_date = sim_end_date or sales_daily_df["date"].max().date()
+        if "sales_week" in sales_hist_df.columns and not sales_hist_df.empty:
+            weeks = pd.to_datetime(sales_hist_df["sales_week"], errors="coerce").dropna()
+            sim_start_date = sim_start_date or weeks.min().date()
+            sim_end_date = sim_end_date or weeks.max().date()
         else:
             sim_start_date = sim_start_date or date(2024, 1, 1)
             sim_end_date = sim_end_date or date(2024, 12, 31)
@@ -229,8 +218,6 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
         "store_target_weeks": store_target_weeks,
         "items_df": items_df,
         "stores_df": stores_df,
-        "sales_daily_df": sales_daily_df,
-        "inv_daily_df": inv_daily_df,
         "demand_df": demand_df,
         "sales_hist_df": sales_hist_df,
         "store_inv_df": store_inv_df,
@@ -408,8 +395,6 @@ def _render_results():
     end_date = r["sim_end_date"]
     items_df = r["items_df"]
     stores_df = r["stores_df"]
-    sales_daily_df = r["sales_daily_df"]
-    inv_daily_df = r["inv_daily_df"]
     demand_df = r["demand_df"]
     sales_hist_df = r["sales_hist_df"]
     store_inv_df = r["store_inv_df"]
@@ -467,21 +452,13 @@ def _render_results():
                     f"Red shading = disruption window."
                 )
 
-    if sales_daily_df.empty and sales_hist_df.empty:
+    if sales_hist_df.empty:
         st.warning("Simulation returned no sales data.")
         return
 
-    if sales_daily_df.empty:
-        st.info(
-            "Daily granularity is not available for this run "
-            "(older runs persisted only weekly data). Daily chart and daily-only "
-            "KPIs (lost sales, fill rate, stockout days) will be hidden. "
-            "Re-run to populate the daily tables."
-        )
-
-    # Pick whichever frame has store/item ids — prefer daily, then weekly, then inventory.
+    # Pick whichever frame has store/item ids — prefer weekly sales, then inventory.
     _selector_source = next(
-        (df for df in (sales_daily_df, sales_hist_df, store_inv_df, inv_daily_df)
+        (df for df in (sales_hist_df, store_inv_df)
          if not df.empty and {"store_id", "item_id"}.issubset(df.columns)),
         pd.DataFrame(),
     )
@@ -547,16 +524,6 @@ def _render_results():
     def _sort(df, col):
         return df.sort_values(col, kind="stable").reset_index(drop=True) if (not df.empty and col in df.columns) else df
 
-    s_inv_d = inv_daily_df[
-        (inv_daily_df["store_id"] == sel_store) & (inv_daily_df["item_id"] == sel_item)
-    ].copy() if not inv_daily_df.empty else pd.DataFrame()
-    s_inv_d = _sort(s_inv_d, "date")
-
-    s_sales_d = sales_daily_df[
-        (sales_daily_df["store_id"] == sel_store) & (sales_daily_df["item_id"] == sel_item)
-    ].copy() if not sales_daily_df.empty else pd.DataFrame()
-    s_sales_d = _sort(s_sales_d, "date")
-
     s_demand = demand_df[
         (demand_df["store_id"] == sel_store) & (demand_df["item_id"] == sel_item)
     ].copy() if not demand_df.empty else pd.DataFrame()
@@ -572,44 +539,20 @@ def _render_results():
     ].copy() if not store_inv_df.empty else pd.DataFrame()
     s_inv_w = _sort(s_inv_w, "inventory_week" if "inventory_week" in s_inv_w.columns else "sales_week")
 
-    avg_daily_d = s_sales_d["demand_qty"].mean() if not s_sales_d.empty else 0
-    trigger_units = int(round(store_reorder_weeks * avg_daily_d * 7))
-    target_units = int(round(store_target_weeks * avg_daily_d * 7))
+    avg_weekly = s_sales_w["sales_quantity"].mean() if not s_sales_w.empty else 0
+    trigger_units = int(round(store_reorder_weeks * avg_weekly))
+    target_units = int(round(store_target_weeks * avg_weekly))
 
 
-    # KPIs (fall back to weekly when daily isn't available)
-    has_daily = not s_sales_d.empty
-    if has_daily:
-        total_demand = s_sales_d["demand_qty"].sum()
-        total_sales = s_sales_d["sales_qty"].sum()
-        total_lost = s_sales_d["lost_sales_qty"].sum()
-        fill_rate = total_sales / total_demand * 100 if total_demand > 0 else 0
-        total_revenue = s_sales_d["sales_amount"].sum()
-        total_demand_str = f"{total_demand:,.0f}"
-        total_sales_str = f"{total_sales:,.0f}"
-        total_lost_str = f"{total_lost:,.0f}"
-        fill_rate_str = f"{fill_rate:.1f}%"
-        total_revenue_str = f"${total_revenue:,.0f}"
-    else:
-        # Weekly-only fallback. Lost sales / fill rate aren't derivable from sales_history alone.
-        total_sales = s_sales_w["sales_quantity"].sum() if not s_sales_w.empty else 0
-        total_revenue = s_sales_w["sales_amount"].sum() if not s_sales_w.empty else 0
-        total_demand_str = "—"
-        total_sales_str = f"{total_sales:,.0f}"
-        total_lost_str = "—"
-        fill_rate_str = "—"
-        total_revenue_str = f"${total_revenue:,.0f}"
+    # KPIs from weekly data
+    total_sales = s_sales_w["sales_quantity"].sum() if not s_sales_w.empty else 0
+    total_revenue = s_sales_w["sales_amount"].sum() if not s_sales_w.empty else 0
+    stockout_weeks = (s_inv_w["inventory_status"] == "ZERO").sum() if not s_inv_w.empty else 0
 
-    stockout_days = (s_inv_d["inventory_status"] == "ZERO").sum() if not s_inv_d.empty else 0
-    stockout_days_str = f"{stockout_days:,}" if not s_inv_d.empty else "—"
-
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Total Demand",  total_demand_str)
-    k2.metric("Total Sales",   total_sales_str)
-    k3.metric("Lost Sales",    total_lost_str)
-    k4.metric("Fill Rate",     fill_rate_str)
-    k5.metric("Stockout Days", stockout_days_str)
-    k6.metric("Revenue",       total_revenue_str)
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total Sales",    f"{total_sales:,.0f}")
+    k2.metric("Revenue",        f"${total_revenue:,.0f}")
+    k3.metric("Stockout Weeks", f"{stockout_weeks:,}")
 
     # Promo windows
     promo_date_ranges = []
@@ -704,70 +647,9 @@ def _render_results():
                 )
                 added_promo = True
 
-    # Daily chart
+    # Weekly chart
     st.divider()
     st.subheader("Inventory & Sales Charts")
-    st.markdown("#### Daily: Demand vs Sales vs Inventory")
-    if not s_sales_d.empty and not s_inv_d.empty:
-        fig_daily = go.Figure()
-        s_daily = s_sales_d.merge(s_inv_d[["date", "on_hand_qty"]], on="date", how="left")
-        day_lbl = s_daily["date"].dt.strftime("%a, %b %d %Y")
-        inv_lbl = s_inv_d["date"].dt.strftime("%a, %b %d %Y")
-        fig_daily.add_trace(go.Bar(
-            x=s_daily["date"], y=s_daily["demand_qty"],
-            name="Demand", marker_color="#BAD7F2", opacity=0.85,
-            hovertemplate="<b>%{customdata}</b><br>Demand: %{y}<extra></extra>",
-            customdata=day_lbl,
-        ))
-        fig_daily.add_trace(go.Bar(
-            x=s_daily["date"], y=s_daily["sales_qty"],
-            name="Sales (Fulfilled)", marker_color="#2E86AB", opacity=0.9,
-            hovertemplate="<b>%{customdata}</b><br>Sales: %{y}<extra></extra>",
-            customdata=day_lbl,
-        ))
-        lost_colors = ["#db5546" if oh == 0 else "#F1948A" for oh in s_daily["on_hand_qty"]]
-        fig_daily.add_trace(go.Bar(
-            x=s_daily["date"], y=s_daily["lost_sales_qty"],
-            name="Lost Sales", marker_color=lost_colors, opacity=0.9,
-            hovertemplate="<b>%{customdata}</b><br>Lost: %{y}<extra></extra>",
-            customdata=day_lbl,
-        ))
-        fig_daily.add_trace(go.Scatter(
-            x=s_inv_d["date"], y=s_inv_d["on_hand_qty"],
-            name="On-Hand Inventory", mode="lines",
-            line=dict(color="#E84855", width=2), yaxis="y2",
-            hovertemplate="<b>%{customdata}</b><br>On-Hand: %{y}<extra></extra>",
-            customdata=inv_lbl,
-        ))
-        fig_daily.add_trace(go.Scatter(
-            x=s_inv_d["date"], y=s_inv_d["on_order_qty"],
-            name="On-Order", mode="lines",
-            line=dict(color="#F4A261", width=1.5, dash="dot"), yaxis="y2",
-            hovertemplate="<b>%{customdata}</b><br>On-Order: %{y}<extra></extra>",
-            customdata=inv_lbl,
-        ))
-        _add_promo_daily(fig_daily)
-        if scenario_meta and "realized_demand_qty" in s_daily.columns:
-            fig_daily.add_trace(go.Scatter(
-                x=s_daily["date"], y=s_daily["realized_demand_qty"],
-                name="Actual Demand (realized)", mode="lines",
-                line=dict(color="rgba(220,30,30,0.9)", width=2, dash="dot"),
-                hovertemplate="<b>%{customdata}</b><br>Actual Demand: %{y}<extra></extra>",
-                customdata=day_lbl,
-            ))
-        fig_daily.update_layout(
-            barmode="group",
-            xaxis=dict(title="Date"),
-            yaxis=dict(title="Units (Demand / Sales)", side="left"),
-            yaxis2=dict(title="Units (Inventory)", overlaying="y", side="right", showgrid=False),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            height=420,
-        )
-        st.plotly_chart(fig_daily, use_container_width=True)
-    else:
-        st.info("Daily granularity not available for this run.")
-
-    # Weekly chart
     st.markdown("#### Weekly: Demand vs Sales vs Inventory")
     fig_weekly = go.Figure()
     if not s_sales_w.empty:
@@ -782,14 +664,7 @@ def _render_results():
             weekly_df = s_sales_w.copy()
             weekly_df["on_hand_quantity"] = 0
 
-        if not s_sales_d.empty and "week" in s_sales_d.columns:
-            weekly_demand = (
-                s_sales_d.groupby("week", sort=True)["demand_qty"].sum().reset_index()
-                .rename(columns={"week": "sales_week", "demand_qty": "demand_quantity"})
-            )
-            weekly_df = weekly_df.merge(weekly_demand, on="sales_week", how="left")
-        else:
-            weekly_df["demand_quantity"] = weekly_df["sales_quantity"]
+        weekly_df["demand_quantity"] = weekly_df["sales_quantity"]
 
         fig_weekly.add_trace(go.Bar(
             x=weekly_df["sales_week"],
@@ -902,10 +777,6 @@ def _render_results():
 
         with st.expander("Demand Matrix"):
             st.dataframe(s_demand.reset_index(drop=True) if not s_demand.empty else pd.DataFrame())
-        with st.expander("Daily Sales"):
-            st.dataframe(s_sales_d.reset_index(drop=True))
-        with st.expander("Daily Store Inventory"):
-            st.dataframe(s_inv_d.reset_index(drop=True))
         with st.expander("Weekly Sales History"):
             st.dataframe(s_sales_w.reset_index(drop=True))
         with st.expander("Weekly Store Inventory"):

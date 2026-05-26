@@ -695,7 +695,7 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
 @app.get("/simulation/{simulation_id}")
 async def get_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.get(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
             resp.raise_for_status()
             return resp.json()

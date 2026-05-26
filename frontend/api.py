@@ -138,7 +138,7 @@ def fetch_simulation(simulation_id):
     r = httpx.get(
         f"{BACKEND_URL}/simulation/{simulation_id}",
         headers=_auth_headers(),
-        timeout=60.0,
+        timeout=120.0,
     )
     r.raise_for_status()
     return r.json()
