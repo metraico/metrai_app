@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import secrets
 import time
@@ -17,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 load_dotenv()
+
+logger = logging.getLogger("metrai.backend")
 
 SIM_ENGINE_URL = os.getenv("SIM_ENGINE_URL", "http://localhost:8000")
 POSTGRES_DSN   = os.getenv("POSTGRES_DSN")
@@ -136,7 +139,7 @@ async def get_current_user(
 
 @app.on_event("startup")
 def _bootstrap_demo_password():
-    """Hash demo123 for the demo user if no password has been set yet."""
+    """Hash 12345678 for the demo user if no password has been set yet."""
     if not POSTGRES_DSN:
         return
     try:
@@ -151,7 +154,7 @@ def _bootstrap_demo_password():
                 if row and not row[0]:
                     cur.execute(
                         "UPDATE users SET password_hash = %s WHERE user_id = %s",
-                        (_ph.hash("demo123"), DUMMY_USER_ID),
+                        (_ph.hash("12345678"), DUMMY_USER_ID),
                     )
                     conn.commit()
         finally:
@@ -509,6 +512,7 @@ def get_runs(current_user: dict = Depends(get_current_user)):
                 for k, v in row.items():
                     if hasattr(v, "isoformat"):
                         row[k] = v.isoformat()
+            logger.info("GET /runs — user=%s account=%s returned %d runs", user_id, retailer_account_id, len(rows))
             return rows
     finally:
         conn.close()
