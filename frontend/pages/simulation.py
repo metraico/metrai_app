@@ -295,60 +295,93 @@ def _execute_run(config):
     st.success(f"Simulation complete. Run ID: `{st.session_state['sim_results']['sim_id']}`")
 
 
-_RUN_YAML_TEMPLATE = """\
-# =============================================================================
-# SIMULATION RUN CONFIG
-# =============================================================================
-# Edit the values below, then click Validate → Run Simulation.
-# All fields are optional — defaults are shown and used if omitted.
-# =============================================================================
+def _build_run_yaml_template(entities: dict) -> str:
+    """Generate a run config YAML template pre-filled with real DC and supplier codes."""
+    dcs       = entities.get("dcs", [])
+    suppliers = entities.get("suppliers", [])
+    stores    = entities.get("stores", [])
 
-run:
-  simulation_name: "My Simulation Run"
-  notes: ""
+    dc_codes  = [d.get("dc_code", "") for d in dcs if d.get("dc_code")]
+    sup_codes = [s.get("supplier_code", "") for s in suppliers if s.get("supplier_code")]
 
-  start_date: "2024-01-01"            # YYYY-MM-DD
-  end_date:   "2024-12-31"
+    def _dc_override_block(key, default):
+        if not dc_codes:
+            return f"  # {key}:\n  #   DC_CODE: {default}\n"
+        lines = [f"  # {key}:"]
+        for code in dc_codes:
+            lines.append(f"  #   {code}: {default}")
+        return "\n".join(lines) + "\n"
 
-  seed: 42
+    supplier_ref = ""
+    if sup_codes:
+        sup_lines = ["  # Available suppliers (use these codes in scenario YAML):"]
+        for code in sup_codes:
+            sup_lines.append(f"  #   {code}")
+        supplier_ref = "\n".join(sup_lines) + "\n"
+    else:
+        supplier_ref = "  # No suppliers found in network\n"
 
-  # trailing_avg_28d | promo_aware_7d | baseline_only
-  replenishment_policy: trailing_avg_28d
-  smoothing_days: 28                  # 7–90
+    store_count = len(stores)
 
-  store_reorder_weeks: 2
-  store_target_weeks:  3
-  store_start_days:    14
-  store_order_dow:     MONDAY         # MONDAY–FRIDAY
+    return (
+        "# =============================================================================\n"
+        "# SIMULATION RUN CONFIG\n"
+        "# =============================================================================\n"
+        "# Edit the values below, then click Validate → Run Simulation.\n"
+        "# All fields are optional — defaults are shown and used if omitted.\n"
+        "# =============================================================================\n"
+        "\n"
+        "run:\n"
+        '  simulation_name: "My Simulation Run"\n'
+        '  notes: ""\n'
+        "\n"
+        '  start_date: "2024-01-01"            # YYYY-MM-DD\n'
+        '  end_date:   "2024-12-31"\n'
+        "\n"
+        "  seed: 42\n"
+        "\n"
+        "  # trailing_avg_28d | promo_aware_7d | baseline_only\n"
+        "  replenishment_policy: trailing_avg_28d\n"
+        "  smoothing_days: 28                  # 7-90\n"
+        "\n"
+        "  store_reorder_weeks: 2\n"
+        "  store_target_weeks:  3\n"
+        "  store_start_days:    14\n"
+        "  store_order_dow:     MONDAY         # MONDAY-FRIDAY\n"
+        f"  # {store_count} store(s) in network\n"
+        "\n"
+        "  dc_reorder_weeks: 2\n"
+        "  dc_target_weeks:  5\n"
+        "  dc_start_days:    30\n"
+        "  dc_review_dow:    MONDAY\n"
+        "\n"
+        "  sup_lead_min:  3\n"
+        "  sup_lead_max:  7\n"
+        "  sup_on_time:   0.90\n"
+        "  sup_partial:   0.10\n"
+        "\n"
+        "  dc_lead_days:  2\n"
+        "  dc_on_time:    0.95\n"
+        "  dc_partial:    0.05\n"
+        "\n"
+        "  # -- Per-DC overrides -- uncomment and edit the DCs you want to override:\n"
+        + _dc_override_block("dc_on_time_by_dc", "0.95")
+        + _dc_override_block("dc_partial_by_dc", "0.05")
+        + _dc_override_block("dc_lead_days_by_dc", "2")
+        + "\n"
+        + supplier_ref
+    )
 
-  dc_reorder_weeks: 2
-  dc_target_weeks:  5
-  dc_start_days:    30
-  dc_review_dow:    MONDAY
 
-  sup_lead_min:  3
-  sup_lead_max:  7
-  sup_on_time:   0.90
-  sup_partial:   0.10
-
-  dc_lead_days:  2
-  dc_on_time:    0.95
-  dc_partial:    0.05
-
-  # Per-DC overrides (optional):
-  # dc_on_time_by_dc:
-  #   DC01: 0.80
-  # dc_partial_by_dc:
-  #   DC01: 0.20
-  # dc_lead_days_by_dc:
-  #   DC01: 3
-"""
-
-
-def _render_yaml_run_editor(retailer_account_id):
+def _render_yaml_run_editor(retailer_account_id, entities: dict):
     """YAML-based run config editor. Returns True if a run was successfully submitted."""
     import yaml as _yaml
     from datetime import date as _date
+
+    tpl_key = f"_run_yaml_tpl_{retailer_account_id}"
+    if tpl_key not in st.session_state:
+        st.session_state[tpl_key] = _build_run_yaml_template(entities)
+    default_template = st.session_state[tpl_key]
 
     st.markdown(
         "<style>textarea { font-family: 'Courier New', monospace !important;"
@@ -358,7 +391,7 @@ def _render_yaml_run_editor(retailer_account_id):
 
     yaml_text = st.text_area(
         "yaml",
-        value=st.session_state.get("_run_yaml_text", _RUN_YAML_TEMPLATE),
+        value=st.session_state.get("_run_yaml_text", default_template),
         height=500,
         key="_run_yaml_ta",
         label_visibility="collapsed",
@@ -1307,6 +1340,18 @@ def render():
     else:
         col_title.title("New Simulation")
 
+    if not run_id:
+        entities = _ensure_entities(retailer_account_id) or {}
+        n_items     = len(entities.get("items", []))
+        n_stores    = len(entities.get("stores", []))
+        n_dcs       = len(entities.get("dcs", []))
+        n_suppliers = len(entities.get("suppliers", []))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Items",     n_items)
+        c2.metric("Stores",    n_stores)
+        c3.metric("DCs",       n_dcs)
+        c4.metric("Suppliers", n_suppliers)
+
     st.info("**Scenarios** — inject promo anomalies or supply disruptions and observe how your replenishment system responds.")
     if st.button("Run a Scenario instead", use_container_width=False):
         st.session_state.pop("_scen_tile", None)
@@ -1323,6 +1368,6 @@ def render():
             st.session_state.pop(f"runs_list_{retailer_account_id}", None)
 
     with tab_yaml:
-        _render_yaml_run_editor(retailer_account_id)
+        _render_yaml_run_editor(retailer_account_id, _ensure_entities(retailer_account_id) or {})
 
     _render_results()
