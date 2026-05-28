@@ -295,6 +295,161 @@ def _execute_run(config):
     st.success(f"Simulation complete. Run ID: `{st.session_state['sim_results']['sim_id']}`")
 
 
+_RUN_YAML_TEMPLATE = """\
+# =============================================================================
+# SIMULATION RUN CONFIG
+# =============================================================================
+# Edit the values below, then click Validate → Run Simulation.
+# All fields are optional — defaults are shown and used if omitted.
+# =============================================================================
+
+run:
+  simulation_name: "My Simulation Run"
+  notes: ""
+
+  start_date: "2024-01-01"            # YYYY-MM-DD
+  end_date:   "2024-12-31"
+
+  seed: 42
+
+  # trailing_avg_28d | promo_aware_7d | baseline_only
+  replenishment_policy: trailing_avg_28d
+  smoothing_days: 28                  # 7–90
+
+  store_reorder_weeks: 2
+  store_target_weeks:  3
+  store_start_days:    14
+  store_order_dow:     MONDAY         # MONDAY–FRIDAY
+
+  dc_reorder_weeks: 2
+  dc_target_weeks:  5
+  dc_start_days:    30
+  dc_review_dow:    MONDAY
+
+  sup_lead_min:  3
+  sup_lead_max:  7
+  sup_on_time:   0.90
+  sup_partial:   0.10
+
+  dc_lead_days:  2
+  dc_on_time:    0.95
+  dc_partial:    0.05
+
+  # Per-DC overrides (optional):
+  # dc_on_time_by_dc:
+  #   DC01: 0.80
+  # dc_partial_by_dc:
+  #   DC01: 0.20
+  # dc_lead_days_by_dc:
+  #   DC01: 3
+"""
+
+
+def _render_yaml_run_editor(retailer_account_id):
+    """YAML-based run config editor. Returns True if a run was successfully submitted."""
+    import yaml as _yaml
+    from datetime import date as _date
+
+    st.markdown(
+        "<style>textarea { font-family: 'Courier New', monospace !important;"
+        " font-size: 13px !important; }</style>",
+        unsafe_allow_html=True,
+    )
+
+    yaml_text = st.text_area(
+        "yaml",
+        value=st.session_state.get("_run_yaml_text", _RUN_YAML_TEMPLATE),
+        height=500,
+        key="_run_yaml_ta",
+        label_visibility="collapsed",
+    )
+    st.session_state["_run_yaml_text"] = yaml_text
+
+    col_v, col_r = st.columns(2)
+
+    with col_v:
+        if st.button("Validate", key="_run_yaml_validate", use_container_width=True):
+            st.session_state.pop("_run_yaml_valid", None)
+            try:
+                raw = _yaml.safe_load(yaml_text)
+                if not isinstance(raw, dict) or not isinstance(raw.get("run"), dict):
+                    raise ValueError("YAML must contain a 'run:' block")
+                run = raw["run"]
+                # Basic date check client-side for fast feedback
+                s = _date.fromisoformat(str(run.get("start_date", "2024-01-01")))
+                e = _date.fromisoformat(str(run.get("end_date", "2024-12-31")))
+                if e <= s:
+                    raise ValueError("end_date must be after start_date")
+                st.session_state["_run_yaml_valid"] = True
+                st.success("YAML looks good — click Run Simulation to proceed.")
+            except Exception as exc:
+                st.error(str(exc))
+
+    validated = st.session_state.get("_run_yaml_valid", False)
+
+    with col_r:
+        if st.button(
+            "▶ Run Simulation",
+            key="_run_yaml_run",
+            type="primary",
+            use_container_width=True,
+            disabled=not validated,
+        ):
+            t0 = time.time()
+            with st.spinner("Running simulation…"):
+                try:
+                    resp = api.run_simulation_yaml(yaml_text)
+                except httpx.ConnectError as exc:
+                    show_error(f"Cannot reach backend at {api.BACKEND_URL}", exc)
+                    return False
+                except httpx.TimeoutException as exc:
+                    show_error("Simulation request timed out — try a shorter date range", exc)
+                    return False
+                except httpx.HTTPStatusError as exc:
+                    show_error("Simulation engine returned an error", exc, exc.response)
+                    return False
+                except Exception as exc:
+                    show_error("Unexpected error", exc)
+                    return False
+
+            sim_duration = round(time.time() - t0, 1)
+            if not resp.get("simulation_id"):
+                st.error("Simulation engine returned an empty response.")
+                return False
+
+            # Extract dates from YAML for _normalize_response
+            try:
+                raw = _yaml.safe_load(yaml_text)
+                run_block = raw.get("run", {})
+                sim_start = _date.fromisoformat(str(run_block.get("start_date", "2024-01-01")))
+                sim_end   = _date.fromisoformat(str(run_block.get("end_date",   "2024-12-31")))
+                store_rw  = int(run_block.get("store_reorder_weeks", 2))
+                store_tw  = int(run_block.get("store_target_weeks",  3))
+            except Exception:
+                sim_start, sim_end, store_rw, store_tw = (
+                    _date(2024, 1, 1), _date(2024, 12, 31), 2, 3
+                )
+
+            st.session_state["sim_results"] = _normalize_response(
+                resp,
+                config_block={},
+                sim_duration=sim_duration,
+                sim_start_date=sim_start,
+                sim_end_date=sim_end,
+                store_reorder_weeks=store_rw,
+                store_target_weeks=store_tw,
+            )
+            st.session_state.pop("_scenario_meta", None)
+            st.session_state.pop("_run_yaml_valid", None)
+            st.session_state.pop(f"runs_list_{retailer_account_id}", None)
+            st.success(
+                f"Simulation complete. Run ID: `{st.session_state['sim_results']['sim_id']}`"
+            )
+            return True
+
+    return False
+
+
 def _load_past_run(run_id):
     """Fetch a past simulation's CSV-backed results and populate session_state."""
     with st.spinner(f"Loading run {run_id[:8]}…"):
@@ -1159,11 +1314,15 @@ def render():
 
     st.divider()
 
-    # Default: new-run flow with the config form
-    run_btn, config = _render_config_form(retailer_account_id, user_id)
-    if run_btn:
-        _execute_run(config)
-        # Invalidate cached runs list so the runs page refetches
-        st.session_state.pop(f"runs_list_{retailer_account_id}", None)
+    tab_form, tab_yaml = st.tabs(["Form", "YAML"])
+
+    with tab_form:
+        run_btn, config = _render_config_form(retailer_account_id, user_id)
+        if run_btn:
+            _execute_run(config)
+            st.session_state.pop(f"runs_list_{retailer_account_id}", None)
+
+    with tab_yaml:
+        _render_yaml_run_editor(retailer_account_id)
 
     _render_results()

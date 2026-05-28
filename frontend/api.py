@@ -134,6 +134,17 @@ def run_simulation(config):
     return r.json()
 
 
+def run_simulation_yaml(yaml_content: str):
+    r = httpx.post(
+        f"{BACKEND_URL}/run/yaml",
+        json={"yaml_content": yaml_content},
+        headers=_auth_headers(),
+        timeout=300.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def fetch_simulation(simulation_id):
     r = httpx.get(
         f"{BACKEND_URL}/simulation/{simulation_id}",

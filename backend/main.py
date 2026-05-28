@@ -674,6 +674,43 @@ async def run_simulation(req: dict, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
+# ── YAML-based simulation run proxy ──────────────────────────────────────────
+
+@app.post("/run/yaml")
+async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Accept {"yaml_content": "<yaml string>"}, inject retailer_account_id into
+    the run: block at parse time (engine enforces it), and proxy to /simulate/yaml.
+    """
+    import yaml as _yaml
+
+    yaml_text = body.get("yaml_content", "")
+    # Inject retailer_account_id into the run: block so the engine picks it up
+    try:
+        raw = _yaml.safe_load(yaml_text)
+        if isinstance(raw, dict) and isinstance(raw.get("run"), dict):
+            raw["run"]["retailer_account_id"] = current_user["retailer_account_id"]
+            raw["run"]["user_id"] = current_user["user_id"]
+            yaml_text = _yaml.dump(raw, default_flow_style=False)
+    except Exception:
+        pass  # engine will surface the YAML error with a clear 422
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            resp = await client.post(
+                f"{SIM_ENGINE_URL}/simulate/yaml",
+                json={"yaml_content": yaml_text},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Simulation timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
 # ── Scenario validate proxy ───────────────────────────────────────────────────
 
 @app.post("/scenario/validate")
