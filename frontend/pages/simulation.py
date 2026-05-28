@@ -296,80 +296,126 @@ def _execute_run(config):
 
 
 def _build_run_yaml_template(entities: dict) -> str:
-    """Generate a run config YAML template pre-filled with real DC and supplier codes."""
+    """Generate a run config YAML template pre-filled with real entity codes."""
     dcs       = entities.get("dcs", [])
     suppliers = entities.get("suppliers", [])
     stores    = entities.get("stores", [])
 
-    dc_codes  = [d.get("dc_code", "") for d in dcs if d.get("dc_code")]
-    sup_codes = [s.get("supplier_code", "") for s in suppliers if s.get("supplier_code")]
+    dc_codes  = [d.get("dc_code", "")  for d in dcs       if d.get("dc_code")]
+    sup_codes = [s.get("supplier_code","") for s in suppliers if s.get("supplier_code")]
+    str_codes = [s.get("store_code", "") for s in stores   if s.get("store_code")]
 
-    def _dc_override_block(key, default):
-        if not dc_codes:
-            return f"  # {key}:\n  #   DC_CODE: {default}\n"
+    def _override_block(key, codes, default, fallback_label="CODE"):
+        if not codes:
+            return f"  # {key}:\n  #   {fallback_label}: {default}\n"
         lines = [f"  # {key}:"]
-        for code in dc_codes:
+        for code in codes:
             lines.append(f"  #   {code}: {default}")
         return "\n".join(lines) + "\n"
 
-    supplier_ref = ""
-    if sup_codes:
-        sup_lines = ["  # Available suppliers (use these codes in scenario YAML):"]
-        for code in sup_codes:
-            sup_lines.append(f"  #   {code}")
-        supplier_ref = "\n".join(sup_lines) + "\n"
-    else:
-        supplier_ref = "  # No suppliers found in network\n"
+    store_count   = len(stores)
+    dc_count      = len(dcs)
+    sup_count     = len(suppliers)
 
-    store_count = len(stores)
+    sep_outer = "  # " + "#" * 74 + "\n"
+    sep_inner = "  # " + "=" * 74 + "\n"
 
-    return (
-        "# =============================================================================\n"
-        "# SIMULATION RUN CONFIG\n"
-        "# =============================================================================\n"
-        "# Edit the values below, then click Validate → Run Simulation.\n"
-        "# All fields are optional — defaults are shown and used if omitted.\n"
-        "# =============================================================================\n"
-        "\n"
-        "run:\n"
+    def _section(num, title, body):
+        return (
+            sep_inner
+            + f"  # [{num}] {title}\n"
+            + sep_inner
+            + body
+            + "\n"
+        )
+
+    s1 = _section("1", "METADATA & DATES",
         '  simulation_name: "My Simulation Run"\n'
         '  notes: ""\n'
         "\n"
         '  start_date: "2024-01-01"            # YYYY-MM-DD\n'
         '  end_date:   "2024-12-31"\n'
-        "\n"
-        "  seed: 42\n"
-        "\n"
-        "  # trailing_avg_28d | promo_aware_7d | baseline_only\n"
+        "  seed: 42                            # change for a different random draw\n"
+    )
+
+    s2 = _section("2", "REPLENISHMENT POLICY",
+        "  #   trailing_avg_28d  — rolling 28-day average demand (default)\n"
+        "  #   promo_aware_7d    — looks 7 days ahead for upcoming promos\n"
+        "  #   baseline_only     — fixed baseline, no learning\n"
         "  replenishment_policy: trailing_avg_28d\n"
-        "  smoothing_days: 28                  # 7-90\n"
-        "\n"
-        "  store_reorder_weeks: 2\n"
-        "  store_target_weeks:  3\n"
-        "  store_start_days:    14\n"
+        "  smoothing_days: 28                  # trailing window (7-90)\n"
+    )
+
+    s3 = _section(f"3", f"STORE GLOBALS  ({store_count} store(s) in network — override per store in section [9])",
+        "  store_reorder_weeks: 2              # reorder when stock < N weeks of cover\n"
+        "  store_target_weeks:  3              # replenish up to N weeks of cover\n"
+        "  store_start_days:    14             # opening inventory (days of cover)\n"
         "  store_order_dow:     MONDAY         # MONDAY-FRIDAY\n"
-        f"  # {store_count} store(s) in network\n"
-        "\n"
+    )
+
+    s4 = _section(f"4", f"DC GLOBALS  ({dc_count} DC(s) in network — override per DC in section [7])",
         "  dc_reorder_weeks: 2\n"
         "  dc_target_weeks:  5\n"
         "  dc_start_days:    30\n"
         "  dc_review_dow:    MONDAY\n"
-        "\n"
-        "  sup_lead_min:  3\n"
-        "  sup_lead_max:  7\n"
-        "  sup_on_time:   0.90\n"
-        "  sup_partial:   0.10\n"
-        "\n"
-        "  dc_lead_days:  2\n"
+    )
+
+    s5 = _section(f"5", f"SUPPLIER GLOBALS  ({sup_count} supplier(s) — override per supplier in section [8])",
+        "  sup_lead_min:  3                    # minimum days from PO to DC receipt\n"
+        "  sup_lead_max:  7                    # maximum days (uniform draw)\n"
+        "  sup_on_time:   0.90                 # fraction arriving on time\n"
+        "  sup_partial:   0.10                 # fraction arriving as partial shipment\n"
+    )
+
+    s6 = _section("6", "DC → STORE RELIABILITY GLOBALS",
+        "  dc_lead_days:  2                    # transit days DC → store\n"
         "  dc_on_time:    0.95\n"
         "  dc_partial:    0.05\n"
-        "\n"
-        "  # -- Per-DC overrides -- uncomment and edit the DCs you want to override:\n"
-        + _dc_override_block("dc_on_time_by_dc", "0.95")
-        + _dc_override_block("dc_partial_by_dc", "0.05")
-        + _dc_override_block("dc_lead_days_by_dc", "2")
+    )
+
+    s7_body = (
+        "  # Reliability overrides\n"
+        + _override_block("dc_on_time_by_dc",       dc_codes, "0.95", "DC_CODE")
+        + _override_block("dc_partial_by_dc",        dc_codes, "0.05", "DC_CODE")
+        + _override_block("dc_lead_days_by_dc",      dc_codes, "2",    "DC_CODE")
         + "\n"
-        + supplier_ref
+        + "  # Policy overrides\n"
+        + _override_block("dc_reorder_weeks_by_dc",  dc_codes, "2",      "DC_CODE")
+        + _override_block("dc_target_weeks_by_dc",   dc_codes, "5",      "DC_CODE")
+        + _override_block("dc_start_days_by_dc",     dc_codes, "30",     "DC_CODE")
+        + _override_block("dc_review_dow_by_dc",     dc_codes, "MONDAY", "DC_CODE")
+    )
+    s7 = _section("7", "PER-DC OVERRIDES  (keyed by dc_code — uncomment to activate)", s7_body)
+
+    s8_body = (
+        _override_block("sup_lead_min_by_supplier", sup_codes, "3",    "SUP_CODE")
+        + _override_block("sup_lead_max_by_supplier", sup_codes, "7",    "SUP_CODE")
+        + _override_block("sup_on_time_by_supplier",  sup_codes, "0.90", "SUP_CODE")
+        + _override_block("sup_partial_by_supplier",  sup_codes, "0.10", "SUP_CODE")
+    )
+    s8 = _section("8", "PER-SUPPLIER OVERRIDES  (keyed by supplier_code — uncomment to activate)", s8_body)
+
+    s9_body = (
+        _override_block("store_reorder_weeks_by_store", str_codes, "2",      "STR_CODE")
+        + _override_block("store_target_weeks_by_store",  str_codes, "3",      "STR_CODE")
+        + _override_block("store_start_days_by_store",    str_codes, "14",     "STR_CODE")
+        + _override_block("store_order_dow_by_store",     str_codes, "MONDAY", "STR_CODE")
+    )
+    s9 = _section("9", "PER-STORE OVERRIDES  (keyed by store_code — uncomment to activate)", s9_body)
+
+    return (
+        sep_outer
+        + "  # SIMULATION RUN CONFIG\n"
+        + sep_outer
+        + "  # Edit the values below, then click Validate → Run Simulation.\n"
+        + "  # All fields are optional — defaults are shown and used if omitted.\n"
+        + "  # Sections: [1] Metadata  [2] Policy  [3] Store  [4] DC  [5] Supplier\n"
+        + "  #           [6] DC→Store  [7] Per-DC  [8] Per-Supplier  [9] Per-Store\n"
+        + sep_outer
+        + "\n"
+        + "run:\n"
+        + "\n"
+        + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9
     )
 
 

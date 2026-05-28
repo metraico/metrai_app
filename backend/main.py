@@ -1,10 +1,18 @@
 import hashlib
 import json
+import logging
 import os
 import secrets
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger("metrai_backend")
 
 import httpx
 import jwt
@@ -12,7 +20,7 @@ import psycopg2
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -36,6 +44,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    logger.info("%s %s → %d  (%.0fms)", request.method, request.url.path, response.status_code, ms)
+    return response
 
 DUMMY_ACCOUNT_ID = "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 DUMMY_USER_ID    = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
@@ -661,16 +678,23 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
     req["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     req["user_id"]             = current_user["user_id"]
+    account = current_user["retailer_account_id"]
+    logger.info("run  account=%s  name=%r  dates=%s→%s  policy=%s",
+                account, req.get("simulation_name"), req.get("start_date"), req.get("end_date"),
+                req.get("replenishment_policy"))
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(f"{SIM_ENGINE_URL}/simulate", json=req)
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:
+        logger.error("run  account=%s  engine unreachable", account)
         raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
     except httpx.TimeoutException:
+        logger.error("run  account=%s  engine timed out", account)
         raise HTTPException(status_code=504, detail="Simulation timed out")
     except httpx.HTTPStatusError as e:
+        logger.error("run  account=%s  engine error %d: %s", account, e.response.status_code, e.response.text[:200])
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
@@ -684,6 +708,8 @@ async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_curre
     """
     import yaml as _yaml
 
+    account = current_user["retailer_account_id"]
+    logger.info("run/yaml  account=%s", account)
     yaml_text = body.get("yaml_content", "")
     # Inject retailer_account_id into the run: block so the engine picks it up
     try:
@@ -704,10 +730,13 @@ async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_curre
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:
+        logger.error("run/yaml  account=%s  engine unreachable", account)
         raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
     except httpx.TimeoutException:
+        logger.error("run/yaml  account=%s  engine timed out", account)
         raise HTTPException(status_code=504, detail="Simulation timed out")
     except httpx.HTTPStatusError as e:
+        logger.error("run/yaml  account=%s  engine error %d: %s", account, e.response.status_code, e.response.text[:200])
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
