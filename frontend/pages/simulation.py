@@ -1,5 +1,4 @@
 import json
-import re
 import time
 from datetime import date
 
@@ -37,129 +36,6 @@ def _ensure_entities(retailer_account_id):
     return st.session_state[key]
 
 
-# =============================================================================
-# Run Simulation form
-# =============================================================================
-
-def _render_config_form(retailer_account_id, user_id):
-    """Render the simulation config form. Returns (run_btn, config_dict)."""
-    with st.container(border=True):
-        st.subheader("Simulation Config")
-
-        col_l, col_r = st.columns(2)
-
-        with col_l:
-            sim_name = st.text_input("Simulation Name", value="Default Run")
-            sim_notes = st.text_area("Notes", value="", height=80)
-            start_date = st.date_input("Start Date", value=date(2024, 1, 1))
-            end_date = st.date_input("End Date", value=date(2024, 12, 31))
-            replenishment_policy = st.selectbox(
-                "Replenishment Policy",
-                ["trailing_avg_28d", "promo_aware_7d", "baseline_only"],
-                index=0,
-            )
-            policy_match = re.search(r"(\d+)d", replenishment_policy)
-            default_smoothing = int(policy_match.group(1)) if policy_match else 28
-            smoothing_days = st.number_input(
-                "Demand Smoothing Window (days)",
-                min_value=7, max_value=90, value=default_smoothing,
-            )
-            seed = st.number_input("Random Seed", min_value=0, value=42)
-
-        with col_r:
-            with st.expander("Store Config"):
-                store_reorder_weeks = st.slider("Min Inventory Trigger (weeks of cover)", 1, 4, 2)
-                store_target_weeks = st.slider("Store Target Stock (weeks)", 1, 8, 3)
-                store_start_days = st.number_input("Starting Inventory (days)", 1, 60, 14)
-                store_order_dow = st.selectbox(
-                    "Store Order Day",
-                    ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
-                    index=0,
-                )
-
-            with st.expander("DC Config"):
-                dc_reorder_weeks = st.slider("DC Min Inventory Trigger (weeks)", 1, 6, 2)
-                dc_target_weeks = st.slider("DC Target Stock (weeks)", 2, 12, 5)
-                dc_start_days = st.number_input("DC Starting Inventory (days)", 1, 90, 30)
-                dc_review_dow = st.selectbox(
-                    "DC Review Day",
-                    ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
-                    index=0,
-                )
-
-            with st.expander("Supplier Config"):
-                sup_lead_min = st.number_input("Supplier lead time (min, days)", 1, 14, 3)
-                sup_lead_max = st.number_input("Supplier lead time (max, days)", 1, 30, 7)
-                sup_on_time = st.slider("Supplier on-time rate", 0.5, 1.0, 0.90, 0.05)
-                sup_partial = st.slider("Supplier partial-delivery rate", 0.0, 0.5, 0.10, 0.05)
-
-            with st.expander("DC → Store Config"):
-                dc_lead_days = st.number_input("DC → Store lead time (days)", 1, 14, 2)
-                dc_on_time = st.slider("DC → Store on-time rate", 0.5, 1.0, 0.95, 0.05)
-                dc_partial = st.slider("DC → Store partial-delivery rate", 0.0, 0.3, 0.05, 0.05)
-
-            entities = _ensure_entities(retailer_account_id) or {}
-            dcs = entities.get("dcs", [])
-            dc_on_time_by_dc = {}
-            dc_partial_by_dc = {}
-            dc_lead_days_by_dc = {}
-            if dcs:
-                with st.expander("Per-DC Rates"):
-                    for d in dcs:
-                        code = d.get("dc_code")
-                        if not code:
-                            continue
-                        st.markdown(f"**{code}**")
-                        dc_on_time_by_dc[code] = st.slider(
-                            f"On-time ({code})", 0.5, 1.0, dc_on_time, 0.05,
-                            key=f"dc_ot_{code}",
-                        )
-                        dc_partial_by_dc[code] = st.slider(
-                            f"Partial ({code})", 0.0, 0.3, dc_partial, 0.05,
-                            key=f"dc_pt_{code}",
-                        )
-                        dc_lead_days_by_dc[code] = st.number_input(
-                            f"Lead days ({code})", 1, 14, int(dc_lead_days),
-                            key=f"dc_ld_{code}",
-                        )
-
-        run_btn = st.button("▶ Run Simulation", type="primary", use_container_width=True)
-
-    config = {
-        "retailer_account_id": retailer_account_id,
-        "created_by":          user_id,
-        "simulation_name":     sim_name,
-        "notes":               sim_notes,
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-        "replenishment_policy": replenishment_policy,
-        "smoothing_days": int(smoothing_days),
-        "store_reorder_weeks": store_reorder_weeks,
-        "store_target_weeks": store_target_weeks,
-        "store_start_days": int(store_start_days),
-        "store_order_dow": store_order_dow,
-        "dc_reorder_weeks": dc_reorder_weeks,
-        "dc_target_weeks": dc_target_weeks,
-        "dc_start_days": int(dc_start_days),
-        "dc_review_dow": dc_review_dow,
-        "sup_lead_min": int(sup_lead_min),
-        "sup_lead_max": int(sup_lead_max),
-        "sup_on_time": sup_on_time,
-        "sup_partial": sup_partial,
-        "dc_on_time": dc_on_time,
-        "dc_partial": dc_partial,
-        "dc_lead_days": int(dc_lead_days),
-        "dc_on_time_by_dc": dc_on_time_by_dc,
-        "dc_partial_by_dc": dc_partial_by_dc,
-        "dc_lead_days_by_dc": dc_lead_days_by_dc,
-        "seed": int(seed),
-        # carry these for results page (not posted to backend)
-        "_start_date_obj": start_date,
-        "_end_date_obj": end_date,
-        "_store_reorder_weeks": store_reorder_weeks,
-        "_store_target_weeks": store_target_weeks,
-    }
-    return run_btn, config
 
 
 def _normalize_response(resp, *, config_block=None, sim_duration=None,
@@ -246,53 +122,426 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
     }
 
 
-def _execute_run(config):
-    """POST /run, normalize dataframes, store in session_state.sim_results."""
-    if config["_start_date_obj"] >= config["_end_date_obj"]:
-        st.error("Start date must be before end date.")
-        return
 
-    payload = {k: v for k, v in config.items() if not k.startswith("_")}
+
+def _build_run_yaml_template(entities: dict) -> str:
+    """Generate a run config YAML template pre-filled with real entity codes."""
+    dcs       = entities.get("dcs", [])
+    suppliers = entities.get("suppliers", [])
+    stores    = entities.get("stores", [])
+
+    dc_codes  = [d.get("dc_code", "")  for d in dcs       if d.get("dc_code")]
+    sup_codes = [s.get("supplier_code","") for s in suppliers if s.get("supplier_code")]
+    str_codes = [s.get("store_code", "") for s in stores   if s.get("store_code")]
+
+    def _override_block(key, codes, default, fallback_label="CODE"):
+        if not codes:
+            return f"  # {key}:\n  #   {fallback_label}: {default}\n"
+        lines = [f"  # {key}:"]
+        for code in codes:
+            lines.append(f"  #   {code}: {default}")
+        return "\n".join(lines) + "\n"
+
+    store_count   = len(stores)
+    dc_count      = len(dcs)
+    sup_count     = len(suppliers)
+
+    sep_outer = "  # " + "#" * 74 + "\n"
+    sep_inner = "  # " + "=" * 74 + "\n"
+
+    def _section(num, title, body):
+        return (
+            sep_inner
+            + f"  # [{num}] {title}\n"
+            + sep_inner
+            + body
+            + "\n"
+        )
+
+    s1 = _section("1", "METADATA & DATES",
+        '  simulation_name: "My Simulation Run"\n'
+        '  notes: ""\n'
+        "\n"
+        '  start_date: "2024-01-01"            # YYYY-MM-DD\n'
+        '  end_date:   "2024-12-31"\n'
+        "  seed: 42                            # change for a different random draw\n"
+    )
+
+    s2 = _section("2", "REPLENISHMENT POLICY",
+        "  #   trailing_avg_28d  — rolling 28-day average demand (default)\n"
+        "  #   promo_aware_7d    — looks 7 days ahead for upcoming promos\n"
+        "  #   baseline_only     — fixed baseline, no learning\n"
+        "  replenishment_policy: trailing_avg_28d\n"
+        "  smoothing_days: 28                  # trailing window (7-90)\n"
+    )
+
+    s3 = _section(f"3", f"STORE GLOBALS  ({store_count} store(s) in network — override per store in section [9])",
+        "  store_reorder_weeks: 2              # reorder when stock < N weeks of cover\n"
+        "  store_target_weeks:  3              # replenish up to N weeks of cover\n"
+        "  store_start_days:    14             # opening inventory (days of cover)\n"
+        "  store_order_dow:     MONDAY         # MONDAY-FRIDAY\n"
+    )
+
+    s4 = _section(f"4", f"DC GLOBALS  ({dc_count} DC(s) in network — override per DC in section [7])",
+        "  dc_reorder_weeks: 2\n"
+        "  dc_target_weeks:  5\n"
+        "  dc_start_days:    30\n"
+        "  dc_review_dow:    MONDAY\n"
+    )
+
+    s5 = _section(f"5", f"SUPPLIER GLOBALS  ({sup_count} supplier(s) — override per supplier in section [8])",
+        "  sup_lead_min:  3                    # minimum days from PO to DC receipt\n"
+        "  sup_lead_max:  7                    # maximum days (uniform draw)\n"
+        "  sup_on_time:   0.90                 # fraction arriving on time\n"
+        "  sup_partial:   0.10                 # fraction arriving as partial shipment\n"
+    )
+
+    s6 = _section("6", "DC → STORE RELIABILITY GLOBALS",
+        "  dc_lead_days:  2                    # transit days DC → store\n"
+        "  dc_on_time:    0.95\n"
+        "  dc_partial:    0.05\n"
+    )
+
+    s7_body = (
+        "  # Reliability overrides\n"
+        + _override_block("dc_on_time_by_dc",       dc_codes, "0.95", "DC_CODE")
+        + _override_block("dc_partial_by_dc",        dc_codes, "0.05", "DC_CODE")
+        + _override_block("dc_lead_days_by_dc",      dc_codes, "2",    "DC_CODE")
+        + "\n"
+        + "  # Policy overrides\n"
+        + _override_block("dc_reorder_weeks_by_dc",  dc_codes, "2",      "DC_CODE")
+        + _override_block("dc_target_weeks_by_dc",   dc_codes, "5",      "DC_CODE")
+        + _override_block("dc_start_days_by_dc",     dc_codes, "30",     "DC_CODE")
+        + _override_block("dc_review_dow_by_dc",     dc_codes, "MONDAY", "DC_CODE")
+    )
+    s7 = _section("7", "PER-DC OVERRIDES  (keyed by dc_code — uncomment to activate)", s7_body)
+
+    s8_body = (
+        _override_block("sup_lead_min_by_supplier", sup_codes, "3",    "SUP_CODE")
+        + _override_block("sup_lead_max_by_supplier", sup_codes, "7",    "SUP_CODE")
+        + _override_block("sup_on_time_by_supplier",  sup_codes, "0.90", "SUP_CODE")
+        + _override_block("sup_partial_by_supplier",  sup_codes, "0.10", "SUP_CODE")
+    )
+    s8 = _section("8", "PER-SUPPLIER OVERRIDES  (keyed by supplier_code — uncomment to activate)", s8_body)
+
+    s9_body = (
+        _override_block("store_reorder_weeks_by_store", str_codes, "2",      "STR_CODE")
+        + _override_block("store_target_weeks_by_store",  str_codes, "3",      "STR_CODE")
+        + _override_block("store_start_days_by_store",    str_codes, "14",     "STR_CODE")
+        + _override_block("store_order_dow_by_store",     str_codes, "MONDAY", "STR_CODE")
+    )
+    s9 = _section("9", "PER-STORE OVERRIDES  (keyed by store_code — uncomment to activate)", s9_body)
+
+    return (
+        sep_outer
+        + "  # SIMULATION RUN CONFIG\n"
+        + sep_outer
+        + "  # Edit the values below, then click Validate → Run Simulation.\n"
+        + "  # All fields are optional — defaults are shown and used if omitted.\n"
+        + "  # Sections: [1] Metadata  [2] Policy  [3] Store  [4] DC  [5] Supplier\n"
+        + "  #           [6] DC→Store  [7] Per-DC  [8] Per-Supplier  [9] Per-Store\n"
+        + sep_outer
+        + "\n"
+        + "run:\n"
+        + "\n"
+        + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9
+    )
+
+
+# Scenario-only YAML templates (no run: block — appended to run YAML at submit time)
+_SCEN_TEMPLATES = {
+    "promo_forecast": """\
+# =============================================================================
+# SCENARIO: Promo Forecast Behavior
+# =============================================================================
+# What this tests:
+#   The system forecasts demand using the DB promo multiplier (e.g. 4x uplift).
+#   You inject a gap between that forecast and actual shelf demand.
+#   The trailing average then learns from the anomaly, distorting replenishment
+#   in the weeks after the promo ends.
+# =============================================================================
+
+scenario:
+  scenario_type: promo_forecast
+
+  # List one entry per promo event you want to inject an anomaly into.
+  promo_injections:
+    - promo_name: "PEPSI_12PK_B2G2_SUPER_BOWL_2024"
+      # promo_name must exactly match the name in the promos table.
+
+      direction: over
+      # direction: over (actual > forecast) or under (actual < forecast)
+
+      magnitude_pct: 50
+      # How far actual demand deviates from the forecast, in percent (1-200).
+      # 50 -> actual = forecast x 1.50 (over) or x 0.50 (under)
+
+      stores: all
+      # Which stores: all  OR  [STR_W01, STR_E02]
+""",
+    "hidden_lost_sales": """\
+# =============================================================================
+# SCENARIO: Hidden Lost Sales
+# =============================================================================
+# What this tests:
+#   DC deliveries to stores are disrupted for a defined window.
+#   Suppressed sales corrupt the trailing average — causing under-ordering
+#   in the weeks after deliveries resume.
+#
+# Disruption modes:
+#   stockout — nothing ships (fulfillment_pct = 0)
+#   outage   — partial fraction gets through (set fulfillment_pct 0-100)
+#   delayed  — shipments deferred N days (set delay_days)
+# =============================================================================
+
+scenario:
+  scenario_type: hidden_lost_sales
+
+  disruptions:
+    - dc: DC_EAST
+      # dc must exactly match dc_code in distribution_centers table.
+
+      items: all
+      # items: all  OR  [2840016014, 1200080994]
+
+      window_start: "2024-02-05"   # first affected day
+      window_end:   "2024-02-11"   # last affected day (inclusive)
+
+      mode: stockout
+      # mode: stockout | outage | delayed
+      # For outage: add   fulfillment_pct: 30
+      # For delayed: add  delay_days: 5
+""",
+}
+
+
+def _execute_yaml_run(yaml_text: str, retailer_account_id: str) -> bool:
+    """POST yaml_text to /run/yaml, normalize response, store in sim_results. Returns True on success."""
+    import yaml as _yaml
+    from datetime import date as _date
 
     t0 = time.time()
     with st.spinner("Running simulation…"):
         try:
-            resp = api.run_simulation(payload)
-        except httpx.ConnectError as e:
-            show_error(f"Cannot reach backend at {api.BACKEND_URL}", e)
-            return
-        except httpx.TimeoutException as e:
-            show_error("Simulation request timed out — try a shorter date range", e)
-            return
-        except httpx.HTTPStatusError as e:
-            show_error("Simulation engine returned an error", e, e.response)
-            return
-        except Exception as e:
-            show_error("Unexpected error", e)
-            return
+            resp = api.run_simulation_yaml(yaml_text)
+        except httpx.ConnectError as exc:
+            show_error(f"Cannot reach backend at {api.BACKEND_URL}", exc)
+            return False
+        except httpx.TimeoutException as exc:
+            show_error("Simulation request timed out — try a shorter date range", exc)
+            return False
+        except httpx.HTTPStatusError as exc:
+            show_error("Simulation engine returned an error", exc, exc.response)
+            return False
+        except Exception as exc:
+            show_error("Unexpected error", exc)
+            return False
 
     sim_duration = round(time.time() - t0, 1)
-
     if not resp.get("simulation_id"):
-        st.error(
-            "Simulation engine returned an empty response. "
-            "Check that the engine container is running and reachable from the backend "
-            f"(BACKEND_URL={api.BACKEND_URL}, SIM_ENGINE_URL on backend should point to the engine on port 8000)."
-        )
-        return
+        st.error("Simulation engine returned an empty response.")
+        return False
+
+    try:
+        raw = _yaml.safe_load(yaml_text) or {}
+        run_block = raw.get("run", {})
+        sim_start = _date.fromisoformat(str(run_block.get("start_date", "2024-01-01")))
+        sim_end   = _date.fromisoformat(str(run_block.get("end_date",   "2024-12-31")))
+        store_rw  = int(run_block.get("store_reorder_weeks", 2))
+        store_tw  = int(run_block.get("store_target_weeks",  3))
+    except Exception:
+        sim_start, sim_end, store_rw, store_tw = (_date(2024, 1, 1), _date(2024, 12, 31), 2, 3)
 
     st.session_state["sim_results"] = _normalize_response(
         resp,
-        config_block=payload,
+        config_block={},
         sim_duration=sim_duration,
-        sim_start_date=config["_start_date_obj"],
-        sim_end_date=config["_end_date_obj"],
-        store_reorder_weeks=config["_store_reorder_weeks"],
-        store_target_weeks=config["_store_target_weeks"],
+        sim_start_date=sim_start,
+        sim_end_date=sim_end,
+        store_reorder_weeks=store_rw,
+        store_target_weeks=store_tw,
     )
-    # Non-scenario run — clear any stale scenario meta from a previous run
-    st.session_state.pop("_scenario_meta", None)
+    # Clear wizard state
+    for k in ["_run_yaml_valid", "_show_scenario_step", "_wizard_scen_tile",
+              "_wizard_scen_yaml", "_scen_yaml_valid", "_scenario_meta"]:
+        st.session_state.pop(k, None)
+    st.session_state.pop(f"runs_list_{retailer_account_id}", None)
     st.success(f"Simulation complete. Run ID: `{st.session_state['sim_results']['sim_id']}`")
+    return True
+
+
+def _render_new_simulation_wizard(retailer_account_id: str, entities: dict) -> bool:
+    """3-step wizard: run config YAML → optional scenario → run."""
+    import yaml as _yaml
+    from datetime import date as _date
+
+    st.markdown(
+        "<style>textarea { font-family: 'Courier New', monospace !important;"
+        " font-size: 13px !important; }</style>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Step 1: Run config YAML ───────────────────────────────────────────────
+    st.subheader("Step 1 — Run Configuration")
+
+    tpl_key = f"_run_yaml_tpl_{retailer_account_id}"
+    if tpl_key not in st.session_state:
+        st.session_state[tpl_key] = _build_run_yaml_template(entities)
+
+    yaml_text = st.text_area(
+        "run_yaml",
+        value=st.session_state.get("_run_yaml_text", st.session_state[tpl_key]),
+        height=500,
+        key="_run_yaml_ta",
+        label_visibility="collapsed",
+    )
+    st.session_state["_run_yaml_text"] = yaml_text
+
+    if st.button("Validate", key="_run_yaml_validate", use_container_width=False):
+        st.session_state.pop("_run_yaml_valid", None)
+        st.session_state.pop("_show_scenario_step", None)
+        st.session_state.pop("_scen_yaml_valid", None)
+        try:
+            raw = _yaml.safe_load(yaml_text)
+            if not isinstance(raw, dict) or not isinstance(raw.get("run"), dict):
+                raise ValueError("YAML must contain a 'run:' block")
+            run = raw["run"]
+            s = _date.fromisoformat(str(run.get("start_date", "2024-01-01")))
+            e = _date.fromisoformat(str(run.get("end_date", "2024-12-31")))
+            if e <= s:
+                raise ValueError("end_date must be after start_date")
+            st.session_state["_run_yaml_valid"] = True
+            st.success("Run config looks good — choose an option below.")
+        except Exception as exc:
+            st.error(str(exc))
+
+    if not st.session_state.get("_run_yaml_valid"):
+        return False
+
+    # ── Step 2: Scenario decision ─────────────────────────────────────────────
+    st.divider()
+    st.subheader("Step 2 — Add a scenario? (optional)")
+    col_run, col_scen = st.columns(2)
+
+    with col_run:
+        if st.button("▶ Run as-is", type="primary", use_container_width=True, key="_run_asis"):
+            return _execute_yaml_run(yaml_text, retailer_account_id)
+
+    with col_scen:
+        if st.button("+ Add Scenario", use_container_width=True, key="_add_scen"):
+            st.session_state["_show_scenario_step"] = True
+            st.session_state.pop("_wizard_scen_tile", None)
+            st.session_state.pop("_scen_yaml_valid", None)
+
+    if not st.session_state.get("_show_scenario_step"):
+        return False
+
+    # ── Step 3: Scenario YAML ─────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Step 3 — Configure Scenario")
+    st.caption("Select a scenario type, edit the YAML, then validate before running.")
+
+    tile_labels = {
+        "promo_forecast":    "Promo Forecast Behavior",
+        "hidden_lost_sales": "Hidden Lost Sales",
+    }
+    tc1, tc2 = st.columns(2)
+    current_tile = st.session_state.get("_wizard_scen_tile")
+    with tc1:
+        if st.button(
+            f"{'✓ ' if current_tile == 'promo_forecast' else ''}{tile_labels['promo_forecast']}",
+            use_container_width=True,
+            key="_tile_pf",
+            type="primary" if current_tile == "promo_forecast" else "secondary",
+        ):
+            if current_tile != "promo_forecast":
+                st.session_state["_wizard_scen_tile"] = "promo_forecast"
+                st.session_state.pop("_wizard_scen_yaml", None)
+                st.session_state.pop("_scen_yaml_valid", None)
+    with tc2:
+        if st.button(
+            f"{'✓ ' if current_tile == 'hidden_lost_sales' else ''}{tile_labels['hidden_lost_sales']}",
+            use_container_width=True,
+            key="_tile_hls",
+            type="primary" if current_tile == "hidden_lost_sales" else "secondary",
+        ):
+            if current_tile != "hidden_lost_sales":
+                st.session_state["_wizard_scen_tile"] = "hidden_lost_sales"
+                st.session_state.pop("_wizard_scen_yaml", None)
+                st.session_state.pop("_scen_yaml_valid", None)
+
+    selected_tile = st.session_state.get("_wizard_scen_tile")
+    if not selected_tile:
+        return False
+
+    default_scen_yaml = _SCEN_TEMPLATES[selected_tile]
+    scen_yaml_text = st.text_area(
+        "scenario_yaml",
+        value=st.session_state.get("_wizard_scen_yaml", default_scen_yaml),
+        height=420,
+        key=f"_scen_yaml_ta_{selected_tile}",
+        label_visibility="collapsed",
+    )
+    st.session_state["_wizard_scen_yaml"] = scen_yaml_text
+
+    sv_col, sr_col = st.columns(2)
+
+    with sv_col:
+        if st.button("Validate Scenario", key="_scen_validate", use_container_width=True):
+            st.session_state.pop("_scen_yaml_valid", None)
+            try:
+                # Parse dates from run YAML for server-side validation
+                raw_run = _yaml.safe_load(yaml_text) or {}
+                run_b = raw_run.get("run", {})
+                s_date = str(run_b.get("start_date", "2024-01-01"))
+                e_date = str(run_b.get("end_date",   "2024-12-31"))
+                # The engine's parse_scenario_yaml expects the scenario contents
+                # at top level (scenario_type, promo_injections, etc.) — not wrapped
+                # under a "scenario:" key. Extract the inner dict and dump that.
+                raw_scen = _yaml.safe_load(scen_yaml_text) or {}
+                scen_block = raw_scen.get("scenario") or raw_scen
+                import yaml as _yaml_mod
+                scen_only = _yaml_mod.dump(scen_block, default_flow_style=False)
+                result = api.validate_scenario(
+                    start_date=s_date, end_date=e_date, scenario_yaml=scen_only
+                )
+                if result.get("warnings"):
+                    for w in result["warnings"]:
+                        st.warning(w)
+                st.session_state["_scen_yaml_valid"] = True
+                st.success("Scenario looks good — click Run Simulation.")
+                if result.get("preview"):
+                    import pandas as _pd
+                    st.dataframe(_pd.DataFrame(result["preview"]), use_container_width=True, hide_index=True)
+            except Exception as exc:
+                st.error(str(exc))
+
+    scen_validated = st.session_state.get("_scen_yaml_valid", False)
+
+    with sr_col:
+        if st.button(
+            "▶ Run Simulation",
+            key="_scen_run",
+            type="primary",
+            use_container_width=True,
+            disabled=not scen_validated,
+        ):
+            # Merge: run block from run YAML + scenario block from scenario YAML
+            try:
+                raw_run = _yaml.safe_load(yaml_text) or {}
+                raw_scen = _yaml.safe_load(scen_yaml_text) or {}
+                scen_block = raw_scen.get("scenario") or raw_scen
+                import yaml as _yaml_mod
+                combined = _yaml_mod.dump(
+                    {"run": raw_run.get("run", {}), "scenario": scen_block},
+                    default_flow_style=False, sort_keys=False,
+                )
+            except Exception as exc:
+                st.error(f"Could not merge YAMLs: {exc}")
+                return False
+            return _execute_yaml_run(combined, retailer_account_id)
+
+    return False
 
 
 def _load_past_run(run_id):
@@ -1152,18 +1401,20 @@ def render():
     else:
         col_title.title("New Simulation")
 
-    st.info("**Scenarios** — inject promo anomalies or supply disruptions and observe how your replenishment system responds.")
-    if st.button("Run a Scenario instead", use_container_width=False):
-        st.session_state.pop("_scen_tile", None)
-        go_to("scenario_setup", retailer_account_id=retailer_account_id)
+    entities = _ensure_entities(retailer_account_id) or {}
+
+    if not run_id:
+        n_items     = len(entities.get("items", []))
+        n_stores    = len(entities.get("stores", []))
+        n_dcs       = len(entities.get("dcs", []))
+        n_suppliers = len(entities.get("suppliers", []))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Items",     n_items)
+        c2.metric("Stores",    n_stores)
+        c3.metric("DCs",       n_dcs)
+        c4.metric("Suppliers", n_suppliers)
 
     st.divider()
-
-    # Default: new-run flow with the config form
-    run_btn, config = _render_config_form(retailer_account_id, user_id)
-    if run_btn:
-        _execute_run(config)
-        # Invalidate cached runs list so the runs page refetches
-        st.session_state.pop(f"runs_list_{retailer_account_id}", None)
+    _render_new_simulation_wizard(retailer_account_id, entities)
 
     _render_results()
