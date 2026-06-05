@@ -40,16 +40,16 @@ def _ensure_entities(retailer_account_id):
 
 def _normalize_response(resp, *, config_block=None, sim_duration=None,
                         sim_start_date=None, sim_end_date=None,
-                        store_reorder_weeks=2, store_target_weeks=3):
+                        store_target_wos=2):
     """Convert the engine response into the sim_results dict shape with proper dtypes."""
     sim_id = resp.get("simulation_id", "")
 
-    sales_daily_df = pd.DataFrame(resp.get("store_sales_daily", []))
-    inv_daily_df = pd.DataFrame(resp.get("store_inventory_daily", []))
+    weekly_pos_df = pd.DataFrame(resp.get("weekly_pos", []))
+    weekly_shipments_df = pd.DataFrame(resp.get("weekly_shipments", []))
+    supplier_dc_inv_df = pd.DataFrame(resp.get("supplier_dc_inventory", []))
     sales_hist_df = pd.DataFrame(resp.get("sales_history", []))
     store_inv_df = pd.DataFrame(resp.get("store_inventory", []))
     dc_inv_df = pd.DataFrame(resp.get("dc_inventory", []))
-    demand_df = pd.DataFrame(resp.get("demand", []))
     sup_rec_df = pd.DataFrame(resp.get("supplier_receipts", []))
     str_rec_df = pd.DataFrame(resp.get("store_receipts", []))
     sup_orders_df = pd.DataFrame(resp.get("supplier_orders", []))
@@ -61,39 +61,37 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
     stores_df = pd.DataFrame(resp.get("stores_meta", []))
     dcs_df = pd.DataFrame(resp.get("dcs_meta", []))
 
-    for col in ["demand_qty", "realized_demand_qty", "sales_qty", "lost_sales_qty", "sales_amount"]:
-        if col in sales_daily_df.columns:
-            sales_daily_df[col] = pd.to_numeric(sales_daily_df[col], errors="coerce")
-    for col in ["on_hand_qty", "on_order_qty", "woc"]:
-        if col in inv_daily_df.columns:
-            inv_daily_df[col] = pd.to_numeric(inv_daily_df[col], errors="coerce")
+    for col in ["demand_qty", "sales_qty", "lost_sales_qty", "sales_amount"]:
+        if col in weekly_pos_df.columns:
+            weekly_pos_df[col] = pd.to_numeric(weekly_pos_df[col], errors="coerce")
+    if "is_promo_demand" in weekly_pos_df.columns:
+        weekly_pos_df["is_promo_demand"] = weekly_pos_df["is_promo_demand"].map(
+            lambda v: True if str(v) in ("1", "True", "true") else False
+        )
+    for col in ["ordered_qty", "shipped_qty", "fill_rate"]:
+        if col in weekly_shipments_df.columns:
+            weekly_shipments_df[col] = pd.to_numeric(weekly_shipments_df[col], errors="coerce")
     for col in ["sales_quantity", "sales_amount"]:
         if col in sales_hist_df.columns:
             sales_hist_df[col] = pd.to_numeric(sales_hist_df[col], errors="coerce")
-    for col in ["on_hand_quantity", "on_order_quantity", "woc"]:
+    for col in ["on_hand_quantity", "on_order_quantity"]:
         if col in store_inv_df.columns:
             store_inv_df[col] = pd.to_numeric(store_inv_df[col], errors="coerce")
-    if "date" in sales_daily_df.columns:
-        sales_daily_df["date"] = pd.to_datetime(sales_daily_df["date"])
-    if "date" in inv_daily_df.columns:
-        inv_daily_df["date"] = pd.to_datetime(inv_daily_df["date"])
-    if "demand_date" in demand_df.columns:
-        demand_df["demand_date"] = pd.to_datetime(demand_df["demand_date"])
-    if "demand_qty" in demand_df.columns:
-        demand_df["demand_qty"] = pd.to_numeric(demand_df["demand_qty"], errors="coerce")
-    if "is_promo_demand" in demand_df.columns:
-        demand_df["is_promo_demand"] = demand_df["is_promo_demand"].map(
-            lambda v: True if str(v) in ("1", "True", "true") else False
-        )
+    for col in ["on_hand_quantity", "on_order_quantity"]:
+        if col in supplier_dc_inv_df.columns:
+            supplier_dc_inv_df[col] = pd.to_numeric(supplier_dc_inv_df[col], errors="coerce")
 
-    # Derive start/end dates from data if not provided (past runs)
+    # Derive start/end dates from weekly_pos if not provided (past runs)
     if sim_start_date is None or sim_end_date is None:
-        if "date" in sales_daily_df.columns and not sales_daily_df.empty:
-            sim_start_date = sim_start_date or sales_daily_df["date"].min().date()
-            sim_end_date = sim_end_date or sales_daily_df["date"].max().date()
+        if "pos_week" in weekly_pos_df.columns and not weekly_pos_df.empty:
+            weeks_sorted = sorted(weekly_pos_df["pos_week"].unique())
+            if sim_start_date is None and weeks_sorted:
+                sim_start_date = date(int(weeks_sorted[0][:4]), 1, 1)
+            if sim_end_date is None and weeks_sorted:
+                sim_end_date = date(int(weeks_sorted[-1][:4]), 12, 31)
         else:
             sim_start_date = sim_start_date or date(2024, 1, 1)
-            sim_end_date = sim_end_date or date(2024, 12, 31)
+            sim_end_date = sim_end_date or date(2026, 6, 30)
 
     return {
         "sim_id": sim_id,
@@ -101,13 +99,12 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
         "sim_end_date": sim_end_date,
         "sim_duration": sim_duration,
         "sim_config_block": config_block or {},
-        "store_reorder_weeks": store_reorder_weeks,
-        "store_target_weeks": store_target_weeks,
+        "store_target_wos": store_target_wos,
         "items_df": items_df,
         "stores_df": stores_df,
-        "sales_daily_df": sales_daily_df,
-        "inv_daily_df": inv_daily_df,
-        "demand_df": demand_df,
+        "weekly_pos_df": weekly_pos_df,
+        "weekly_shipments_df": weekly_shipments_df,
+        "supplier_dc_inv_df": supplier_dc_inv_df,
         "sales_hist_df": sales_hist_df,
         "store_inv_df": store_inv_df,
         "dc_inv_df": dc_inv_df,
@@ -124,128 +121,122 @@ def _normalize_response(resp, *, config_block=None, sim_duration=None,
 
 
 
+# =============================================================================
+# Cached analytics loaders — keyed by (sim_id, item_id, store/dc id)
+# =============================================================================
+
+@st.cache_data(ttl=3600)
+def _cached_store_sales(sim_id: str, item_id: str, store_id: str):
+    try:
+        return api.fetch_store_sales(sim_id, item_id=item_id, store_id=store_id)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def _cached_supply_chain_sales(sim_id: str, item_id: str):
+    try:
+        return api.fetch_supply_chain_sales(sim_id, item_id=item_id)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def _cached_store_inventory(sim_id: str, item_id: str, store_id: str):
+    try:
+        return api.fetch_store_inventory(sim_id, item_id=item_id, store_id=store_id)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600)
+def _cached_upstream_inventory(sim_id: str, item_id: str):
+    try:
+        return api.fetch_upstream_inventory(sim_id, item_id=item_id)
+    except Exception:
+        return {}
+
+
 def _build_run_yaml_template(entities: dict) -> str:
-    """Generate a run config YAML template pre-filled with real entity codes."""
-    dcs       = entities.get("dcs", [])
-    suppliers = entities.get("suppliers", [])
-    stores    = entities.get("stores", [])
+    """Generate entity-first run config YAML with real codes and varied values."""
+    import hashlib
 
-    dc_codes  = [d.get("dc_code", "")  for d in dcs       if d.get("dc_code")]
-    sup_codes = [s.get("supplier_code","") for s in suppliers if s.get("supplier_code")]
-    str_codes = [s.get("store_code", "") for s in stores   if s.get("store_code")]
+    def _hash(code: str, lo: float, hi: float, step: float = 0.01) -> float:
+        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
+        steps = int((hi - lo) / step)
+        return round(lo + (h % (steps + 1)) * step, 2)
 
-    def _override_block(key, codes, default, fallback_label="CODE"):
-        if not codes:
-            return f"  # {key}:\n  #   {fallback_label}: {default}\n"
-        lines = [f"  # {key}:"]
-        for code in codes:
-            lines.append(f"  #   {code}: {default}")
-        return "\n".join(lines) + "\n"
+    def _hash_int(code: str, lo: int, hi: int) -> int:
+        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
+        return lo + (h % (hi - lo + 1))
 
-    store_count   = len(stores)
-    dc_count      = len(dcs)
-    sup_count     = len(suppliers)
-
-    sep_outer = "  # " + "#" * 74 + "\n"
-    sep_inner = "  # " + "=" * 74 + "\n"
-
-    def _section(num, title, body):
-        return (
-            sep_inner
-            + f"  # [{num}] {title}\n"
-            + sep_inner
-            + body
-            + "\n"
-        )
-
-    s1 = _section("1", "METADATA & DATES",
-        '  simulation_name: "My Simulation Run"\n'
-        '  notes: ""\n'
-        "\n"
-        '  start_date: "2024-01-01"            # YYYY-MM-DD\n'
-        '  end_date:   "2024-12-31"\n'
-        "  seed: 42                            # change for a different random draw\n"
+    suppliers = sorted(
+        [d for d in (entities.get("dcs") or []) if d.get("dc_role") == "SUPPLIER_DC"],
+        key=lambda d: d.get("dc_code", ""),
     )
-
-    s2 = _section("2", "REPLENISHMENT POLICY",
-        "  #   trailing_avg_28d  — rolling 28-day average demand (default)\n"
-        "  #   promo_aware_7d    — looks 7 days ahead for upcoming promos\n"
-        "  #   baseline_only     — fixed baseline, no learning\n"
-        "  replenishment_policy: trailing_avg_28d\n"
-        "  smoothing_days: 28                  # trailing window (7-90)\n"
+    retailer_dcs = sorted(
+        [d for d in (entities.get("dcs") or []) if d.get("dc_role") != "SUPPLIER_DC"],
+        key=lambda d: d.get("dc_code", ""),
     )
+    stores = sorted((entities.get("stores") or []), key=lambda s: s.get("store_code", ""))
 
-    s3 = _section(f"3", f"STORE GLOBALS  ({store_count} store(s) in network — override per store in section [9])",
-        "  store_reorder_weeks: 2              # reorder when stock < N weeks of cover\n"
-        "  store_target_weeks:  3              # replenish up to N weeks of cover\n"
-        "  store_start_days:    14             # opening inventory (days of cover)\n"
-        "  store_order_dow:     MONDAY         # MONDAY-FRIDAY\n"
-    )
+    lines = [
+        'run:',
+        '  simulation_name: "My Simulation Run"',
+        '  start_date: "2024-01-01"',
+        '  end_date:   "2026-06-30"',
+        '  seed: 42',
+        '',
+        '  store_target_wos:        2',
+        '  retailer_dc_target_wos:  4',
+        '  supplier_dc_initial_wos: 4',
+    ]
 
-    s4 = _section(f"4", f"DC GLOBALS  ({dc_count} DC(s) in network — override per DC in section [7])",
-        "  dc_reorder_weeks: 2\n"
-        "  dc_target_weeks:  5\n"
-        "  dc_start_days:    30\n"
-        "  dc_review_dow:    MONDAY\n"
-    )
+    if suppliers:
+        lines.append('')
+        lines.append('  suppliers:')
+        for s in suppliers:
+            code = s.get("dc_code", "")
+            on_time = _hash(code + "_ot", 0.88, 0.97)
+            partial = _hash(code + "_pt", 0.03, 0.09)
+            lead = _hash_int(code + "_lw", 1, 2)
+            init_wos = _hash_int(code + "_iwos", 5, 8)
+            lines.append(f'    {code}:')
+            lines.append(f'      on_time:     {on_time}')
+            lines.append(f'      partial:     {partial}')
+            lines.append(f'      lead_weeks:  {lead}')
+            lines.append(f'      initial_wos: {init_wos}')
 
-    s5 = _section(f"5", f"SUPPLIER GLOBALS  ({sup_count} supplier(s) — override per supplier in section [8])",
-        "  sup_lead_min:  3                    # minimum days from PO to DC receipt\n"
-        "  sup_lead_max:  7                    # maximum days (uniform draw)\n"
-        "  sup_on_time:   0.90                 # fraction arriving on time\n"
-        "  sup_partial:   0.10                 # fraction arriving as partial shipment\n"
-    )
+    if retailer_dcs:
+        lines.append('')
+        lines.append('  dcs:')
+        for d in retailer_dcs:
+            code = d.get("dc_code", "")
+            on_time = _hash(code + "_ot", 0.90, 0.97)
+            partial = _hash(code + "_pt", 0.03, 0.07)
+            lead = _hash_int(code + "_lw", 1, 2)
+            wos = _hash_int(code + "_wos", 4, 6)
+            init_wos = _hash_int(code + "_iwos", 4, 7)
+            lines.append(f'    {code}:')
+            lines.append(f'      on_time:             {on_time}')
+            lines.append(f'      partial:             {partial}')
+            lines.append(f'      lead_weeks_to_store: {lead}')
+            lines.append(f'      target_wos:          {wos}')
+            lines.append(f'      initial_wos:         {init_wos}')
 
-    s6 = _section("6", "DC → STORE RELIABILITY GLOBALS",
-        "  dc_lead_days:  2                    # transit days DC → store\n"
-        "  dc_on_time:    0.95\n"
-        "  dc_partial:    0.05\n"
-    )
+    if stores:
+        lines.append('')
+        lines.append('  stores:')
+        for s in stores:
+            code = s.get("store_code", "")
+            wos = _hash_int(code + "_wos", 2, 3)
+            init_wos = _hash_int(code + "_iwos", 2, 4)
+            lines.append(f'    {code}:')
+            lines.append(f'      target_wos:  {wos}')
+            lines.append(f'      initial_wos: {init_wos}')
 
-    s7_body = (
-        "  # Reliability overrides\n"
-        + _override_block("dc_on_time_by_dc",       dc_codes, "0.95", "DC_CODE")
-        + _override_block("dc_partial_by_dc",        dc_codes, "0.05", "DC_CODE")
-        + _override_block("dc_lead_days_by_dc",      dc_codes, "2",    "DC_CODE")
-        + "\n"
-        + "  # Policy overrides\n"
-        + _override_block("dc_reorder_weeks_by_dc",  dc_codes, "2",      "DC_CODE")
-        + _override_block("dc_target_weeks_by_dc",   dc_codes, "5",      "DC_CODE")
-        + _override_block("dc_start_days_by_dc",     dc_codes, "30",     "DC_CODE")
-        + _override_block("dc_review_dow_by_dc",     dc_codes, "MONDAY", "DC_CODE")
-    )
-    s7 = _section("7", "PER-DC OVERRIDES  (keyed by dc_code — uncomment to activate)", s7_body)
-
-    s8_body = (
-        _override_block("sup_lead_min_by_supplier", sup_codes, "3",    "SUP_CODE")
-        + _override_block("sup_lead_max_by_supplier", sup_codes, "7",    "SUP_CODE")
-        + _override_block("sup_on_time_by_supplier",  sup_codes, "0.90", "SUP_CODE")
-        + _override_block("sup_partial_by_supplier",  sup_codes, "0.10", "SUP_CODE")
-    )
-    s8 = _section("8", "PER-SUPPLIER OVERRIDES  (keyed by supplier_code — uncomment to activate)", s8_body)
-
-    s9_body = (
-        _override_block("store_reorder_weeks_by_store", str_codes, "2",      "STR_CODE")
-        + _override_block("store_target_weeks_by_store",  str_codes, "3",      "STR_CODE")
-        + _override_block("store_start_days_by_store",    str_codes, "14",     "STR_CODE")
-        + _override_block("store_order_dow_by_store",     str_codes, "MONDAY", "STR_CODE")
-    )
-    s9 = _section("9", "PER-STORE OVERRIDES  (keyed by store_code — uncomment to activate)", s9_body)
-
-    return (
-        sep_outer
-        + "  # SIMULATION RUN CONFIG\n"
-        + sep_outer
-        + "  # Edit the values below, then click Validate → Run Simulation.\n"
-        + "  # All fields are optional — defaults are shown and used if omitted.\n"
-        + "  # Sections: [1] Metadata  [2] Policy  [3] Store  [4] DC  [5] Supplier\n"
-        + "  #           [6] DC→Store  [7] Per-DC  [8] Per-Supplier  [9] Per-Store\n"
-        + sep_outer
-        + "\n"
-        + "run:\n"
-        + "\n"
-        + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9
-    )
+    lines.append('')
+    return '\n'.join(lines)
 
 
 # Scenario-only YAML templates (no run: block — appended to run YAML at submit time)
@@ -316,57 +307,87 @@ scenario:
 
 
 def _execute_yaml_run(yaml_text: str, retailer_account_id: str) -> bool:
-    """POST yaml_text to /run/yaml, normalize response, store in sim_results. Returns True on success."""
+    """POST yaml_text to /run/yaml (async), poll for completion, load meta. Returns True on success."""
     import yaml as _yaml
     from datetime import date as _date
 
+    # ── Step 1: Submit simulation (returns immediately with simulation_id) ────
+    try:
+        resp = api.run_simulation_yaml(yaml_text)
+    except httpx.ConnectError as exc:
+        show_error(f"Cannot reach backend at {api.BACKEND_URL}", exc)
+        return False
+    except httpx.HTTPStatusError as exc:
+        show_error("Simulation engine returned an error", exc, exc.response)
+        return False
+    except Exception as exc:
+        show_error("Unexpected error", exc)
+        return False
+
+    sim_id = resp.get("simulation_id")
+    if not sim_id:
+        st.error("Simulation engine returned an empty response.")
+        return False
+
+    # ── Step 2: Poll until COMPLETED or FAILED ────────────────────────────────
     t0 = time.time()
-    with st.spinner("Running simulation…"):
-        try:
-            resp = api.run_simulation_yaml(yaml_text)
-        except httpx.ConnectError as exc:
-            show_error(f"Cannot reach backend at {api.BACKEND_URL}", exc)
-            return False
-        except httpx.TimeoutException as exc:
-            show_error("Simulation request timed out — try a shorter date range", exc)
-            return False
-        except httpx.HTTPStatusError as exc:
-            show_error("Simulation engine returned an error", exc, exc.response)
-            return False
-        except Exception as exc:
-            show_error("Unexpected error", exc)
-            return False
+    status_msg = st.empty()
+    try:
+        with st.spinner("Simulation running…"):
+            while True:
+                try:
+                    cfg = api.fetch_simulation_status(sim_id)
+                except Exception:
+                    cfg = {}
+                status = cfg.get("status", "RUNNING")
+                elapsed = round(time.time() - t0)
+                status_msg.caption(f"Status: **{status}** — {elapsed}s elapsed")
+                if status == "COMPLETED":
+                    break
+                if status == "FAILED":
+                    st.error(f"Simulation `{sim_id}` failed on the server. Check engine logs.")
+                    return False
+                time.sleep(3)
+    finally:
+        status_msg.empty()
 
     sim_duration = round(time.time() - t0, 1)
-    if not resp.get("simulation_id"):
-        st.error("Simulation engine returned an empty response.")
+
+    # ── Step 3: Load entity metadata (items / stores / DCs) ──────────────────
+    try:
+        meta = api.fetch_sim_meta(sim_id)
+    except Exception as exc:
+        show_error("Could not load simulation metadata", exc)
         return False
 
     try:
         raw = _yaml.safe_load(yaml_text) or {}
         run_block = raw.get("run", {})
-        sim_start = _date.fromisoformat(str(run_block.get("start_date", "2024-01-01")))
-        sim_end   = _date.fromisoformat(str(run_block.get("end_date",   "2024-12-31")))
-        store_rw  = int(run_block.get("store_reorder_weeks", 2))
-        store_tw  = int(run_block.get("store_target_weeks",  3))
+        sim_start     = _date.fromisoformat(str(run_block.get("start_date", "2024-01-01")))
+        sim_end       = _date.fromisoformat(str(run_block.get("end_date",   "2026-06-30")))
+        store_tgt_wos = int(run_block.get("store_target_wos", 2))
     except Exception:
-        sim_start, sim_end, store_rw, store_tw = (_date(2024, 1, 1), _date(2024, 12, 31), 2, 3)
+        sim_start, sim_end, store_tgt_wos = (_date(2024, 1, 1), _date(2026, 6, 30), 2)
 
-    st.session_state["sim_results"] = _normalize_response(
-        resp,
-        config_block={},
-        sim_duration=sim_duration,
-        sim_start_date=sim_start,
-        sim_end_date=sim_end,
-        store_reorder_weeks=store_rw,
-        store_target_weeks=store_tw,
-    )
-    # Clear wizard state
+    st.session_state["sim_results"] = {
+        "sim_id":          sim_id,
+        "sim_start_date":  sim_start,
+        "sim_end_date":    sim_end,
+        "sim_duration":    sim_duration,
+        "sim_config_block": {},
+        "store_target_wos": store_tgt_wos,
+        "items_df":        pd.DataFrame(meta.get("items_meta", [])),
+        "stores_df":       pd.DataFrame(meta.get("stores_meta", [])),
+        "dcs_df":          pd.DataFrame(meta.get("dcs_meta", [])),
+        "store_dc_map":    meta.get("store_dc_map", {}),
+        # analytics data loaded on-demand in _render_results
+    }
+
     for k in ["_run_yaml_valid", "_show_scenario_step", "_wizard_scen_tile",
               "_wizard_scen_yaml", "_scen_yaml_valid", "_scenario_meta"]:
         st.session_state.pop(k, None)
     st.session_state.pop(f"runs_list_{retailer_account_id}", None)
-    st.success(f"Simulation complete. Run ID: `{st.session_state['sim_results']['sim_id']}`")
+    st.success(f"Simulation complete in {sim_duration}s. Run ID: `{sim_id}`")
     return True
 
 
@@ -386,7 +407,11 @@ def _render_new_simulation_wizard(retailer_account_id: str, entities: dict) -> b
 
     tpl_key = f"_run_yaml_tpl_{retailer_account_id}"
     if tpl_key not in st.session_state:
-        st.session_state[tpl_key] = _build_run_yaml_template(entities)
+        try:
+            st.session_state[tpl_key] = api.fetch_run_yaml_template()
+        except Exception as e:
+            show_error("Could not load YAML template", e)
+            st.session_state[tpl_key] = _build_run_yaml_template(entities)
 
     yaml_text = st.text_area(
         "run_yaml",
@@ -545,13 +570,25 @@ def _render_new_simulation_wizard(retailer_account_id: str, entities: dict) -> b
 
 
 def _load_past_run(run_id):
-    """Fetch a past simulation's CSV-backed results and populate session_state."""
+    """Load a past simulation using analytics APIs — metadata only, charts load on demand."""
     with st.spinner(f"Loading run {run_id[:8]}…"):
+        # Fetch saved config for dates / store_target_wos
+        config_block = {}
         try:
-            resp = api.fetch_simulation(run_id)
+            cfg_resp = api.fetch_run_config(run_id)
+            config_block = cfg_resp.get("full_config") or {}
+        except Exception as e:
+            show_error("Could not load run config", e)
+            return False
+
+        # Fetch entity metadata via analytics API
+        try:
+            meta = api.fetch_sim_meta(run_id)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                st.error(f"Run `{run_id}` not found on disk. It may need to be re-run.")
+                st.error(f"Run `{run_id}` not found. It may need to be re-run.")
+            elif e.response.status_code == 409:
+                st.error(f"Run `{run_id}` has not completed yet.")
             else:
                 show_error("Could not load past run", e, e.response)
             return False
@@ -559,29 +596,24 @@ def _load_past_run(run_id):
             show_error("Could not load past run", e)
             return False
 
-        # Try to fetch saved config for context
-        config_block = {}
-        try:
-            cfg_resp = api.fetch_run_config(run_id)
-            config_block = cfg_resp.get("full_config") or {}
-        except Exception:
-            pass
-
-    # Parse start/end from saved config when available
     start_date_str = config_block.get("start_date")
-    end_date_str = config_block.get("end_date")
+    end_date_str   = config_block.get("end_date")
     sim_start = pd.to_datetime(start_date_str).date() if start_date_str else None
-    sim_end = pd.to_datetime(end_date_str).date() if end_date_str else None
+    sim_end   = pd.to_datetime(end_date_str).date()   if end_date_str   else None
 
-    st.session_state["sim_results"] = _normalize_response(
-        resp,
-        config_block=config_block,
-        sim_duration=None,
-        sim_start_date=sim_start,
-        sim_end_date=sim_end,
-        store_reorder_weeks=int(config_block.get("store_reorder_weeks", 2)),
-        store_target_weeks=int(config_block.get("store_target_weeks", 3)),
-    )
+    st.session_state["sim_results"] = {
+        "sim_id":           run_id,
+        "sim_start_date":   sim_start,
+        "sim_end_date":     sim_end,
+        "sim_duration":     None,
+        "sim_config_block": config_block,
+        "store_target_wos": int(config_block.get("store_target_wos", 2)),
+        "items_df":         pd.DataFrame(meta.get("items_meta", [])),
+        "stores_df":        pd.DataFrame(meta.get("stores_meta", [])),
+        "dcs_df":           pd.DataFrame(meta.get("dcs_meta", [])),
+        "store_dc_map":     meta.get("store_dc_map", {}),
+        # No pre-loaded data frames — _render_results loads charts via analytics APIs on demand
+    }
     return True
 
 
@@ -634,8 +666,7 @@ def _execute_rerun(run_id, retailer_account_id, user_id):
         sim_duration=sim_duration,
         sim_start_date=sim_start,
         sim_end_date=sim_end,
-        store_reorder_weeks=int(config_block.get("store_reorder_weeks", 2)),
-        store_target_weeks=int(config_block.get("store_target_weeks", 3)),
+        store_target_wos=int(config_block.get("store_target_wos", 2)),
     )
     new_sim_id = st.session_state["sim_results"]["sim_id"]
     st.session_state["_active_run_id"] = new_sim_id
@@ -657,24 +688,25 @@ def _render_results():
     end_date = r["sim_end_date"]
     items_df = r["items_df"]
     stores_df = r["stores_df"]
-    sales_daily_df = r["sales_daily_df"]
-    inv_daily_df = r["inv_daily_df"]
-    demand_df = r["demand_df"]
-    sales_hist_df = r["sales_hist_df"]
-    store_inv_df = r["store_inv_df"]
-    dc_inv_df = r["dc_inv_df"]
-    sup_rec_df = r["sup_rec_df"]
-    str_rec_df = r["str_rec_df"]
-    sup_orders_df = r["sup_orders_df"]
-    sup_od_df = r["sup_od_df"]
-    str_orders_df = r["str_orders_df"]
-    store_od_df = r["store_od_df"]
     store_dc_map = r["store_dc_map"]
     dcs_df = r.get("dcs_df", pd.DataFrame())
     sim_duration = r.get("sim_duration")
     sim_config_block = r.get("sim_config_block", {})
-    store_reorder_weeks = r.get("store_reorder_weeks", 2)
-    store_target_weeks = r.get("store_target_weeks", 3)
+    store_target_wos = r.get("store_target_wos", 2)
+
+    # Fallback DataFrames for past runs (loaded via _normalize_response / _load_past_run)
+    weekly_pos_df = r.get("weekly_pos_df", pd.DataFrame())
+    weekly_shipments_df = r.get("weekly_shipments_df", pd.DataFrame())
+    supplier_dc_inv_df = r.get("supplier_dc_inv_df", pd.DataFrame())
+    sales_hist_df = r.get("sales_hist_df", pd.DataFrame())
+    store_inv_df = r.get("store_inv_df", pd.DataFrame())
+    dc_inv_df = r.get("dc_inv_df", pd.DataFrame())
+    sup_rec_df = r.get("sup_rec_df", pd.DataFrame())
+    str_rec_df = r.get("str_rec_df", pd.DataFrame())
+    sup_orders_df = r.get("sup_orders_df", pd.DataFrame())
+    sup_od_df = r.get("sup_od_df", pd.DataFrame())
+    str_orders_df = r.get("str_orders_df", pd.DataFrame())
+    store_od_df = r.get("store_od_df", pd.DataFrame())
 
     scenario_meta = st.session_state.get("_scenario_meta")
 
@@ -716,30 +748,31 @@ def _render_results():
                     f"Red shading = disruption window."
                 )
 
-    if sales_daily_df.empty and sales_hist_df.empty:
+    if weekly_pos_df.empty and sales_hist_df.empty:
         st.warning("Simulation returned no sales data.")
         return
 
-    if sales_daily_df.empty:
-        st.info(
-            "Daily granularity is not available for this run "
-            "(older runs persisted only weekly data). Daily chart and daily-only "
-            "KPIs (lost sales, fill rate, stockout days) will be hidden. "
-            "Re-run to populate the daily tables."
-        )
-
-    # Pick whichever frame has store/item ids — prefer daily, then weekly, then inventory.
+    # Pick whichever frame has store/item ids — prefer weekly_pos, then sales_history.
+    # Build store/item selector lists.
+    # For fresh runs (analytics flow), data frames are empty but metadata frames are populated.
+    # For past runs, data frames are populated via _normalize_response.
     _selector_source = next(
-        (df for df in (sales_daily_df, sales_hist_df, store_inv_df, inv_daily_df)
+        (df for df in (weekly_pos_df, sales_hist_df, store_inv_df)
          if not df.empty and {"store_id", "item_id"}.issubset(df.columns)),
         pd.DataFrame(),
     )
 
     st.divider()
-    stores_list = sorted(_selector_source["store_id"].unique().tolist()) if not _selector_source.empty else []
-    items_list = sorted(_selector_source["item_id"].unique().tolist()) if not _selector_source.empty else []
-
     store_code_map = stores_df.set_index("store_id")["store_code"].to_dict() if not stores_df.empty else {}
+
+    if not _selector_source.empty:
+        stores_list = sorted(_selector_source["store_id"].unique().tolist())
+        items_list  = sorted(_selector_source["item_id"].unique().tolist())
+    else:
+        # Analytics flow: derive from metadata DataFrames
+        stores_list = sorted(stores_df["store_id"].astype(str).unique().tolist()) if not stores_df.empty else []
+        items_list  = sorted(items_df["item_id"].astype(str).unique().tolist())   if not items_df.empty  else []
+
     stores_display = {store_code_map.get(sid, sid): sid for sid in stores_list}
 
     if "item_description" in items_df.columns:
@@ -759,6 +792,41 @@ def _render_results():
     sel_store = stores_display[sel_store_label]
     sel_item_label = col_sel2.selectbox("Item", list(items_display.keys()))
     sel_item = items_display[sel_item_label]
+
+    # Load analytics data on-demand (cached per sim_id + selection).
+    # For past runs the data frames are already populated; for fresh runs we fetch from analytics APIs.
+    _use_analytics = weekly_pos_df.empty and sales_hist_df.empty
+    if _use_analytics:
+        with st.spinner("Loading chart data…"):
+            _store_sales_data    = _cached_store_sales(sim_id, sel_item, sel_store)
+            _sc_sales_data       = _cached_supply_chain_sales(sim_id, sel_item)
+            _store_inv_data      = _cached_store_inventory(sim_id, sel_item, sel_store)
+            _upstream_inv_data   = _cached_upstream_inventory(sim_id, sel_item)
+
+        weekly_pos_df        = pd.DataFrame(_store_sales_data.get("weekly_pos", []))
+        store_inv_df         = pd.DataFrame(_store_sales_data.get("store_inventory", []))
+        weekly_shipments_df  = pd.DataFrame(_sc_sales_data.get("weekly_shipments", []))
+        dc_inv_df            = pd.DataFrame(_upstream_inv_data.get("dc_inventory", []))
+        supplier_dc_inv_df   = pd.DataFrame(_upstream_inv_data.get("supplier_dc_inventory", []))
+
+        for col in ["demand_qty", "sales_qty", "lost_sales_qty", "sales_amount"]:
+            if col in weekly_pos_df.columns:
+                weekly_pos_df[col] = pd.to_numeric(weekly_pos_df[col], errors="coerce")
+        if "is_promo_demand" in weekly_pos_df.columns:
+            weekly_pos_df["is_promo_demand"] = weekly_pos_df["is_promo_demand"].map(
+                lambda v: True if str(v) in ("1", "True", "true") else False
+            )
+        for col in ["ordered_qty", "shipped_qty", "fill_rate"]:
+            if col in weekly_shipments_df.columns:
+                weekly_shipments_df[col] = pd.to_numeric(weekly_shipments_df[col], errors="coerce")
+        for col in ["on_hand_quantity", "on_order_quantity", "available_quantity"]:
+            for df in (store_inv_df, dc_inv_df, supplier_dc_inv_df):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # For analytics flow these are not available — set empty so debug tables degrade gracefully
+        sales_hist_df = pd.DataFrame()
+        sup_rec_df = str_rec_df = sup_orders_df = sup_od_df = str_orders_df = store_od_df = pd.DataFrame()
 
     # Build anomaly windows scoped to the selected store + item.
     # promo_forecast: each injection has item_ids + store_ids — only show red for matches.
@@ -796,89 +864,66 @@ def _render_results():
     def _sort(df, col):
         return df.sort_values(col, kind="stable").reset_index(drop=True) if (not df.empty and col in df.columns) else df
 
-    s_inv_d = inv_daily_df[
-        (inv_daily_df["store_id"] == sel_store) & (inv_daily_df["item_id"] == sel_item)
-    ].copy() if not inv_daily_df.empty else pd.DataFrame()
-    s_inv_d = _sort(s_inv_d, "date")
+    # For analytics flow, data is already filtered by sel_store/sel_item; skip redundant filter.
+    s_weekly_pos = (
+        weekly_pos_df.copy() if _use_analytics
+        else weekly_pos_df[
+            (weekly_pos_df["store_id"] == sel_store) & (weekly_pos_df["item_id"] == sel_item)
+        ].copy()
+    ) if not weekly_pos_df.empty else pd.DataFrame()
+    s_weekly_pos = _sort(s_weekly_pos, "pos_week")
 
-    s_sales_d = sales_daily_df[
-        (sales_daily_df["store_id"] == sel_store) & (sales_daily_df["item_id"] == sel_item)
-    ].copy() if not sales_daily_df.empty else pd.DataFrame()
-    s_sales_d = _sort(s_sales_d, "date")
-
-    s_demand = demand_df[
-        (demand_df["store_id"] == sel_store) & (demand_df["item_id"] == sel_item)
-    ].copy() if not demand_df.empty else pd.DataFrame()
-    s_demand = _sort(s_demand, "demand_date")
+    s_shipments = (
+        weekly_shipments_df.copy() if _use_analytics
+        else weekly_shipments_df[weekly_shipments_df["item_id"] == sel_item].copy()
+    ) if not weekly_shipments_df.empty else pd.DataFrame()
+    s_shipments = _sort(s_shipments, "shipment_week")
 
     s_sales_w = sales_hist_df[
         (sales_hist_df["store_id"] == sel_store) & (sales_hist_df["item_id"] == sel_item)
     ].copy() if not sales_hist_df.empty else pd.DataFrame()
     s_sales_w = _sort(s_sales_w, "sales_week")
 
-    s_inv_w = store_inv_df[
-        (store_inv_df["store_id"] == sel_store) & (store_inv_df["item_id"] == sel_item)
-    ].copy() if not store_inv_df.empty else pd.DataFrame()
+    s_inv_w = (
+        store_inv_df.copy() if _use_analytics
+        else store_inv_df[
+            (store_inv_df["store_id"] == sel_store) & (store_inv_df["item_id"] == sel_item)
+        ].copy()
+    ) if not store_inv_df.empty else pd.DataFrame()
     s_inv_w = _sort(s_inv_w, "inventory_week" if "inventory_week" in s_inv_w.columns else "sales_week")
 
-    avg_daily_d = s_sales_d["demand_qty"].mean() if not s_sales_d.empty else 0
-    trigger_units = int(round(store_reorder_weeks * avg_daily_d * 7))
-    target_units = int(round(store_target_weeks * avg_daily_d * 7))
-
-
-    # KPIs (fall back to weekly when daily isn't available)
-    has_daily = not s_sales_d.empty
-    if has_daily:
-        total_demand = s_sales_d["demand_qty"].sum()
-        total_sales = s_sales_d["sales_qty"].sum()
-        total_lost = s_sales_d["lost_sales_qty"].sum()
-        fill_rate = total_sales / total_demand * 100 if total_demand > 0 else 0
-        total_revenue = s_sales_d["sales_amount"].sum()
-        total_demand_str = f"{total_demand:,.0f}"
-        total_sales_str = f"{total_sales:,.0f}"
-        total_lost_str = f"{total_lost:,.0f}"
-        fill_rate_str = f"{fill_rate:.1f}%"
+    # KPIs from weekly_pos
+    if not s_weekly_pos.empty:
+        total_demand  = s_weekly_pos["demand_qty"].sum() if "demand_qty" in s_weekly_pos.columns else 0
+        total_sales   = s_weekly_pos["sales_qty"].sum()  if "sales_qty"  in s_weekly_pos.columns else 0
+        total_lost    = s_weekly_pos["lost_sales_qty"].sum() if "lost_sales_qty" in s_weekly_pos.columns else 0
+        total_revenue = s_weekly_pos["sales_amount"].sum()   if "sales_amount"   in s_weekly_pos.columns else 0
+        fill_rate     = total_sales / total_demand * 100 if total_demand > 0 else 0
+        total_demand_str  = f"{total_demand:,.0f}"
+        total_sales_str   = f"{total_sales:,.0f}"
+        total_lost_str    = f"{total_lost:,.0f}"
+        fill_rate_str     = f"{fill_rate:.1f}%"
         total_revenue_str = f"${total_revenue:,.0f}"
     else:
-        # Weekly-only fallback. Lost sales / fill rate aren't derivable from sales_history alone.
-        total_sales = s_sales_w["sales_quantity"].sum() if not s_sales_w.empty else 0
-        total_revenue = s_sales_w["sales_amount"].sum() if not s_sales_w.empty else 0
-        total_demand_str = "—"
-        total_sales_str = f"{total_sales:,.0f}"
-        total_lost_str = "—"
-        fill_rate_str = "—"
+        total_sales   = s_sales_w["sales_quantity"].sum() if not s_sales_w.empty else 0
+        total_revenue = s_sales_w["sales_amount"].sum()   if not s_sales_w.empty else 0
+        total_demand_str  = "—"
+        total_sales_str   = f"{total_sales:,.0f}"
+        total_lost_str    = "—"
+        fill_rate_str     = "—"
         total_revenue_str = f"${total_revenue:,.0f}"
 
-    stockout_days = (s_inv_d["inventory_status"] == "ZERO").sum() if not s_inv_d.empty else 0
-    stockout_days_str = f"{stockout_days:,}" if not s_inv_d.empty else "—"
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Demand", total_demand_str)
+    k2.metric("Total Sales",  total_sales_str)
+    k3.metric("Lost Sales",   total_lost_str)
+    k4.metric("Fill Rate",    fill_rate_str)
+    k5.metric("Revenue",      total_revenue_str)
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Total Demand",  total_demand_str)
-    k2.metric("Total Sales",   total_sales_str)
-    k3.metric("Lost Sales",    total_lost_str)
-    k4.metric("Fill Rate",     fill_rate_str)
-    k5.metric("Stockout Days", stockout_days_str)
-    k6.metric("Revenue",       total_revenue_str)
-
-    # Promo windows
-    promo_date_ranges = []
-    if not s_demand.empty and "is_promo_demand" in s_demand.columns:
-        sd = s_demand.sort_values("demand_date").copy()
-        in_promo = False
-        span_start = None
-        for _, row in sd.iterrows():
-            if row["is_promo_demand"] and not in_promo:
-                span_start = row["demand_date"]
-                in_promo = True
-            elif not row["is_promo_demand"] and in_promo:
-                promo_date_ranges.append((span_start, row["demand_date"] - pd.Timedelta(days=1)))
-                in_promo = False
-        if in_promo and span_start is not None:
-            promo_date_ranges.append((span_start, sd["demand_date"].iloc[-1]))
-
+    # Promo weeks from weekly_pos
     promo_weeks = set()
-    if not s_demand.empty and "is_promo_demand" in s_demand.columns and "demand_week" in s_demand.columns:
-        promo_weeks = set(s_demand[s_demand["is_promo_demand"] == True]["demand_week"].unique())
+    if not s_weekly_pos.empty and "is_promo_demand" in s_weekly_pos.columns and "pos_week" in s_weekly_pos.columns:
+        promo_weeks = set(s_weekly_pos[s_weekly_pos["is_promo_demand"] == True]["pos_week"].unique())
 
     def _overlaps_any_anomaly(x0, x1):
         """True if date range overlaps with any scenario anomaly window."""
@@ -886,39 +931,6 @@ def _render_results():
             if x0 <= we + pd.Timedelta(days=1) and x1 >= ws:
                 return True
         return False
-
-    def _add_promo_daily(fig):
-        added_promo = added_anom = False
-        for x0, x1 in promo_date_ranges:
-            if _overlaps_any_anomaly(x0, x1):
-                fig.add_vrect(
-                    x0=x0, x1=x1 + pd.Timedelta(days=1),
-                    fillcolor="rgba(220,30,30,0.35)", layer="below",
-                    line_color="rgba(255,60,60,0.9)", line_width=1,
-                    name="Anomaly Window" if not added_anom else None,
-                    showlegend=not added_anom, legendgroup="anom",
-                )
-                added_anom = True
-            else:
-                fig.add_vrect(
-                    x0=x0, x1=x1 + pd.Timedelta(days=1),
-                    fillcolor="rgba(255,180,0,0.18)", layer="below", line_width=0,
-                    name="Promo Period" if not added_promo else None,
-                    showlegend=not added_promo, legendgroup="promo",
-                )
-                added_promo = True
-        # HLS scenario: shortage window is not a promo, add red highlights directly
-        stype = (scenario_meta or {}).get("type", "")
-        if stype == "hidden_lost_sales" and not added_anom:
-            for ws, we in _active_promo_windows:
-                fig.add_vrect(
-                    x0=ws, x1=we + pd.Timedelta(days=1),
-                    fillcolor="rgba(220,30,30,0.35)", layer="below",
-                    line_color="rgba(255,60,60,0.9)", line_width=1,
-                    name="Anomaly Window" if not added_anom else None,
-                    showlegend=not added_anom, legendgroup="anom",
-                )
-                added_anom = True
 
     def _add_promo_weekly(fig, weeks_list):
         added_promo = added_anom = False
@@ -953,105 +965,41 @@ def _render_results():
                 )
                 added_promo = True
 
-    # Daily chart
+    # Weekly POS chart
     st.divider()
     st.subheader("Inventory & Sales Charts")
-    st.markdown("#### Daily: Demand vs Sales vs Inventory")
-    if not s_sales_d.empty and not s_inv_d.empty:
-        fig_daily = go.Figure()
-        s_daily = s_sales_d.merge(s_inv_d[["date", "on_hand_qty"]], on="date", how="left")
-        day_lbl = s_daily["date"].dt.strftime("%a, %b %d %Y")
-        inv_lbl = s_inv_d["date"].dt.strftime("%a, %b %d %Y")
-        fig_daily.add_trace(go.Bar(
-            x=s_daily["date"], y=s_daily["demand_qty"],
-            name="Demand", marker_color="#BAD7F2", opacity=0.85,
-            hovertemplate="<b>%{customdata}</b><br>Demand: %{y}<extra></extra>",
-            customdata=day_lbl,
-        ))
-        fig_daily.add_trace(go.Bar(
-            x=s_daily["date"], y=s_daily["sales_qty"],
-            name="Sales (Fulfilled)", marker_color="#2E86AB", opacity=0.9,
-            hovertemplate="<b>%{customdata}</b><br>Sales: %{y}<extra></extra>",
-            customdata=day_lbl,
-        ))
-        lost_colors = ["#db5546" if oh == 0 else "#F1948A" for oh in s_daily["on_hand_qty"]]
-        fig_daily.add_trace(go.Bar(
-            x=s_daily["date"], y=s_daily["lost_sales_qty"],
-            name="Lost Sales", marker_color=lost_colors, opacity=0.9,
-            hovertemplate="<b>%{customdata}</b><br>Lost: %{y}<extra></extra>",
-            customdata=day_lbl,
-        ))
-        fig_daily.add_trace(go.Scatter(
-            x=s_inv_d["date"], y=s_inv_d["on_hand_qty"],
-            name="On-Hand Inventory", mode="lines",
-            line=dict(color="#E84855", width=2), yaxis="y2",
-            hovertemplate="<b>%{customdata}</b><br>On-Hand: %{y}<extra></extra>",
-            customdata=inv_lbl,
-        ))
-        fig_daily.add_trace(go.Scatter(
-            x=s_inv_d["date"], y=s_inv_d["on_order_qty"],
-            name="On-Order", mode="lines",
-            line=dict(color="#F4A261", width=1.5, dash="dot"), yaxis="y2",
-            hovertemplate="<b>%{customdata}</b><br>On-Order: %{y}<extra></extra>",
-            customdata=inv_lbl,
-        ))
-        _add_promo_daily(fig_daily)
-        if scenario_meta and "realized_demand_qty" in s_daily.columns:
-            fig_daily.add_trace(go.Scatter(
-                x=s_daily["date"], y=s_daily["realized_demand_qty"],
-                name="Actual Demand (realized)", mode="lines",
-                line=dict(color="rgba(220,30,30,0.9)", width=2, dash="dot"),
-                hovertemplate="<b>%{customdata}</b><br>Actual Demand: %{y}<extra></extra>",
-                customdata=day_lbl,
-            ))
-        fig_daily.update_layout(
-            barmode="group",
-            xaxis=dict(title="Date"),
-            yaxis=dict(title="Units (Demand / Sales)", side="left"),
-            yaxis2=dict(title="Units (Inventory)", overlaying="y", side="right", showgrid=False),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            height=420,
-        )
-        st.plotly_chart(fig_daily, use_container_width=True)
-    else:
-        st.info("Daily granularity not available for this run.")
-
-    # Weekly chart
-    st.markdown("#### Weekly: Demand vs Sales vs Inventory")
+    st.markdown("#### Weekly POS: Demand vs Sales vs Store Inventory")
     fig_weekly = go.Figure()
-    if not s_sales_w.empty:
-        weeks_list = sorted(s_sales_w["sales_week"].unique().tolist())
+    if not s_weekly_pos.empty:
+        weeks_list = sorted(s_weekly_pos["pos_week"].unique().tolist())
         if not s_inv_w.empty:
-            inv_w_key = "sales_week" if "sales_week" in s_inv_w.columns else "inventory_week"
-            weekly_df = s_sales_w.merge(
-                s_inv_w[[inv_w_key, "on_hand_quantity"]].rename(columns={"inventory_week": "sales_week"}),
-                on="sales_week", how="left",
+            inv_w_key = "inventory_week" if "inventory_week" in s_inv_w.columns else "sales_week"
+            weekly_df = s_weekly_pos.merge(
+                s_inv_w[[inv_w_key, "on_hand_quantity"]].rename(columns={inv_w_key: "pos_week"}),
+                on="pos_week", how="left",
             )
         else:
-            weekly_df = s_sales_w.copy()
+            weekly_df = s_weekly_pos.copy()
             weekly_df["on_hand_quantity"] = 0
 
-        if not s_sales_d.empty and "week" in s_sales_d.columns:
-            weekly_demand = (
-                s_sales_d.groupby("week", sort=True)["demand_qty"].sum().reset_index()
-                .rename(columns={"week": "sales_week", "demand_qty": "demand_quantity"})
-            )
-            weekly_df = weekly_df.merge(weekly_demand, on="sales_week", how="left")
-        else:
-            weekly_df["demand_quantity"] = weekly_df["sales_quantity"]
-
-        fig_weekly.add_trace(go.Bar(
-            x=weekly_df["sales_week"],
-            y=weekly_df.get("demand_quantity", weekly_df["sales_quantity"]),
-            name="Demand", marker_color="#BAD7F2", opacity=0.85,
-        ))
-        fig_weekly.add_trace(go.Bar(
-            x=weekly_df["sales_week"], y=weekly_df["sales_quantity"],
-            name="Sales", marker_color="#2E86AB", opacity=0.9,
-        ))
+        if "demand_qty" in weekly_df.columns:
+            fig_weekly.add_trace(go.Bar(
+                x=weekly_df["pos_week"], y=weekly_df["demand_qty"],
+                name="Demand", marker_color="#BAD7F2", opacity=0.85,
+            ))
+        if "sales_qty" in weekly_df.columns:
+            fig_weekly.add_trace(go.Bar(
+                x=weekly_df["pos_week"], y=weekly_df["sales_qty"],
+                name="Sales", marker_color="#2E86AB", opacity=0.9,
+            ))
+        if "lost_sales_qty" in weekly_df.columns:
+            fig_weekly.add_trace(go.Bar(
+                x=weekly_df["pos_week"], y=weekly_df["lost_sales_qty"],
+                name="Lost Sales", marker_color="#F1948A", opacity=0.9,
+            ))
         if "on_hand_quantity" in weekly_df.columns:
             fig_weekly.add_trace(go.Scatter(
-                x=weekly_df["sales_week"], y=weekly_df["on_hand_quantity"],
+                x=weekly_df["pos_week"], y=weekly_df["on_hand_quantity"],
                 name="On-Hand (EOW)", mode="lines+markers",
                 line=dict(color="#F4A261", width=2), yaxis="y2",
             ))
@@ -1060,11 +1008,121 @@ def _render_results():
         barmode="group",
         xaxis=dict(title="Week", tickangle=-45),
         yaxis=dict(title="Units (Demand / Sales)", side="left"),
-        yaxis2=dict(title="Units (Inventory EOW)", overlaying="y", side="right", showgrid=False),
+        yaxis2=dict(title="Units (Store Inventory EOW)", overlaying="y", side="right", showgrid=False),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         height=420,
     )
     st.plotly_chart(fig_weekly, use_container_width=True)
+
+    # Weekly Shipments chart (Supplier DC → Retailer DC)
+    st.markdown("#### Weekly Shipments: Supplier DC → Retailer DC")
+    fig_ship = go.Figure()
+    if not s_shipments.empty and "shipment_week" in s_shipments.columns:
+        ship_weeks = sorted(s_shipments["shipment_week"].unique().tolist())
+        agg_ship = s_shipments.groupby("shipment_week", sort=True).agg(
+            ordered_qty=("ordered_qty", "sum"),
+            shipped_qty=("shipped_qty", "sum"),
+        ).reset_index()
+        fig_ship.add_trace(go.Bar(
+            x=agg_ship["shipment_week"], y=agg_ship["ordered_qty"],
+            name="Ordered", marker_color="#BAD7F2", opacity=0.85,
+        ))
+        fig_ship.add_trace(go.Bar(
+            x=agg_ship["shipment_week"], y=agg_ship["shipped_qty"],
+            name="Shipped", marker_color="#2E86AB", opacity=0.9,
+        ))
+        if len(agg_ship) > 0:
+            fill_rates = (agg_ship["shipped_qty"] / agg_ship["ordered_qty"].replace(0, float("nan"))) * 100
+            fig_ship.add_trace(go.Scatter(
+                x=agg_ship["shipment_week"], y=fill_rates,
+                name="Fill Rate %", mode="lines+markers",
+                line=dict(color="#E84855", width=2), yaxis="y2",
+            ))
+    fig_ship.update_layout(
+        barmode="group",
+        xaxis=dict(title="Week", tickangle=-45),
+        yaxis=dict(title="Units", side="left"),
+        yaxis2=dict(title="Fill Rate %", overlaying="y", side="right", showgrid=False, range=[0, 110]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=380,
+    )
+    st.plotly_chart(fig_ship, use_container_width=True)
+
+    # Store Inventory chart
+    st.markdown("#### Weekly Store Inventory: On-Hand vs On-Order")
+    fig_store_inv = go.Figure()
+    _s_inv_chart = s_inv_w if not s_inv_w.empty else (
+        store_inv_df[
+            (store_inv_df["store_id"] == sel_store) & (store_inv_df["item_id"] == sel_item)
+        ] if not store_inv_df.empty else pd.DataFrame()
+    )
+    if not _s_inv_chart.empty and "inventory_week" in _s_inv_chart.columns:
+        _s_inv_chart = _sort(_s_inv_chart, "inventory_week")
+        if "on_hand_quantity" in _s_inv_chart.columns:
+            fig_store_inv.add_trace(go.Bar(
+                x=_s_inv_chart["inventory_week"], y=_s_inv_chart["on_hand_quantity"],
+                name="On-Hand", marker_color="#BAD7F2", opacity=0.9,
+            ))
+        if "on_order_quantity" in _s_inv_chart.columns:
+            fig_store_inv.add_trace(go.Bar(
+                x=_s_inv_chart["inventory_week"], y=_s_inv_chart["on_order_quantity"],
+                name="On-Order", marker_color="#2E86AB", opacity=0.85,
+            ))
+    fig_store_inv.update_layout(
+        barmode="group",
+        xaxis=dict(title="Week", tickangle=-45),
+        yaxis=dict(title="Units"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=360,
+    )
+    st.plotly_chart(fig_store_inv, use_container_width=True)
+
+    # Upstream Inventory chart (DC + Supplier DC)
+    st.markdown("#### Upstream Inventory: Retailer DC & Supplier DC")
+    fig_up_inv = go.Figure()
+    _dc_chart = (
+        dc_inv_df.copy() if _use_analytics
+        else dc_inv_df[dc_inv_df["item_id"] == sel_item].copy()
+    ) if not dc_inv_df.empty else pd.DataFrame()
+    _sup_dc_chart = (
+        supplier_dc_inv_df.copy() if _use_analytics
+        else supplier_dc_inv_df[supplier_dc_inv_df["item_id"] == sel_item].copy()
+    ) if not supplier_dc_inv_df.empty else pd.DataFrame()
+
+    if not _dc_chart.empty and "inventory_week" in _dc_chart.columns:
+        _dc_agg = _dc_chart.groupby("inventory_week", sort=True).agg(
+            on_hand=("on_hand_quantity", "sum"),
+            on_order=("on_order_quantity", "sum"),
+        ).reset_index()
+        fig_up_inv.add_trace(go.Bar(
+            x=_dc_agg["inventory_week"], y=_dc_agg["on_hand"],
+            name="DC On-Hand", marker_color="#6DB65B", opacity=0.9,
+        ))
+        fig_up_inv.add_trace(go.Bar(
+            x=_dc_agg["inventory_week"], y=_dc_agg["on_order"],
+            name="DC On-Order", marker_color="#3B7A57", opacity=0.75,
+        ))
+    if not _sup_dc_chart.empty and "inventory_week" in _sup_dc_chart.columns:
+        _sup_agg = _sup_dc_chart.groupby("inventory_week", sort=True).agg(
+            on_hand=("on_hand_quantity", "sum"),
+            on_order=("on_order_quantity", "sum"),
+        ).reset_index()
+        fig_up_inv.add_trace(go.Bar(
+            x=_sup_agg["inventory_week"], y=_sup_agg["on_hand"],
+            name="Supplier DC On-Hand", marker_color="#F4A261", opacity=0.9,
+        ))
+        fig_up_inv.add_trace(go.Bar(
+            x=_sup_agg["inventory_week"], y=_sup_agg["on_order"],
+            name="Supplier DC On-Order", marker_color="#C96B1A", opacity=0.75,
+        ))
+    fig_up_inv.update_layout(
+        barmode="group",
+        xaxis=dict(title="Week", tickangle=-45),
+        yaxis=dict(title="Units"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=400,
+    )
+    st.plotly_chart(fig_up_inv, use_container_width=True)
 
     # Raw output tables
     all_dfs = _prepare_export_dfs(
@@ -1072,11 +1130,13 @@ def _render_results():
         items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
         sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
         str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
-        sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
+        sales_hist_df=sales_hist_df, store_inv_df=store_inv_df,
+        weekly_pos_df=weekly_pos_df, weekly_shipments_df=weekly_shipments_df,
+        supplier_dc_inv_df=supplier_dc_inv_df,
         store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
     )
     dq_report = _build_data_quality_report(
-        store_inv_df, dc_inv_df, sales_hist_df, demand_df,
+        store_inv_df, dc_inv_df, sales_hist_df, weekly_pos_df,
         sup_orders_df, sup_od_df, str_orders_df, store_od_df,
         sim_duration_seconds=sim_duration,
     )
@@ -1099,12 +1159,14 @@ def _render_results():
         if not _full_yaml:
             import yaml as _yaml_mod
             _run_fields = [
-                "simulation_name", "start_date", "end_date", "replenishment_policy",
-                "smoothing_days", "seed", "store_reorder_weeks", "store_target_weeks",
-                "store_start_days", "store_order_dow", "dc_reorder_weeks", "dc_target_weeks",
-                "dc_start_days", "dc_review_dow", "sup_lead_min", "sup_lead_max",
-                "sup_on_time", "sup_partial", "dc_lead_days", "dc_on_time", "dc_partial",
+                "simulation_name", "start_date", "end_date", "seed",
+                "store_target_wos", "store_reorder_wos",
+                "retailer_dc_target_wos", "retailer_dc_reorder_wos", "supplier_dc_initial_wos",
+                "smoothing_weeks",
+                "supplier_dc_to_retailer_dc_lead_weeks", "retailer_dc_to_store_lead_weeks",
+                "sup_on_time", "sup_partial", "dc_on_time", "dc_partial",
                 "dc_on_time_by_dc", "dc_partial_by_dc",
+                "retailer_dc_target_wos_by_dc", "store_target_wos_by_store",
             ]
             _run_block = {k: sim_config_block[k] for k in _run_fields if k in sim_config_block}
             try:
@@ -1149,16 +1211,16 @@ def _render_results():
     with tab_debug:
         st.subheader(f"Raw Output Tables — {sel_store_label} / {sel_item_label}")
 
-        with st.expander("Demand Matrix"):
-            st.dataframe(s_demand.reset_index(drop=True) if not s_demand.empty else pd.DataFrame())
-        with st.expander("Daily Sales"):
-            st.dataframe(s_sales_d.reset_index(drop=True))
-        with st.expander("Daily Store Inventory"):
-            st.dataframe(s_inv_d.reset_index(drop=True))
-        with st.expander("Weekly Sales History"):
-            st.dataframe(s_sales_w.reset_index(drop=True))
+        with st.expander("Weekly POS"):
+            st.dataframe(s_weekly_pos.reset_index(drop=True))
+        with st.expander("Weekly Shipments (Supplier DC → Retailer DC)"):
+            st.dataframe(s_shipments.reset_index(drop=True))
         with st.expander("Weekly Store Inventory"):
             st.dataframe(s_inv_w.reset_index(drop=True))
+        with st.expander("Supplier DC Inventory"):
+            st.dataframe(supplier_dc_inv_df[supplier_dc_inv_df["item_id"] == sel_item].reset_index(drop=True) if not supplier_dc_inv_df.empty and "item_id" in supplier_dc_inv_df.columns else pd.DataFrame())
+        with st.expander("Weekly Sales History"):
+            st.dataframe(s_sales_w.reset_index(drop=True))
 
         def _has(df, *cols):
             return not df.empty and all(c in df.columns for c in cols)
@@ -1212,7 +1274,9 @@ def _render_results():
             items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
             sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
             str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
-            sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
+            sales_hist_df=sales_hist_df, store_inv_df=store_inv_df,
+            weekly_pos_df=weekly_pos_df, weekly_shipments_df=weekly_shipments_df,
+            supplier_dc_inv_df=supplier_dc_inv_df,
             store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
         )
 
@@ -1229,7 +1293,9 @@ def _render_results():
                     items_df=items_df, stores_df=stores_df, dcs_df=dcs_df, dc_inv_df=dc_inv_df,
                     sup_orders_df=sup_orders_df, sup_od_df=sup_od_df, sup_rec_df=sup_rec_df,
                     str_orders_df=str_orders_df, store_od_df=store_od_df, str_rec_df=str_rec_df,
-                    sales_hist_df=sales_hist_df, store_inv_df=store_inv_df, demand_df=demand_df,
+                    sales_hist_df=sales_hist_df, store_inv_df=store_inv_df,
+                    weekly_pos_df=weekly_pos_df, weekly_shipments_df=weekly_shipments_df,
+                    supplier_dc_inv_df=supplier_dc_inv_df,
                     store_dc_map=store_dc_map, start_date=start_date, end_date=end_date,
                 ),
                 extra_files=extra_files,
@@ -1388,6 +1454,8 @@ def render():
         if col_new.button("+ New Simulation", use_container_width=True):
             st.session_state.pop("sim_results", None)
             st.session_state.pop("_active_run_id", None)
+            st.session_state.pop(f"_run_yaml_tpl_{retailer_account_id}", None)
+            st.session_state.pop("_run_yaml_text", None)
             go_to("simulation", retailer_account_id=retailer_account_id)
         _render_results()
         return
@@ -1406,7 +1474,7 @@ def render():
     if not run_id:
         n_items     = len(entities.get("items", []))
         n_stores    = len(entities.get("stores", []))
-        n_dcs       = len(entities.get("dcs", []))
+        n_dcs       = len([d for d in entities.get("dcs", []) if d.get("dc_role") != "SUPPLIER_DC"])
         n_suppliers = len(entities.get("suppliers", []))
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Items",     n_items)

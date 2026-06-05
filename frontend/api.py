@@ -89,6 +89,12 @@ def fetch_entities():
     return r.json()
 
 
+def fetch_run_yaml_template() -> str:
+    r = httpx.get(f"{BACKEND_URL}/run-yaml-template", headers=_auth_headers(), timeout=15.0)
+    r.raise_for_status()
+    return r.json()["yaml"]
+
+
 def fetch_mappings():
     r = httpx.get(f"{BACKEND_URL}/mappings", headers=_auth_headers(), timeout=15.0)
     r.raise_for_status()
@@ -139,7 +145,7 @@ def run_simulation_yaml(yaml_content: str):
         f"{BACKEND_URL}/run/yaml",
         json={"yaml_content": yaml_content},
         headers=_auth_headers(),
-        timeout=300.0,
+        timeout=30.0,
     )
     r.raise_for_status()
     return r.json()
@@ -169,6 +175,107 @@ def fetch_run_config(simulation_id):
         f"{BACKEND_URL}/run-config/{simulation_id}",
         headers=_auth_headers(),
         timeout=15.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_simulation_status(simulation_id: str) -> dict:
+    """Poll simulation completion status via run-config."""
+    r = httpx.get(
+        f"{BACKEND_URL}/run-config/{simulation_id}",
+        headers=_auth_headers(),
+        timeout=15.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+# ── Analytics endpoints — routed through BACKEND_URL proxy ───────────────────
+
+def fetch_sim_meta(simulation_id: str) -> dict:
+    r = httpx.get(
+        f"{BACKEND_URL}/analytics/{simulation_id}/meta",
+        headers=_auth_headers(),
+        timeout=15.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_store_sales(simulation_id: str, item_id: str = None, store_id: str = None) -> dict:
+    params = {}
+    if item_id:
+        params["item_id"] = item_id
+    if store_id:
+        params["store_id"] = store_id
+    r = httpx.get(
+        f"{BACKEND_URL}/analytics/{simulation_id}/store-sales",
+        params=params,
+        headers=_auth_headers(),
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_supply_chain_sales(
+    simulation_id: str,
+    item_id: str = None,
+    supplier_dc_id: str = None,
+    retailer_dc_id: str = None,
+) -> dict:
+    params = {}
+    if item_id:
+        params["item_id"] = item_id
+    if supplier_dc_id:
+        params["supplier_dc_id"] = supplier_dc_id
+    if retailer_dc_id:
+        params["retailer_dc_id"] = retailer_dc_id
+    r = httpx.get(
+        f"{BACKEND_URL}/analytics/{simulation_id}/supply-chain-sales",
+        params=params,
+        headers=_auth_headers(),
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_store_inventory(simulation_id: str, item_id: str = None, store_id: str = None) -> dict:
+    params = {}
+    if item_id:
+        params["item_id"] = item_id
+    if store_id:
+        params["store_id"] = store_id
+    r = httpx.get(
+        f"{BACKEND_URL}/analytics/{simulation_id}/store-inventory",
+        params=params,
+        headers=_auth_headers(),
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_upstream_inventory(
+    simulation_id: str,
+    item_id: str = None,
+    dc_id: str = None,
+    supplier_dc_id: str = None,
+) -> dict:
+    params = {}
+    if item_id:
+        params["item_id"] = item_id
+    if dc_id:
+        params["dc_id"] = dc_id
+    if supplier_dc_id:
+        params["supplier_dc_id"] = supplier_dc_id
+    r = httpx.get(
+        f"{BACKEND_URL}/analytics/{simulation_id}/upstream-inventory",
+        params=params,
+        headers=_auth_headers(),
+        timeout=30.0,
     )
     r.raise_for_status()
     return r.json()
