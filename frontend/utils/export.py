@@ -113,9 +113,18 @@ def _prepare_export_dfs(
     items_df, stores_df, dcs_df, dc_inv_df,
     sup_orders_df, sup_od_df, sup_rec_df,
     str_orders_df, store_od_df, str_rec_df,
-    sales_hist_df, store_inv_df, demand_df,
-    store_dc_map, start_date, end_date,
+    sales_hist_df, store_inv_df,
+    weekly_pos_df=None, weekly_shipments_df=None, supplier_dc_inv_df=None,
+    store_dc_map=None, start_date=None, end_date=None,
 ) -> dict[str, pd.DataFrame]:
+    if weekly_pos_df is None:
+        weekly_pos_df = pd.DataFrame()
+    if weekly_shipments_df is None:
+        weekly_shipments_df = pd.DataFrame()
+    if supplier_dc_inv_df is None:
+        supplier_dc_inv_df = pd.DataFrame()
+    if store_dc_map is None:
+        store_dc_map = {}
 
     def _filt(df, store_col=None, item_col=None):
         if filter_store and store_col and store_col in df.columns:
@@ -252,7 +261,12 @@ def _prepare_export_dfs(
 
     sales_filt = _filt(sales_hist_df, store_col="store_id", item_col="item_id")
 
-    days = pd.date_range(start=start_date, end=end_date, freq="D")
+    from datetime import date as _date
+    days = pd.date_range(
+        start=start_date or _date(2024, 1, 1),
+        end=end_date or _date(2026, 6, 30),
+        freq="D",
+    )
     cal_df = pd.DataFrame({
         "CalendarDate":  [d.strftime("%Y-%m-%d") for d in days],
         "WeekId":        [d.strftime("%Y-W%V") for d in days],
@@ -272,29 +286,27 @@ def _prepare_export_dfs(
     }])
 
     promo_rows = []
-    if "is_promo_demand" in demand_df.columns and "promo_id" in demand_df.columns:
-        promo_demand = demand_df[demand_df["is_promo_demand"].astype(str).isin(["True", "1", "true"])].copy()
-        if filter_store:
-            promo_demand = promo_demand[promo_demand.get("store_id", pd.Series()) == filter_store] \
-                if "store_id" in promo_demand.columns else promo_demand
-        if filter_item:
-            promo_demand = promo_demand[promo_demand.get("item_id", pd.Series()) == filter_item] \
-                if "item_id" in promo_demand.columns else promo_demand
+    if not weekly_pos_df.empty and "is_promo_demand" in weekly_pos_df.columns:
+        promo_demand = weekly_pos_df[weekly_pos_df["is_promo_demand"].astype(str).isin(["True", "1", "true"])].copy()
+        if filter_store and "store_id" in promo_demand.columns:
+            promo_demand = promo_demand[promo_demand["store_id"] == filter_store]
+        if filter_item and "item_id" in promo_demand.columns:
+            promo_demand = promo_demand[promo_demand["item_id"] == filter_item]
         if not promo_demand.empty:
-            grp_cols = [c for c in ["promo_id", "store_code", "item_code"] if c in promo_demand.columns]
-            for grp_key, grp in promo_demand.groupby(grp_cols):
+            grp_cols = [c for c in ["store_code", "item_code"] if c in promo_demand.columns]
+            for grp_key, grp in promo_demand.groupby(grp_cols) if grp_cols else []:
                 row: dict = {}
                 if isinstance(grp_key, tuple):
                     for k, v in zip(grp_cols, grp_key):
                         row[k] = v
                 else:
                     row[grp_cols[0]] = grp_key
-                row["promo_event_id"] = row.get("promo_id", "")
+                row["promo_event_id"] = ""
                 row["event_type"] = "PROMO"
-                if "demand_date" in grp.columns:
-                    dates = pd.to_datetime(grp["demand_date"], errors="coerce").dropna()
-                    row["promo_start_date"] = dates.min().strftime("%Y-%m-%d") if not dates.empty else ""
-                    row["promo_end_date"]   = dates.max().strftime("%Y-%m-%d") if not dates.empty else ""
+                if "pos_week" in grp.columns:
+                    weeks_sorted = sorted(grp["pos_week"].dropna().unique())
+                    row["promo_start_date"] = weeks_sorted[0]  if weeks_sorted else ""
+                    row["promo_end_date"]   = weeks_sorted[-1] if weeks_sorted else ""
                 row["demand_multiplier"] = ""
                 promo_rows.append(row)
     promo_df = pd.DataFrame(promo_rows) if promo_rows else pd.DataFrame(
@@ -306,11 +318,32 @@ def _prepare_export_dfs(
         id_cols = [c for c in df.columns if c.endswith("_id")]
         return df.drop(columns=id_cols, errors="ignore")
 
+    # Filter weekly_pos and weekly_shipments
+    wpos_filt = weekly_pos_df.copy()
+    if filter_store and "store_id" in wpos_filt.columns:
+        wpos_filt = wpos_filt[wpos_filt["store_id"] == filter_store]
+    if filter_item and "item_id" in wpos_filt.columns:
+        wpos_filt = wpos_filt[wpos_filt["item_id"] == filter_item]
+    wpos_filt = _drop_ids(wpos_filt.reset_index(drop=True))
+
+    wship_filt = weekly_shipments_df.copy()
+    if filter_item and "item_id" in wship_filt.columns:
+        wship_filt = wship_filt[wship_filt["item_id"] == filter_item]
+    wship_filt = _drop_ids(wship_filt.reset_index(drop=True))
+
+    sdcinv_filt = supplier_dc_inv_df.copy()
+    if filter_item and "item_id" in sdcinv_filt.columns:
+        sdcinv_filt = sdcinv_filt[sdcinv_filt["item_id"] == filter_item]
+    sdcinv_filt = _drop_ids(sdcinv_filt.reset_index(drop=True))
+
     return {
         "SiteInformation.csv":         _rename("SiteInformation.csv",         _drop_ids(site_df)),
         "ItemInformation.csv":         _rename("ItemInformation.csv",         _drop_ids(item_info_df)),
         "SupplierInformation.csv":     _rename("SupplierInformation.csv",     _drop_ids(sup_info_df)),
         "InventoryInformation.csv":    _rename("InventoryInformation.csv",    _drop_ids(inv_df)),
+        "WeeklyPOS.csv":               wpos_filt,
+        "WeeklyShipments.csv":         wship_filt,
+        "SupplierDCInventory.csv":     sdcinv_filt,
         "SupplierOrderHeader.csv":     _rename("SupplierOrderHeader.csv",     _drop_ids(sup_hdr_df)),
         "SupplierOrderLine.csv":       _rename("SupplierOrderLine.csv",       _drop_ids(sup_line_df)),
         "SupplierReceipts.csv":        _rename("SupplierReceipts.csv",        _drop_ids(sup_rec_filt)),
@@ -334,7 +367,7 @@ def _build_zip(export_dfs, extra_files=None):
     return buf.getvalue()
 
 
-def _run_quality_checks(store_inv_df, dc_inv_df, sales_hist_df, demand_df,
+def _run_quality_checks(store_inv_df, dc_inv_df, sales_hist_df, weekly_pos_df,
                         sup_orders_df, sup_od_df, str_orders_df, store_od_df):
     results = []
 
@@ -386,11 +419,11 @@ def _run_quality_checks(store_inv_df, dc_inv_df, sales_hist_df, demand_df,
     else:
         _chk("store_lines_have_header", True)
 
-    if (not sales_hist_df.empty and not demand_df.empty
-            and "sales_quantity" in sales_hist_df.columns
-            and "demand_qty" in demand_df.columns):
-        ts   = float(_num(sales_hist_df, "sales_quantity").sum())
-        td   = float(_num(demand_df,     "demand_qty").sum())
+    if (not weekly_pos_df.empty
+            and "sales_qty" in weekly_pos_df.columns
+            and "demand_qty" in weekly_pos_df.columns):
+        ts   = float(_num(weekly_pos_df, "sales_qty").sum())
+        td   = float(_num(weekly_pos_df, "demand_qty").sum())
         rate = ts / td if td > 0 else 1.0
         _chk("store_fill_rate_above_floor", rate >= 0.50,
              0 if rate >= 0.50 else 1, f"fill_rate={rate:.1%} (floor=50%)")
@@ -409,11 +442,11 @@ def _run_quality_checks(store_inv_df, dc_inv_df, sales_hist_df, demand_df,
     return results
 
 
-def _build_data_quality_report(store_inv_df, dc_inv_df, sales_hist_df, demand_df,
+def _build_data_quality_report(store_inv_df, dc_inv_df, sales_hist_df, weekly_pos_df,
                                sup_orders_df, sup_od_df, str_orders_df, store_od_df,
                                sim_duration_seconds=None):
     checks = _run_quality_checks(
-        store_inv_df, dc_inv_df, sales_hist_df, demand_df,
+        store_inv_df, dc_inv_df, sales_hist_df, weekly_pos_df,
         sup_orders_df, sup_od_df, str_orders_df, store_od_df,
     )
     validation_passed = all(c["passed"] for c in checks)
@@ -422,8 +455,8 @@ def _build_data_quality_report(store_inv_df, dc_inv_df, sales_hist_df, demand_df
         return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum()) \
             if not df.empty and col in df.columns else 0.0
 
-    total_demand = _n(demand_df, "demand_qty")
-    total_sales  = _n(sales_hist_df, "sales_quantity")
+    total_demand = _n(weekly_pos_df, "demand_qty")
+    total_sales  = _n(weekly_pos_df, "sales_qty")
     fill_rate    = total_sales / total_demand if total_demand > 0 else 1.0
 
     dc_total    = len(dc_inv_df) if not dc_inv_df.empty else 0
