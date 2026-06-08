@@ -7,13 +7,20 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger("metrai_backend")
+
 import httpx
 import jwt
 import psycopg2
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -39,6 +46,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    logger.info("%s %s → %d  (%.0fms)", request.method, request.url.path, response.status_code, ms)
+    return response
 
 DUMMY_ACCOUNT_ID = "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 DUMMY_USER_ID    = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
@@ -139,7 +155,7 @@ async def get_current_user(
 
 @app.on_event("startup")
 def _bootstrap_demo_password():
-    """Hash 12345678 for the demo user if no password has been set yet."""
+    """Set username=demo and password=12345678 for the demo user if not already set."""
     if not POSTGRES_DSN:
         return
     try:
@@ -153,7 +169,7 @@ def _bootstrap_demo_password():
                 row = cur.fetchone()
                 if row and not row[0]:
                     cur.execute(
-                        "UPDATE users SET password_hash = %s WHERE user_id = %s",
+                        "UPDATE users SET username = 'demo', password_hash = %s WHERE user_id = %s",
                         (_ph.hash("12345678"), DUMMY_USER_ID),
                     )
                     conn.commit()
@@ -549,11 +565,107 @@ def get_entities(current_user: dict = Depends(get_current_user)):
             return {
                 "items":     q("SELECT item_id::text, item_code, item_description FROM items WHERE retailer_account_id = %s ORDER BY item_code", acct),
                 "stores":    q("SELECT store_id::text, store_code, store_name FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct),
-                "dcs":       q("SELECT dc_id::text, dc_code, dc_name FROM distribution_centers WHERE retailer_account_id = %s ORDER BY dc_code", acct),
+                "dcs":       q("SELECT dc_id::text, dc_code, dc_name, COALESCE(dc_role, 'RETAILER_DC') AS dc_role FROM distribution_centers WHERE retailer_account_id = %s ORDER BY dc_code", acct),
                 "suppliers": q("SELECT supplier_id::text, supplier_code, supplier_name FROM suppliers WHERE retailer_account_id = %s ORDER BY supplier_code", acct),
             }
     finally:
         conn.close()
+
+
+# ── Run YAML template ────────────────────────────────────────────────────────
+
+@app.get("/run-yaml-template")
+def get_run_yaml_template(current_user: dict = Depends(get_current_user)):
+    """Generate a pre-filled entity-first YAML run config for this retailer account."""
+    import hashlib
+
+    retailer_account_id = current_user["retailer_account_id"]
+    if not POSTGRES_DSN:
+        raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
+
+    conn = _pg_connect()
+    try:
+        with conn.cursor() as cur:
+            data_acct = _resolve_data_account(cur, retailer_account_id)
+
+            def q(sql, params):
+                cur.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            acct = (data_acct,)
+            supplier_dcs = q(
+                "SELECT dc_code FROM distribution_centers "
+                "WHERE retailer_account_id = %s AND dc_role = 'SUPPLIER_DC' ORDER BY dc_code", acct
+            )
+            retailer_dcs = q(
+                "SELECT dc_code FROM distribution_centers "
+                "WHERE retailer_account_id = %s AND COALESCE(dc_role, 'RETAILER_DC') = 'RETAILER_DC' ORDER BY dc_code", acct
+            )
+            stores = q(
+                "SELECT store_code FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct
+            )
+    finally:
+        conn.close()
+
+    def _hash_f(code: str, lo: float, hi: float, step: float = 0.01) -> float:
+        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
+        steps = int((hi - lo) / step)
+        return round(lo + (h % (steps + 1)) * step, 2)
+
+    def _hash_i(code: str, lo: int, hi: int) -> int:
+        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
+        return lo + (h % (hi - lo + 1))
+
+    lines = [
+        'run:',
+        '  simulation_name: "My Simulation Run"',
+        '  start_date: "2024-01-01"',
+        '  end_date:   "2026-06-30"',
+        '  seed: 42',
+        '',
+        '  store_target_wos:        2',
+        '  retailer_dc_target_wos:  4',
+        '  supplier_dc_initial_wos: 4',
+    ]
+
+    if supplier_dcs:
+        lines += ['', '  suppliers:']
+        for row in supplier_dcs:
+            code = row["dc_code"]
+            lines += [
+                f'    {code}:',
+                f'      on_time:     {_hash_f(code + "_ot", 0.88, 0.97)}',
+                f'      partial:     {_hash_f(code + "_pt", 0.03, 0.09)}',
+                f'      lead_weeks:  {_hash_i(code + "_lw", 1, 2)}',
+                f'      initial_wos: {_hash_i(code + "_iwos", 5, 8)}',
+            ]
+
+    if retailer_dcs:
+        lines += ['', '  dcs:']
+        for row in retailer_dcs:
+            code = row["dc_code"]
+            lines += [
+                f'    {code}:',
+                f'      on_time:             {_hash_f(code + "_ot", 0.90, 0.97)}',
+                f'      partial:             {_hash_f(code + "_pt", 0.03, 0.07)}',
+                f'      lead_weeks_to_store: {_hash_i(code + "_lw", 1, 2)}',
+                f'      target_wos:          {_hash_i(code + "_wos", 4, 6)}',
+                f'      initial_wos:         {_hash_i(code + "_iwos", 4, 7)}',
+            ]
+
+    if stores:
+        lines += ['', '  stores:']
+        for row in stores:
+            code = row["store_code"]
+            lines += [
+                f'    {code}:',
+                f'      target_wos:  {_hash_i(code + "_wos", 2, 3)}',
+                f'      initial_wos: {_hash_i(code + "_iwos", 2, 4)}',
+            ]
+
+    lines.append('')
+    return {"yaml": '\n'.join(lines)}
 
 
 # ── Network mappings ──────────────────────────────────────────────────────────
@@ -665,16 +777,65 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
     req["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     req["user_id"]             = current_user["user_id"]
+    account = current_user["retailer_account_id"]
+    logger.info("run  account=%s  name=%r  dates=%s→%s  policy=%s",
+                account, req.get("simulation_name"), req.get("start_date"), req.get("end_date"),
+                req.get("replenishment_policy"))
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(f"{SIM_ENGINE_URL}/simulate", json=req)
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:
+        logger.error("run  account=%s  engine unreachable", account)
         raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
     except httpx.TimeoutException:
+        logger.error("run  account=%s  engine timed out", account)
         raise HTTPException(status_code=504, detail="Simulation timed out")
     except httpx.HTTPStatusError as e:
+        logger.error("run  account=%s  engine error %d: %s", account, e.response.status_code, e.response.text[:200])
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+# ── YAML-based simulation run proxy ──────────────────────────────────────────
+
+@app.post("/run/yaml")
+async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Accept {"yaml_content": "<yaml string>"}, inject retailer_account_id into
+    the run: block at parse time (engine enforces it), and proxy to /simulate/yaml.
+    """
+    import yaml as _yaml
+
+    account = current_user["retailer_account_id"]
+    logger.info("run/yaml  account=%s", account)
+    yaml_text = body.get("yaml_content", "")
+    # Inject retailer_account_id into the run: block so the engine picks it up
+    try:
+        raw = _yaml.safe_load(yaml_text)
+        if isinstance(raw, dict) and isinstance(raw.get("run"), dict):
+            raw["run"]["retailer_account_id"] = current_user["retailer_account_id"]
+            raw["run"]["user_id"] = current_user["user_id"]
+            yaml_text = _yaml.dump(raw, default_flow_style=False)
+    except Exception:
+        pass  # engine will surface the YAML error with a clear 422
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            resp = await client.post(
+                f"{SIM_ENGINE_URL}/simulate/yaml",
+                json={"yaml_content": yaml_text},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        logger.error("run/yaml  account=%s  engine unreachable", account)
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.TimeoutException:
+        logger.error("run/yaml  account=%s  engine timed out", account)
+        raise HTTPException(status_code=504, detail="Simulation timed out")
+    except httpx.HTTPStatusError as e:
+        logger.error("run/yaml  account=%s  engine error %d: %s", account, e.response.status_code, e.response.text[:200])
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
@@ -731,5 +892,32 @@ async def delete_simulation(simulation_id: str, current_user: dict = Depends(get
             return resp.json()
     except httpx.ConnectError:
         raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.get("/analytics/{simulation_id}/{path:path}")
+async def proxy_analytics(
+    simulation_id: str,
+    path: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """Proxy analytics GET requests to the simulation engine, forwarding all query params."""
+    account = current_user["retailer_account_id"]
+    logger.info("analytics  account=%s  sim=%s  path=%s", account, simulation_id[:8], path)
+    params = dict(request.query_params)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{SIM_ENGINE_URL}/analytics/{simulation_id}/{path}",
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Analytics request timed out")
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
