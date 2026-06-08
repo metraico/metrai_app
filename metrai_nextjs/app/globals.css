@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* metrai.ai color palette - Light mode */
+    --background: 247 14 98%;
+    --foreground: 220 19 25%;
+    --card: 251 0 99%;
+    --card-foreground: 220 19 25%;
+    --popover: 251 0 99%;
+    --popover-foreground: 220 19 25%;
+    --muted: 220 18 74%;
+    --muted-foreground: 220 19 35%;
+    --accent: 143 42 94%;
+    --accent-foreground: 220 19 25%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 251 0 99%;
+    --border: 226 7 100%;
+    --input: 226 7 100%;
+    --primary: 243 75 59%;
+    --primary-foreground: 251 0 99%;
+    --secondary: 226 45 98%;
+    --secondary-foreground: 220 19 25%;
+    --ring: 243 75 59%;
+
+    /* Extended metrai palette */
+    --platinum: 216 45 98%;
+    --mint-cream: 143 42 94%;
+    --soft-periwinkle: 237 73 75%;
+    --ghost-white: 226 100 97%;
+    --lavender-grey: 221 20 67%;
+    --majorelle-blue: 243 75 59%;
+    --charcoal-blue: 220 19 25%;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* Dark mode - slightly adjusted but maintaining metrai vibe */
+      --background: 220 19 15%;
+      --foreground: 226 7 100%;
+      --card: 220 19 20%;
+      --card-foreground: 226 7 100%;
+      --popover: 220 19 20%;
+      --popover-foreground: 226 7 100%;
+      --muted: 220 19 35%;
+      --muted-foreground: 221 20 67%;
+      --accent: 143 42 94%;
+      --accent-foreground: 220 19 15%;
+      --destructive: 0 84.2% 60.2%;
+      --destructive-foreground: 220 19 15%;
+      --border: 220 19 25%;
+      --input: 220 19 25%;
+      --primary: 243 75 59%;
+      --primary-foreground: 226 7 100%;
+      --secondary: 220 19 25%;
+      --secondary-foreground: 226 7 100%;
+      --ring: 243 75 59%;
+    }
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type=number] {
+  -moz-appearance: textfield;
+}

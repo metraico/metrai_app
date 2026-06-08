@@ -26,6 +26,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 load_dotenv()
 
+logger = logging.getLogger("metrai.backend")
+
 SIM_ENGINE_URL = os.getenv("SIM_ENGINE_URL", "http://localhost:8000")
 POSTGRES_DSN   = os.getenv("POSTGRES_DSN")
 JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
@@ -526,6 +528,7 @@ def get_runs(current_user: dict = Depends(get_current_user)):
                 for k, v in row.items():
                     if hasattr(v, "isoformat"):
                         row[k] = v.isoformat()
+            logger.info("GET /runs — user=%s account=%s returned %d runs", user_id, retailer_account_id, len(rows))
             return rows
     finally:
         conn.close()
@@ -857,7 +860,7 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
 @app.get("/simulation/{simulation_id}")
 async def get_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.get(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
             resp.raise_for_status()
             return resp.json()
