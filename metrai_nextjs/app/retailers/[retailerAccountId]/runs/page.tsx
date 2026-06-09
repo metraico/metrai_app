@@ -1,29 +1,35 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useAuthStore } from '@/lib/store/authStore'
 import { getRuns, deleteSimulation } from '@/lib/api/simulation'
 import type { SimulationRun } from '@/lib/api/types'
-import { Plus, Zap, Trash2 } from 'lucide-react'
+import { useAuthStore } from '@/lib/store/authStore'
+import { Plus, Zap, Trash2, CheckCircle, Loader2, XCircle } from 'lucide-react'
 
 const STATUS_STYLES: Record<string, string> = {
-  COMPLETED: 'bg-green-100 text-green-700',
+  COMPLETED: 'bg-emerald-100 text-emerald-700',
   RUNNING: 'bg-yellow-100 text-yellow-700',
   FAILED: 'bg-rose-100 text-rose-700',
 }
 
+const STATUS_ICONS: Record<string, React.ReactNode> = {
+  COMPLETED: <CheckCircle size={13} className="inline-block mr-1" />,
+  RUNNING: <Loader2 size={13} className="inline-block mr-1 animate-spin" />,
+  FAILED: <XCircle size={13} className="inline-block mr-1" />,
+}
+
 const STATUS_LABELS: Record<string, string> = {
-  COMPLETED: '✓ Completed',
-  RUNNING: '⟳ Running',
-  FAILED: '✗ Failed',
+  COMPLETED: 'Completed',
+  RUNNING: 'Running',
+  FAILED: 'Failed',
 }
 
 export default function RunsPage() {
   const params = useParams()
   const router = useRouter()
-  const { userId } = useAuthStore()
   const retailerAccountId = params.retailerAccountId as string
+  const userId = useAuthStore(s => s.userId)
 
   const [runs, setRuns] = useState<SimulationRun[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,7 +37,7 @@ export default function RunsPage() {
   const [deleting, setDeleting] = useState<string | null>(null)
 
   const fetchRuns = () => {
-    if (!userId) return
+    if (!retailerAccountId || !userId) return
     setLoading(true)
     getRuns(retailerAccountId, userId)
       .then(setRuns)
@@ -39,7 +45,7 @@ export default function RunsPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetchRuns() }, [retailerAccountId, userId])
+  useEffect(() => { fetchRuns() }, [retailerAccountId])
 
   const handleDelete = async (e: React.MouseEvent, simulationId: string) => {
     e.stopPropagation()
@@ -94,7 +100,7 @@ export default function RunsPage() {
 
         {!loading && !error && runs.length === 0 && (
           <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-20 text-center shadow-sm">
-            <div className="mb-4 text-5xl">⚡</div>
+            <div className="mb-4 flex justify-center"><Zap size={48} className="text-majorelle-blue-300" /></div>
             <h2 className="text-2xl font-black text-charcoal-blue-950">No simulation runs yet</h2>
             <p className="mx-auto mt-3 max-w-xs text-base text-charcoal-blue-400">
               Create your first simulation to analyse supply chain performance and forecast demand.
@@ -140,6 +146,7 @@ export default function RunsPage() {
                       STATUS_STYLES[run.simulation_status] ?? 'bg-charcoal-blue-100 text-charcoal-blue-600'
                     }`}
                   >
+                    {STATUS_ICONS[run.simulation_status]}
                     {STATUS_LABELS[run.simulation_status] ?? run.simulation_status}
                   </span>
                 </div>

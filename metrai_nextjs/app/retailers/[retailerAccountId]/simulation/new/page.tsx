@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
-import { getRunYamlTemplate, runSimulation, pollSimulationUntilDone } from '@/lib/api/simulation'
-import { generateDemand, pollDemandUntilDone } from '@/lib/api/demand'
+import { getRunYamlTemplate, runSimulation } from '@/lib/api/simulation'
+import { useSimulationStore } from '@/lib/store/simulationStore'
 import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp } from 'lucide-react'
 import yaml from 'js-yaml'
 
@@ -94,6 +94,7 @@ export default function NewSimulationPage() {
   const { userId, retailerAccountId } = useAuthStore()
   const routeAccountId = params.retailerAccountId as string
 
+  const { setCache } = useSimulationStore()
   const [currentStep, setCurrentStep] = useState(0)
   const [runYaml, setRunYaml] = useState('')
   const [addScenario, setAddScenario] = useState(false)
@@ -104,17 +105,7 @@ export default function NewSimulationPage() {
   useEffect(() => {
     getRunYamlTemplate()
       .then(({ yaml: tpl }) => setRunYaml(tpl))
-      .catch(() => {
-        setRunYaml(`run:
-  simulation_name: "My Simulation"
-  start_date: "2024-01-01"
-  end_date: "2026-06-30"
-  seed: 42
-  store_target_wos: 2
-  retailer_dc_target_wos: 4
-  supplier_dc_initial_wos: 4
-`)
-      })
+      .catch((err) => setStage({ type: 'error', message: `Failed to load template: ${err?.message ?? err}` }))
       .finally(() => setTemplateLoading(false))
   }, [])
 
@@ -148,27 +139,27 @@ export default function NewSimulationPage() {
       return
     }
 
-    const combinedYaml = addScenario ? `${runYaml.trimEnd()}\n\n${scenarioYaml}` : runYaml
+    // Inject retailer_account_id and user_id into YAML top level
+    let finalYaml = runYaml
+    try {
+      const parsed = yaml.load(runYaml) as Record<string, unknown>
+      parsed.retailer_account_id = accountId
+      if (userId) parsed.user_id = userId
+      finalYaml = yaml.dump(parsed)
+    } catch {
+      // keep original yaml if parse fails
+    }
+
+    const combinedYaml = addScenario ? `${finalYaml.trimEnd()}\n\n${scenarioYaml}` : finalYaml
 
     try {
-      // Step 1: generate demand
-      setStage({ type: 'generating_demand', message: 'Generating demand data…' })
-      const { job_id } = await generateDemand({
-        retailer_account_id: accountId,
-        start_date: runParams.start_date,
-        end_date: runParams.end_date,
-        seed: runParams.seed,
-      })
-      await pollDemandUntilDone(job_id, 3000, (s) => {
-        setStage({ type: 'generating_demand', message: `Demand generation: ${s.status}…` })
-      })
+      // /simulate handles demand generation + simulation inline — no separate steps needed
+      setStage({ type: 'running_simulation', message: 'Running simulation…' })
+      const result = await runSimulation(combinedYaml)
+      const { simulation_id, summary } = result
 
-      // Step 2: run simulation
-      setStage({ type: 'running_simulation', message: 'Starting simulation…' })
-      const { simulation_id } = await runSimulation(combinedYaml)
-      await pollSimulationUntilDone(simulation_id, 3000, (s) => {
-        setStage({ type: 'running_simulation', message: `Simulation: ${s.status}…` })
-      })
+      const simName = (yaml.load(runYaml) as any)?.run?.simulation_name ?? 'Simulation Results'
+      if (summary) setCache({ simulationId: simulation_id, simulationName: simName, summary })
 
       router.push(`/retailers/${routeAccountId}/simulation/${simulation_id}`)
     } catch (err: unknown) {
@@ -289,7 +280,7 @@ export default function NewSimulationPage() {
               </div>
             )}
 
-            {(stage.type === 'generating_demand' || stage.type === 'running_simulation') && (
+            {stage.type === 'running_simulation' && (
               <div className="mb-6 flex items-center gap-3 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 p-4">
                 <div className="h-5 w-5 flex-shrink-0 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
                 <p className="text-sm font-semibold text-majorelle-blue-950">{stage.message}</p>

@@ -823,7 +823,7 @@ async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_curre
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(
-                f"{SIM_ENGINE_URL}/simulate/yaml",
+                f"{SIM_ENGINE_URL}/simulate",
                 json={"yaml_content": yaml_text},
             )
             resp.raise_for_status()

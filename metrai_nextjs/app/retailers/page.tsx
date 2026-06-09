@@ -3,11 +3,11 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
-import { getRetailers } from '@/lib/api/retailers'
+import { getRetailers, switchAccount } from '@/lib/api/retailers'
 import type { RetailerAccount } from '@/lib/api/types'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
-import { ArrowRight, Building2, Plus, Calendar, Users } from 'lucide-react'
+import { ArrowRight, Building2, Plus, Calendar, Users, Loader2 } from 'lucide-react'
 
 export default function RetailersPage() {
   const router = useRouter()
@@ -15,6 +15,7 @@ export default function RetailersPage() {
   const [accounts, setAccounts] = useState<RetailerAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [switching, setSwitching] = useState<string | null>(null)
 
   useEffect(() => {
     getRetailers()
@@ -23,9 +24,23 @@ export default function RetailersPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  const handleSelectAccount = (account: RetailerAccount) => {
-    setAuth({ retailerAccountId: account.retailer_account_id })
-    router.push(`/retailers/${account.retailer_account_id}/runs`)
+  const handleSelectAccount = async (account: RetailerAccount) => {
+    setSwitching(account.retailer_account_id)
+    try {
+      const data = await switchAccount(account.retailer_account_id)
+      setAuth({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
+        retailerAccountId: data.retailer_account_id,
+      })
+      router.push(`/retailers/${account.retailer_account_id}/runs`)
+    } catch {
+      // Fallback: update local state only if switch-account fails
+      setAuth({ retailerAccountId: account.retailer_account_id })
+      router.push(`/retailers/${account.retailer_account_id}/runs`)
+    } finally {
+      setSwitching(null)
+    }
   }
 
   return (
@@ -136,11 +151,13 @@ export default function RetailersPage() {
                             e.stopPropagation()
                             handleSelectAccount(account)
                           }}
-                          className="w-full rounded-2xl bg-majorelle-blue-50 px-4 py-3 text-sm font-semibold text-majorelle-blue-500 transition-all duration-200 hover:bg-majorelle-blue-500 hover:text-white"
+                          disabled={switching === account.retailer_account_id}
+                          className="w-full rounded-2xl bg-majorelle-blue-50 px-4 py-3 text-sm font-semibold text-majorelle-blue-500 transition-all duration-200 hover:bg-majorelle-blue-500 hover:text-white disabled:opacity-60"
                         >
                           <div className="flex items-center justify-center gap-2">
-                            View Account
-                            <ArrowRight size={18} />
+                            {switching === account.retailer_account_id
+                              ? <><Loader2 size={16} className="animate-spin" /> Switching…</>
+                              : <><span>View Account</span><ArrowRight size={18} /></>}
                           </div>
                         </button>
                       </div>
