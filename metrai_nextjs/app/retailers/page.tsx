@@ -115,7 +115,7 @@ export default function RetailersPage() {
                               <Calendar size={11} /><span>Joined</span>
                             </div>
                             <p className="text-xs font-semibold text-charcoal-blue-950">
-                              {new Date(account.joined_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              {account.joined_at ? new Date(account.joined_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
                             </p>
                           </div>
                           <div>

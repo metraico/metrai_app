@@ -14,7 +14,7 @@ export function Sidebar() {
 
   const handleLogout = async () => {
     if (refreshToken) {
-      logout({ refresh_token: refreshToken }).catch(() => {})
+      logout().catch(() => {})
     }
     clearAuth()
     router.push('/login')

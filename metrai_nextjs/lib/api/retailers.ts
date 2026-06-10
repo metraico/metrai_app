@@ -9,6 +9,6 @@ export const getRetailers = () =>
 export const createRetailer = (data: CreateRetailerRequest) =>
   engineClient.post<CreateRetailerResponse>('/retailers', data).then(r => r.data)
 
-// No switch-account on engine — kept for compat, resolves immediately
-export const switchAccount = (_retailerAccountId: string) =>
+// No switch-account on engine — kept for compat, always rejects (caller falls through to catch)
+export const switchAccount = (_retailerAccountId: string): Promise<{ access_token: string; refresh_token: string; retailer_account_id: string }> =>
   Promise.reject(new Error('no-op'))

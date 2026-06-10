@@ -1,0 +1,7 @@
+metrai_nextjs/node_modules
+metrai_nextjs/.next
+metrai_nextjs/.env.local
+.venv
+__pycache__
+*.pyc
+frontend_old/
