@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation'
 import { Download, TrendingUp, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from 'recharts'
 import {
   getAnalyticsMeta,
@@ -19,14 +19,16 @@ import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
 function aggPOS(pos: any[]) {
-  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number }>()
+  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string }>()
   for (const r of pos) {
-    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0 }
+    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '' }
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
       lost: c.lost + Number(r.lost_sales_qty),
       revenue: c.revenue + Number(r.sales_amount),
+      isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
+      promoName: c.promoName || (r.promo_name ?? ''),
     })
   }
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, v]) => ({
@@ -35,6 +37,8 @@ function aggPOS(pos: any[]) {
     sales_qty: v.sales,
     lost_sales_qty: v.lost,
     sales_amount: v.revenue,
+    is_promo_week: v.isPromo ? 1 : 0,
+    promo_name: v.promoName,
   }))
 }
 
@@ -99,6 +103,36 @@ function computeKPIs(pos: any[], shipments: any[]) {
   const fillRate     = shipments.length > 0 ? (fillSum / shipments.length) * 100 : 0
   const stockoutRate = totalSales + totalLost > 0 ? (totalLost / (totalSales + totalLost)) * 100 : 0
   return { totalSales, totalRevenue, fillRate, stockoutRate }
+}
+
+// ── Custom tooltip ────────────────────────────────────────────────────────────
+
+function ChartTooltip({ active, payload, label, promoWeekMap }: {
+  active?: boolean; payload?: any[]; label?: string
+  promoWeekMap?: Record<string, string>
+}) {
+  if (!active || !payload?.length) return null
+  const promoName = payload[0]?.payload?.promo_name || promoWeekMap?.[label ?? ''] || ''
+  const isPromo = payload[0]?.payload?.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[140px]">
+      {isPromo && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
+          <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
+          <span className="font-semibold text-violet-700 truncate">{promoName || 'Promo week'}</span>
+        </div>
+      )}
+      <p className="mb-1 font-semibold text-charcoal-blue-700">{label}</p>
+      {payload.map((p: any) => (
+        <p key={p.dataKey} className="flex justify-between gap-4" style={{ color: p.color }}>
+          <span>{p.name}</span>
+          <span className="font-medium">
+            {p.name === 'Fill Rate' ? `${(Number(p.value) * 100).toFixed(1)}%` : Number(p.value).toLocaleString()}
+          </span>
+        </p>
+      ))}
+    </div>
+  )
 }
 
 // ── Small components ──────────────────────────────────────────────────────────
@@ -385,9 +419,30 @@ export default function SimulationResultsPage() {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [simulationId, loadSummary, cache])
 
-  const itemOptions  = [...new Map((meta?.items_meta ?? []).map((m: any) => [m.item_id, { value: m.item_id, label: m.item_description ? `${m.item_name} — ${m.item_description}` : m.item_name }])).values()]
-  const storeOptions = (meta?.stores_meta ?? []).map((m: any) => ({ value: m.store_id, label: m.store_code }))
-  const dcOptions    = (meta?.dcs_meta    ?? []).map((m: any) => ({ value: m.dc_id,    label: m.dc_code    }))
+  const allItemOptions  = [...new Map((meta?.items_meta ?? []).map((m: any) => [m.item_id, { value: m.item_id, label: m.item_description ? `${m.item_name} — ${m.item_description}` : m.item_name }])).values()]
+  const allStoreOptions = (meta?.stores_meta ?? []).map((m: any) => ({ value: m.store_id, label: m.store_code }))
+  const dcOptions       = (meta?.dcs_meta    ?? []).map((m: any) => ({ value: m.dc_id,    label: m.dc_code    }))
+
+  // Build item→stores and store→items lookup from store_item_map
+  const storeItemMap = meta?.store_item_map ?? {}
+  const itemStoreMap: Record<string, string[]> = {}
+  for (const [storeId, itemIds] of Object.entries(storeItemMap)) {
+    for (const itemId of itemIds) {
+      if (!itemStoreMap[itemId]) itemStoreMap[itemId] = []
+      itemStoreMap[itemId].push(storeId)
+    }
+  }
+
+  function filteredItemOptions(activeStoreId: string) {
+    if (!activeStoreId) return allItemOptions
+    const allowed = new Set(storeItemMap[activeStoreId] ?? [])
+    return allItemOptions.filter(o => allowed.has(o.value))
+  }
+  function filteredStoreOptions(activeItemId: string) {
+    if (!activeItemId) return allStoreOptions
+    const allowed = new Set(itemStoreMap[activeItemId] ?? [])
+    return allStoreOptions.filter(o => allowed.has(o.value))
+  }
 
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
 
@@ -467,18 +522,21 @@ export default function SimulationResultsPage() {
                 subtitle="Weekly demand, sales and lost sales across all stores"
                 error={posError} loading={posLoading}
                 filters={<>
-                  <FilterSelect label="Item" value={posItemFilter} options={itemOptions}
+                  <FilterSelect label="Item" value={posItemFilter} options={filteredItemOptions(posStoreFilter)}
                     onChange={v => { setPosItemFilter(v); (v || posStoreFilter) ? fetchPOSFiltered(v, posStoreFilter) : resetToSummary('pos') }} />
-                  <FilterSelect label="Store" value={posStoreFilter} options={storeOptions}
+                  <FilterSelect label="Store" value={posStoreFilter} options={filteredStoreOptions(posItemFilter)}
                     onChange={v => { setPosStoreFilter(v); (posItemFilter || v) ? fetchPOSFiltered(posItemFilter, v) : resetToSummary('pos') }} />
                 </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                    <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
+                      {posData.filter(d => d.is_promo_week).map(d => (
+                        <ReferenceArea key={d.week} x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
+                      ))}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Tooltip content={<ChartTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
                       <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
@@ -494,9 +552,9 @@ export default function SimulationResultsPage() {
                 subtitle="Weekly on-hand, available and on-order inventory at stores"
                 error={storeInvError} loading={storeInvLoading}
                 filters={<>
-                  <FilterSelect label="Item" value={invItemFilter} options={itemOptions}
+                  <FilterSelect label="Item" value={invItemFilter} options={filteredItemOptions(invStoreFilter)}
                     onChange={v => { setInvItemFilter(v); (v || invStoreFilter) ? fetchStoreInvFiltered(v, invStoreFilter) : resetToSummary('inv') }} />
-                  <FilterSelect label="Store" value={invStoreFilter} options={storeOptions}
+                  <FilterSelect label="Store" value={invStoreFilter} options={filteredStoreOptions(invItemFilter)}
                     onChange={v => { setInvStoreFilter(v); (invItemFilter || v) ? fetchStoreInvFiltered(invItemFilter, v) : resetToSummary('inv') }} />
                 </>}
                 chart={(h) => (
@@ -521,17 +579,20 @@ export default function SimulationResultsPage() {
                 subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
                 error={shipError} loading={shipLoading}
                 filters={
-                  <FilterSelect label="Item" value={shipItemFilter} options={itemOptions}
+                  <FilterSelect label="Item" value={shipItemFilter} options={allItemOptions}
                     onChange={v => { setShipItemFilter(v); v ? fetchShipFiltered(v) : resetToSummary('ship') }} />
                 }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }}>
+                    <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
+                      {posData.filter(d => d.is_promo_week).map(d => (
+                        <ReferenceArea key={d.week} yAxisId="left" x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
+                      ))}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
-                      <Tooltip formatter={(v, name) => String(name).includes('Fill') ? `${(Number(v) * 100).toFixed(1)}%` : Number(v).toLocaleString()} />
+                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
                       <Bar yAxisId="left" dataKey="shipped_qty" fill="#60a5fa" name="Shipped" />
@@ -548,7 +609,7 @@ export default function SimulationResultsPage() {
                 subtitle="Weekly on-hand inventory at Retailer DCs and Supplier DCs"
                 error={dcInvError} loading={dcInvLoading}
                 filters={<>
-                  <FilterSelect label="Item" value={dcItemFilter} options={itemOptions}
+                  <FilterSelect label="Item" value={dcItemFilter} options={allItemOptions}
                     onChange={v => { setDcItemFilter(v); (v || dcFilter) ? fetchDCInvFiltered(v, dcFilter) : resetToSummary('dc') }} />
                   <FilterSelect label="DC" value={dcFilter} options={dcOptions}
                     onChange={v => { setDcFilter(v); (dcItemFilter || v) ? fetchDCInvFiltered(dcItemFilter, v) : resetToSummary('dc') }} />

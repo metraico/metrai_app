@@ -240,6 +240,7 @@ export interface AnalyticsMeta {
   stores_meta: StoreMeta[]
   dcs_meta: DCMeta[]
   store_dc_map: Record<string, string>
+  store_item_map: Record<string, string[]>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
