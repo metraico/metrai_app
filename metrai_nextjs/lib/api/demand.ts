@@ -1,13 +1,18 @@
-import { apiClient } from './client'
-import type { DemandGenerateRequest, DemandJobResponse } from './types'
+import { engineClient } from './client'
+import type { DemandGenerateRequest, DemandGenerateResponse, DemandJobResponse } from './types'
 
+// POST /demand/generate → DemandGenerateResponse {job_id, status}
 export const generateDemand = (data: DemandGenerateRequest) =>
-  apiClient
-    .post<{ job_id: string; status: string }>('/demand/generate', data)
+  engineClient
+    .post<DemandGenerateResponse>('/demand/generate', data)
     .then(r => r.data)
 
+// GET /demand/status/{job_id} → DemandJobResponse
+
+
 export const getDemandStatus = (jobId: string) =>
-  apiClient.get<DemandJobResponse>(`/demand/status/${jobId}`).then(r => r.data)
+  engineClient.get<DemandJobResponse>(`/demand/status/${jobId}`).then(r => r.data)
+
 
 export const pollDemandUntilDone = (
   jobId: string,

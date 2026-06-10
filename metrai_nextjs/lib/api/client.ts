@@ -1,7 +1,8 @@
 import axios, { AxiosError, AxiosInstance } from 'axios'
 import { useAuthStore } from '@/lib/store/authStore'
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001'
+const ENGINE_URL = process.env.NEXT_PUBLIC_ENGINE_URL || 'http://localhost:8000'
 
 let isRefreshing = false
 let failedQueue: Array<{
@@ -63,7 +64,7 @@ const createApiClient = (): AxiosInstance => {
           const { refreshToken } = useAuthStore.getState()
           if (!refreshToken) throw new Error('No refresh token available')
 
-          const response = await axios.post(`${BACKEND_URL}/refresh`, {
+          const response = await axios.post(`${ENGINE_URL}/auth/refresh`, {
             refresh_token: refreshToken,
           })
 
@@ -97,6 +98,19 @@ const createApiClient = (): AxiosInstance => {
 }
 
 export const apiClient = createApiClient()
+
+export const engineClient = axios.create({
+  baseURL: ENGINE_URL,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+engineClient.interceptors.request.use((config) => {
+  const { accessToken } = useAuthStore.getState()
+  if (accessToken) {
+    config.headers.Authorization = `Bearer ${accessToken}`
+  }
+  return config
+})
 
 export const setAuthToken = (token: string) => {
   apiClient.defaults.headers.common.Authorization = `Bearer ${token}`

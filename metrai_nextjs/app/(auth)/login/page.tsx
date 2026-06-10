@@ -33,13 +33,14 @@ export default function LoginPage() {
 
     try {
       const data = await login({ username: signInForm.username, password: signInForm.password })
+      const payload = JSON.parse(atob(data.access_token.split('.')[1]))
 
       setAuth({
-        userId: data.user_id,
-        fullName: data.full_name,
+        userId: payload.sub ?? null,
+        fullName: payload.username ?? null,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
-        retailerAccountId: data.retailer_account_id || null,
+        retailerAccountId: null,
       })
 
       router.push('/retailers')
@@ -72,12 +73,13 @@ export default function LoginPage() {
 
       // Register returns user info only — sign in to get tokens
       const data = await login({ username: signUpForm.username, password: signUpForm.password })
+      const payload = JSON.parse(atob(data.access_token.split('.')[1]))
       setAuth({
-        userId: data.user_id,
-        fullName: data.full_name,
+        userId: payload.sub ?? null,
+        fullName: payload.username ?? null,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
-        retailerAccountId: data.retailer_account_id || null,
+        retailerAccountId: null,
       })
 
       router.push('/retailers')
@@ -95,7 +97,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-sm">
         {/* Header */}
         <div className="border-b border-charcoal-blue-200 px-8 py-10">
-          <h1 className="text-3xl font-bold text-charcoal-blue-950">MetRAI</h1>
+          <h1 className="text-3xl font-bold text-charcoal-blue-950">Metrai</h1>
           <p className="mt-1 text-sm font-medium text-charcoal-blue-400">Simulation Engine</p>
         </div>
 

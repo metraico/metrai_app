@@ -1,13 +1,11 @@
-// Auth
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth  (engine: POST /auth/login, /auth/register, /auth/refresh)
+// ─────────────────────────────────────────────────────────────────────────────
 export interface LoginRequest { username: string; password: string }
-export interface LogoutRequest { refresh_token: string }
 export interface LoginResponse {
   access_token: string
-  refresh_token: string
   token_type: string
-  user_id: string
-  retailer_account_id: string
-  full_name: string
+  refresh_token: string
 }
 export interface RegisterRequest {
   username: string
@@ -22,37 +20,174 @@ export interface RegisterResponse {
   full_name: string
   role: string
 }
-
-// Mappings
-export interface StoreItemMapping { store_id: string; item_id: string }
-export interface DCItemMapping { dc_id: string; item_id: string }
-export interface SupplierItemMapping { supplier_id: string; item_id: string }
-export interface StoreToDCMapping { from_store_id: string; to_dc_id: string; mapping_type: string }
-export interface DCToNodeMapping { from_dc_id: string; to_node_id: string; mapping_type: string }
-export interface MappingsResponse {
-  store_items: StoreItemMapping[]
-  dc_items: DCItemMapping[]
-  supplier_items: SupplierItemMapping[]
-  store_mappings: StoreToDCMapping[]
-  dc_mappings: DCToNodeMapping[]
+export interface RefreshRequest { refresh_token: string }
+export interface AccessTokenResponse {
+  access_token: string
+  token_type: string
 }
 
-// Promos
-export interface Promo {
+// ─────────────────────────────────────────────────────────────────────────────
+// Retailers  (engine: GET /retailers, POST /retailers)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface RetailerAccount {
+  retailer_account_id: string
+  retailer_account_code: string
+  retailer_account_name: string
+  country_code: string | null
+  currency_code: string
+  is_active: boolean
+  role?: string
+  joined_at?: string
+}
+export interface CreateRetailerRequest {
+  retailer_account_code: string
+  retailer_account_name: string
+  country_code?: string
+  currency_code?: string
+}
+export interface CreateRetailerResponse {
+  retailer_account_id: string
+  retailer_account_code: string
+  retailer_account_name: string
+  country_code: string | null
+  currency_code: string
+  is_active: boolean
+}
+export interface CreateRetailerResponse {
+  retailer_account_id: string
+  retailer_account_code: string
+  retailer_account_name: string
+  country_code: string | null
+  currency_code: string
+  is_active: boolean
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Demand  (engine: POST /demand/generate, GET /demand/status/{job_id})
+// ─────────────────────────────────────────────────────────────────────────────
+export interface DemandGenerateRequest {
+  retailer_account_id: string
+  start_date: string
+  end_date: string
+  seed: number
+}
+export interface DemandGenerateResponse {
+  job_id: string
+  status: string
+}
+export interface DemandJobResponse {
+  job_id: string
+  retailer_account_id: string
+  status: string
+  message: string | null
+  demand_rows: number | null
+  start_week: string | null
+  end_week: string | null
+  seed: number | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Simulations  (engine: POST /simulate, GET /runs, GET /run-config/{id})
+// ─────────────────────────────────────────────────────────────────────────────
+export interface SimulationSummary {
+  weekly_pos: Array<{
+    pos_week: string
+    demand_qty: number
+    sales_qty: number
+    lost_sales_qty: number
+    sales_amount: number
+  }>
+  store_inventory: Array<{
+    inventory_week: string
+    on_hand_quantity: number
+    available_quantity: number
+    on_order_quantity: number
+  }>
+  weekly_shipments: Array<{
+    shipment_week: string
+    ordered_qty: number
+    shipped_qty: number
+    avg_fill_rate: number
+  }>
+  dc_inventory: Array<{
+    inventory_week: string
+    on_hand_quantity: number
+    available_quantity: number
+    on_order_quantity: number
+  }>
+  supplier_dc_inventory: Array<{
+    inventory_week: string
+    on_hand_quantity: number
+    on_order_quantity: number
+  }>
+}
+
+// GET /simulate/preview
+export interface PromoPreviewItem {
   promo_id: string
   promo_name: string
+  event_type: string
   start_date: string
   end_date: string
   demand_multiplier: number
-  promo_group_name: string
-  item_ids: string[]
+  store_count: number
+  item_count: number
 }
 
-// Scenario validate
-export interface ScenarioValidateRequest {
-  scenario_yaml: string
+export interface SimulatePreviewResponse {
+  retailer_account_id: string
   start_date: string
   end_date: string
+  total_promos: number
+  active_promos: number
+  total_promo_groups: number
+  promos: PromoPreviewItem[]
+}
+
+// POST /simulate → SimulateSyncResponse
+export interface RunYamlResponse {
+  simulation_id: string
+  status: string
+  summary?: SimulationSummary
+}
+
+// GET /runs → RunSummaryItem[]
+export interface SimulationRun {
+  simulation_id: string
+  simulation_name: string
+  simulation_status: string
+  created_at: string
+  start_week: string
+  end_week: string
+  random_seed: number
+  notes: string
+  simulation_granularity: string
+}
+
+// GET /run-config/{simulation_id} → RunConfigResponse
+export interface RunConfig {
+  simulation_id: string
+  retailer_account_id: string
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED'
+  simulation_granularity: string
+  full_config: Record<string, unknown> | null
+}
+
+// GET /simulation/{simulation_id} — full ClickHouse output (untyped, large)
+export type FullSimulationOutput = Record<string, unknown[]>
+
+// DELETE /simulation/{simulation_id}
+export interface DeleteResponse { deleted: string }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario  (engine: POST /scenario/validate)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface ScenarioValidateRequest {
+  scenario_yaml: string
+  start_date?: string
+  end_date?: string
 }
 export interface PromoWindow {
   promo_id: string
@@ -65,129 +200,38 @@ export interface PromoWindow {
 }
 export interface ScenarioValidateResponse {
   valid: boolean
-  scenario_type: 'promo_forecast' | 'hidden_lost_sales'
+  scenario_type: string
   preview: unknown[]
-  warnings: string[]
-  promo_windows: PromoWindow[]
+  warnings: unknown[]
+  promo_windows: unknown[] | null
+  disruptions: unknown[] | null
 }
 
-// Retailers
-export interface RetailerAccount {
-  retailer_account_id: string
-  retailer_account_code: string
-  retailer_account_name: string
-  retailer_account_type?: string
-  country_code: string | null
-  currency_code: string
-  is_active: boolean
-  role: string
-  joined_at: string
-}
-export interface CreateAccountRequest {
-  retailer_account_code: string
-  retailer_account_name: string
-  country_code?: string
-  currency_code?: string
-}
-
-// Entities
-export interface Item {
-  item_id: string
-  item_code: string
-  item_description: string
-}
-export interface Store {
-  store_id: string
-  store_code: string
-  store_name: string
-}
-export interface DC {
-  dc_id: string
-  dc_code: string
-  dc_name: string
-  dc_role: string
-}
-export interface Supplier {
-  supplier_id: string
-  supplier_code: string
-  supplier_name: string
-}
-export interface EntitiesResponse {
-  items: Item[]
-  stores: Store[]
-  dcs: DC[]
-  suppliers: Supplier[]
-}
-
-// Demand
-export interface DemandGenerateRequest {
-  retailer_account_id: string
-  start_date: string
-  end_date: string
-  seed: number
-  force_regenerate?: boolean
-}
-export interface DemandJobResponse {
-  job_id: string
-  retailer_account_id: string
-  status: 'RUNNING' | 'COMPLETED' | 'FAILED'
-  message: string | null
-  demand_rows: number | null
-  start_week: string
-  end_week: string
-  seed: number
-  created_at: string
-  updated_at: string
-}
-
-// Simulation
-export interface RunYamlResponse {
-  simulation_id: string
-  status: string
-}
-export interface RunConfig {
-  simulation_id: string
-  retailer_account_id: string
-  status: 'RUNNING' | 'COMPLETED' | 'FAILED'
-  simulation_granularity: string
-  full_config: Record<string, unknown> | null
-}
-export interface SimulationRun {
-  simulation_id: string
-  simulation_name: string
-  simulation_status: 'RUNNING' | 'COMPLETED' | 'FAILED'
-  created_at: string
-  start_week: string
-  end_week: string
-  random_seed: number
-  notes: string
-  simulation_granularity: string
-}
-
-// Analytics meta
+// ─────────────────────────────────────────────────────────────────────────────
+// Analytics — Meta  (engine: GET /analytics/{id}/meta)
+// ─────────────────────────────────────────────────────────────────────────────
 export interface ItemMeta {
   item_id: string
   item_code: string
   item_description: string
-  item_name: string
-  category: string
-  subcategory: string
-  velocity_class: string
-  unit_price: number
   uom: string
+  unit_price?: number
+  category?: string
+  subcategory?: string
+  velocity_class?: string
 }
 export interface StoreMeta {
   store_id: string
   store_code: string
   store_name: string
-  region: string
+  region?: string
 }
 export interface DCMeta {
   dc_id: string
   dc_code: string
   dc_name: string
-  region: string
   dc_role: string
+  region?: string
 }
 export interface AnalyticsMeta {
   simulation_id: string
@@ -196,9 +240,13 @@ export interface AnalyticsMeta {
   stores_meta: StoreMeta[]
   dcs_meta: DCMeta[]
   store_dc_map: Record<string, string>
+  store_item_map: Record<string, string[]>
 }
 
-// Analytics data — ClickHouse returns numeric fields as strings
+// ─────────────────────────────────────────────────────────────────────────────
+// Analytics — Detail rows  (ClickHouse returns numerics as strings)
+// engine: /analytics/{id}/store-sales, /supplier-sales, /store-inventory, /dc-inventory
+// ─────────────────────────────────────────────────────────────────────────────
 export interface POSRecord {
   store_id: string
   store_code: string
@@ -220,12 +268,14 @@ export interface StoreInventoryRecord {
   on_hand_quantity: string
   available_quantity: string
   on_order_quantity: string
-  inventory_status: 'AVAILABLE' | 'LOW' | 'ZERO'
+  inventory_status?: string
 }
 export interface StoreSalesResponse {
   weekly_pos: POSRecord[]
   store_inventory: StoreInventoryRecord[]
 }
+
+// /analytics/{id}/supplier-sales (renamed from supply-chain-sales)
 export interface ShipmentRecord {
   supplier_dc_id: string
   supplier_dc_code: string
@@ -241,6 +291,8 @@ export interface ShipmentRecord {
 export interface SupplyChainSalesResponse {
   weekly_shipments: ShipmentRecord[]
 }
+
+// /analytics/{id}/dc-inventory (renamed from upstream-inventory)
 export interface DCInventoryRecord {
   dc_id: string
   dc_code: string
@@ -250,7 +302,7 @@ export interface DCInventoryRecord {
   on_hand_quantity: string
   available_quantity: string
   on_order_quantity: string
-  inventory_status: 'AVAILABLE' | 'LOW' | 'ZERO'
+  inventory_status?: string
 }
 export interface SupplierDCInventoryRecord {
   supplier_dc_id: string
@@ -260,9 +312,18 @@ export interface SupplierDCInventoryRecord {
   inventory_week: string
   on_hand_quantity: string
   on_order_quantity: string
-  inventory_status: 'AVAILABLE' | 'LOW' | 'ZERO'
+  inventory_status?: string
 }
 export interface UpstreamInventoryResponse {
   dc_inventory: DCInventoryRecord[]
   supplier_dc_inventory: SupplierDCInventoryRecord[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Backend-only types (not in engine swagger — kept for auth store compat)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface BackendLoginResponse extends LoginResponse {
+  user_id: string
+  retailer_account_id: string | null
+  full_name: string
 }
