@@ -729,7 +729,7 @@ export default function SimulationResultsPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(v: number) => v.toLocaleString()} />
+                        <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
                         <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
@@ -740,7 +740,7 @@ export default function SimulationResultsPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(v: number) => v.toLocaleString()} />
+                        <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
                         <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />

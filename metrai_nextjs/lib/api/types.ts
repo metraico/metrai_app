@@ -327,3 +327,46 @@ export interface BackendLoginResponse extends LoginResponse {
   retailer_account_id: string | null
   full_name: string
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Entities  (backend: GET /entities)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface EntityItem { item_id: string; item_code: string; item_description: string }
+export interface EntityStore { store_id: string; store_code: string; store_name: string }
+export interface EntityDC { dc_id: string; dc_code: string; dc_name: string; dc_role: string }
+export interface EntitySupplier { supplier_id: string; supplier_code: string; supplier_name: string }
+export interface EntitiesResponse {
+  items: EntityItem[]
+  stores: EntityStore[]
+  dcs: EntityDC[]
+  suppliers: EntitySupplier[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mappings  (backend: GET/POST /mappings)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface StoreItemRecord { store_id: string; item_id: string }
+export interface DCItemRecord { dc_id: string; item_id: string }
+export interface SupplierItemRecord { supplier_id: string; item_id: string }
+export interface StoreMappingRecord { from_store_id: string; to_dc_id: string; mapping_type: string }
+export interface DCMappingRecord { from_dc_id: string; to_node_id: string; mapping_type: string }
+export interface MappingsResponse {
+  store_items: StoreItemRecord[]
+  dc_items: DCItemRecord[]
+  supplier_items: SupplierItemRecord[]
+  store_mappings: StoreMappingRecord[]
+  dc_mappings: DCMappingRecord[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Promo  (backend: GET /promos)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface Promo {
+  promo_id: string
+  promo_name: string
+  start_date: string
+  end_date: string
+  demand_multiplier: number
+  promo_group_name: string
+  item_ids: string[]
+}
