@@ -18,18 +18,21 @@ services:
       timeout: 5s
       retries: 10
 
-  frontend:
+  frontend-nextjs:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
-    container_name: metrai_app_frontend
-    environment:
-      BACKEND_URL: "${DOCKER_BACKEND_URL:-http://backend:8000}"
+      dockerfile: Dockerfile.nextjs
+      args:
+        NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}"
+        NEXT_PUBLIC_ENGINE_URL: "${NEXT_PUBLIC_ENGINE_URL:-http://localhost:8000}"
+    container_name: metrai_app_frontend_nextjs
     ports:
-      - "8503:8501"
+      - "3000:3000"
     depends_on:
       backend:
         condition: service_healthy
+    networks:
+      - default
 
 networks:
   default:
