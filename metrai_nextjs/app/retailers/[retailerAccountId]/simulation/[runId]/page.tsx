@@ -139,7 +139,7 @@ function FilterSelect({ label, value, onChange, options }: {
         <select
           value={value}
           onChange={e => onChange(e.target.value)}
-          className="appearance-none rounded-xl border border-charcoal-blue-200 bg-white px-3 py-1.5 pr-7 text-xs font-medium text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none"
+          className="w-48 truncate appearance-none rounded-xl border border-charcoal-blue-200 bg-white px-3 py-1.5 pr-7 text-xs font-medium text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none"
         >
           <option value="">All</option>
           {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
