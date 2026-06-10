@@ -2,8 +2,11 @@ import { engineClient } from './client'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse } from './types'
 
 // POST /simulate — synchronous, returns completed result inline
-export const runSimulation = (yamlContent: string) =>
-  engineClient.post<RunYamlResponse>('/simulate', { yaml_content: yamlContent }).then(r => r.data)
+export const runSimulation = (yamlContent: string, promoYamlContent = '') =>
+  engineClient.post<RunYamlResponse>('/simulate', {
+    yaml_content: yamlContent,
+    promo_yaml_content: promoYamlContent,
+  }).then(r => r.data)
 
 // Compat shim — simulate is synchronous so there's nothing to poll
 export const pollSimulationUntilDone = (result: RunYamlResponse) =>
@@ -18,8 +21,10 @@ export const getRuns = (retailerAccountId: string, userId: string) =>
   engineClient.get<SimulationRun[]>('/runs', { params: { retailer_account_id: retailerAccountId, user_id: userId } }).then(r => r.data)
 
 // GET /run-yaml-template
-export const getRunYamlTemplate = () =>
-  engineClient.get<{ yaml: string }>('/run-yaml-template').then(r => r.data)
+export const getRunYamlTemplate = (retailerAccountId?: string) =>
+  engineClient.get<{ yaml: string }>('/run-yaml-template', {
+    params: retailerAccountId ? { retailer_account_id: retailerAccountId } : undefined,
+  }).then(r => r.data)
 
 // GET /simulation/{simulation_id} — full ClickHouse output (available after background write)
 export const getSimulation = (simulationId: string) =>

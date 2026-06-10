@@ -385,7 +385,7 @@ export default function SimulationResultsPage() {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [simulationId, loadSummary, cache])
 
-  const itemOptions  = (meta?.items_meta  ?? []).map((m: any) => ({ value: m.item_id,  label: m.item_code  }))
+  const itemOptions  = [...new Map((meta?.items_meta ?? []).map((m: any) => [m.item_id, { value: m.item_id, label: m.item_description ? `${m.item_name} — ${m.item_description}` : m.item_name }])).values()]
   const storeOptions = (meta?.stores_meta ?? []).map((m: any) => ({ value: m.store_id, label: m.store_code }))
   const dcOptions    = (meta?.dcs_meta    ?? []).map((m: any) => ({ value: m.dc_id,    label: m.dc_code    }))
 

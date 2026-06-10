@@ -124,6 +124,28 @@ export interface SimulationSummary {
   }>
 }
 
+// GET /simulate/preview
+export interface PromoPreviewItem {
+  promo_id: string
+  promo_name: string
+  event_type: string
+  start_date: string
+  end_date: string
+  demand_multiplier: number
+  store_count: number
+  item_count: number
+}
+
+export interface SimulatePreviewResponse {
+  retailer_account_id: string
+  start_date: string
+  end_date: string
+  total_promos: number
+  active_promos: number
+  total_promo_groups: number
+  promos: PromoPreviewItem[]
+}
+
 // POST /simulate → SimulateSyncResponse
 export interface RunYamlResponse {
   simulation_id: string
