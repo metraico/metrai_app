@@ -63,7 +63,7 @@ const createApiClient = (): AxiosInstance => {
           const { refreshToken } = useAuthStore.getState()
           if (!refreshToken) throw new Error('No refresh token available')
 
-          const response = await axios.post(`${BACKEND_URL}/refresh`, {
+          const response = await axios.post(`${BACKEND_URL}/auth/refresh`, {
             refresh_token: refreshToken,
           })
 

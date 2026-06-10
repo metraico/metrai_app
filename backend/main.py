@@ -1,5 +1,4 @@
 import hashlib
-import json
 import logging
 import os
 import secrets
@@ -12,9 +11,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-logger = logging.getLogger("metrai_backend")
+logger = logging.getLogger("metrai.backend")
 
-import httpx
 import jwt
 import psycopg2
 from argon2 import PasswordHasher
@@ -26,19 +24,24 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 load_dotenv()
 
-logger = logging.getLogger("metrai.backend")
+POSTGRES_DSN = os.getenv("POSTGRES_DSN")
+JWT_SECRET   = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
 
-SIM_ENGINE_URL = os.getenv("SIM_ENGINE_URL", "http://localhost:8000")
-POSTGRES_DSN   = os.getenv("POSTGRES_DSN")
-JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
+JWT_ALGORITHM   = "HS256"
+_ACCESS_MINUTES = 15
+_REFRESH_DAYS   = 7
+_RATE_WINDOW    = 900   # seconds (15 min)
+_RATE_MAX       = 5     # failed attempts before lockout
 
-JWT_ALGORITHM    = "HS256"
-_ACCESS_MINUTES  = 15
-_REFRESH_DAYS    = 7
-_RATE_WINDOW     = 900   # seconds (15 min)
-_RATE_MAX        = 5     # failed attempts before lockout
+DUMMY_USER_ID = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 
-app = FastAPI(title="Metrai App Backend", version="0.2.0")
+app = FastAPI(
+    title="Metrai App Backend",
+    version="0.2.0",
+    openapi_tags=[
+        {"name": "auth", "description": "Registration, login, token refresh and logout"},
+    ],
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,14 +59,12 @@ async def _log_requests(request: Request, call_next):
     logger.info("%s %s → %d  (%.0fms)", request.method, request.url.path, response.status_code, ms)
     return response
 
-DUMMY_ACCOUNT_ID = "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
-DUMMY_USER_ID    = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 
-# ── Auth helpers ─────────────────────────────────────────────────────────────
+# ── Auth helpers ──────────────────────────────────────────────────────────────
 
-_ph     = PasswordHasher()           # Argon2id defaults (OWASP #1)
+_ph     = PasswordHasher()
 _bearer = HTTPBearer(auto_error=False)
-_rate:   dict[str, list[float]] = defaultdict(list)
+_rate:  dict[str, list[float]] = defaultdict(list)
 
 
 def _pg_connect():
@@ -151,7 +152,7 @@ async def get_current_user(
     return payload
 
 
-# ── Bootstrap ────────────────────────────────────────────────────────────────
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 def _bootstrap_demo_password():
@@ -179,16 +180,9 @@ def _bootstrap_demo_password():
         pass
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/register")
+@app.post("/register", tags=["auth"])
 def register(body: dict):
     username  = (body.get("username") or "").strip().lower()
     password  = body.get("password") or ""
@@ -256,127 +250,7 @@ def register(body: dict):
     }
 
 
-@app.get("/accounts")
-def get_accounts(current_user: dict = Depends(get_current_user)):
-    user_id = current_user["user_id"]
-    if not POSTGRES_DSN:
-        return []
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT ra.retailer_account_id::text AS retailer_account_id,
-                       ra.retailer_account_code AS retailer_account_code,
-                       ra.retailer_account_name AS retailer_account_name,
-                       ra.retailer_account_type AS retailer_account_type,
-                       ra.country_code, ra.region,
-                       ra.currency_code, ra.is_active
-                FROM retailer_accounts ra
-                JOIN user_accounts ua ON ra.retailer_account_id = ua.retailer_account_id
-                WHERE ua.user_id = %s
-                ORDER BY ra.retailer_account_name
-                """,
-                (user_id,),
-            )
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-@app.post("/accounts")
-def create_account(body: dict, current_user: dict = Depends(get_current_user)):
-    user_id      = current_user["user_id"]
-    account_name = (body.get("account_name") or "").strip()
-    account_type = (body.get("account_type") or "GROCERY").strip().upper()
-    country_code = (body.get("country_code") or "US").strip().upper()
-    region       = (body.get("region") or "").strip()
-    currency     = (body.get("currency_code") or "USD").strip().upper()
-
-    if not account_name:
-        raise HTTPException(status_code=422, detail="Account name is required")
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No database configured")
-
-    # Auto-generate a unique account code from the name
-    base = "ACCT_" + "".join(c if c.isalnum() else "_" for c in account_name.upper())[:15].strip("_")
-
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            account_id_c = base
-            suffix = 1
-            while True:
-                cur.execute("SELECT 1 FROM retailer_accounts WHERE retailer_account_code = %s", (account_id_c,))
-                if not cur.fetchone():
-                    break
-                account_id_c = f"{base}_{suffix}"
-                suffix += 1
-
-            cur.execute(
-                """
-                INSERT INTO retailer_accounts
-                    (retailer_account_code, retailer_account_name, retailer_account_type, country_code, region, currency_code, is_active)
-                VALUES (%s, %s, %s, %s, %s, %s, true)
-                RETURNING retailer_account_id::text
-                """,
-                (account_id_c, account_name, account_type,
-                 country_code or None, region or None, currency),
-            )
-            new_account_id = cur.fetchone()[0]
-
-            cur.execute(
-                "INSERT INTO user_accounts (user_id, retailer_account_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (user_id, new_account_id),
-            )
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        conn.close()
-
-    return {"retailer_account_id": new_account_id, "retailer_account_code": account_id_c, "retailer_account_name": account_name}
-
-
-@app.post("/switch-account")
-def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
-    user_id             = current_user["user_id"]
-    retailer_account_id = (body.get("retailer_account_id") or "").strip()
-    if not retailer_account_id:
-        raise HTTPException(status_code=422, detail="retailer_account_id is required")
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No database configured")
-
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM user_accounts WHERE user_id = %s AND retailer_account_id = %s",
-                (user_id, retailer_account_id),
-            )
-            if not cur.fetchone():
-                raise HTTPException(status_code=403, detail="Access denied to this account")
-        conn.commit()
-    finally:
-        conn.close()
-
-    role = current_user.get("role", "ADMIN")
-    access_token    = _create_access_token(user_id, retailer_account_id, role)
-    raw_rt, rt_hash = _make_refresh_token()
-    _store_refresh_token(user_id, rt_hash, datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
-    return {
-        "access_token":       access_token,
-        "refresh_token":      raw_rt,
-        "token_type":         "bearer",
-        "retailer_account_id": retailer_account_id,
-    }
-
-@app.post("/login")
+@app.post("/login", tags=["auth"])
 def login(credentials: dict):
     username = (credentials.get("username") or "").strip().lower()
     password = credentials.get("password") or ""
@@ -427,9 +301,9 @@ def login(credentials: dict):
 
     _clear_rate(username)
 
-    access_token       = _create_access_token(user_id, "", role)
-    raw_rt, rt_hash    = _make_refresh_token()
-    expires_at         = datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS)
+    access_token    = _create_access_token(user_id, "", role)
+    raw_rt, rt_hash = _make_refresh_token()
+    expires_at      = datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS)
     _store_refresh_token(user_id, rt_hash, expires_at)
 
     return {
@@ -442,7 +316,7 @@ def login(credentials: dict):
     }
 
 
-@app.post("/refresh")
+@app.post("/refresh", tags=["auth"])
 def refresh_token(body: dict):
     raw_rt = body.get("refresh_token", "")
     if not raw_rt:
@@ -480,8 +354,8 @@ def refresh_token(body: dict):
 
     # Rotate: revoke old token, issue new pair
     _revoke_refresh_token(token_hash)
-    new_access          = _create_access_token(user_id, retailer_account_id, role)
-    new_raw, new_hash   = _make_refresh_token()
+    new_access        = _create_access_token(user_id, retailer_account_id, role)
+    new_raw, new_hash = _make_refresh_token()
     _store_refresh_token(user_id, new_hash,
                          datetime.now(timezone.utc) + timedelta(days=_REFRESH_DAYS))
 
@@ -492,432 +366,9 @@ def refresh_token(body: dict):
     }
 
 
-@app.post("/logout")
+@app.post("/logout", tags=["auth"])
 def logout(body: dict, current_user: dict = Depends(get_current_user)):
     raw_rt = body.get("refresh_token", "")
     if raw_rt:
         _revoke_refresh_token(hashlib.sha256(raw_rt.encode()).hexdigest())
     return {"status": "ok"}
-
-
-# ── Run history ───────────────────────────────────────────────────────────────
-
-@app.get("/runs")
-def get_runs(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user.get("retailer_account_id") or ""
-    user_id             = current_user["user_id"]
-    if not POSTGRES_DSN or not retailer_account_id:
-        return []
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT simulation_id::text, simulation_name, simulation_status,
-                       created_at, start_week, end_week, random_seed, notes
-                FROM simulation_config
-                WHERE retailer_account_id = %s AND user_id = %s
-                ORDER BY created_at DESC
-                LIMIT 50
-                """,
-                (retailer_account_id, user_id),
-            )
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-            for row in rows:
-                for k, v in row.items():
-                    if hasattr(v, "isoformat"):
-                        row[k] = v.isoformat()
-            logger.info("GET /runs — user=%s account=%s returned %d runs", user_id, retailer_account_id, len(rows))
-            return rows
-    finally:
-        conn.close()
-
-
-# ── Entity catalogue ──────────────────────────────────────────────────────────
-
-def _resolve_data_account(cur, retailer_account_id: str) -> str:
-    """Return retailer_account_id to use for catalog data. Falls back to demo account if this account has no items."""
-    cur.execute("SELECT 1 FROM items WHERE retailer_account_id = %s LIMIT 1", (retailer_account_id,))
-    if cur.fetchone():
-        return retailer_account_id
-    cur.execute("SELECT retailer_account_id::text FROM items LIMIT 1")
-    row = cur.fetchone()
-    return row[0] if row else retailer_account_id
-
-
-@app.get("/entities")
-def get_entities(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["retailer_account_id"]
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, retailer_account_id)
-
-            def q(sql, params):
-                cur.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in cur.fetchall()]
-
-            acct = (data_acct,)
-            return {
-                "items":     q("SELECT item_id::text, item_code, item_description FROM items WHERE retailer_account_id = %s ORDER BY item_code", acct),
-                "stores":    q("SELECT store_id::text, store_code, store_name FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct),
-                "dcs":       q("SELECT dc_id::text, dc_code, dc_name, COALESCE(dc_role, 'RETAILER_DC') AS dc_role FROM distribution_centers WHERE retailer_account_id = %s ORDER BY dc_code", acct),
-                "suppliers": q("SELECT supplier_id::text, supplier_code, supplier_name FROM suppliers WHERE retailer_account_id = %s ORDER BY supplier_code", acct),
-            }
-    finally:
-        conn.close()
-
-
-# ── Run YAML template ────────────────────────────────────────────────────────
-
-@app.get("/run-yaml-template")
-def get_run_yaml_template(current_user: dict = Depends(get_current_user)):
-    """Generate a pre-filled entity-first YAML run config for this retailer account."""
-    import hashlib
-
-    retailer_account_id = current_user["retailer_account_id"]
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
-
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, retailer_account_id)
-
-            def q(sql, params):
-                cur.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in cur.fetchall()]
-
-            acct = (data_acct,)
-            supplier_dcs = q(
-                "SELECT dc_code FROM distribution_centers "
-                "WHERE retailer_account_id = %s AND dc_role = 'SUPPLIER_DC' ORDER BY dc_code", acct
-            )
-            retailer_dcs = q(
-                "SELECT dc_code FROM distribution_centers "
-                "WHERE retailer_account_id = %s AND COALESCE(dc_role, 'RETAILER_DC') = 'RETAILER_DC' ORDER BY dc_code", acct
-            )
-            stores = q(
-                "SELECT store_code FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct
-            )
-    finally:
-        conn.close()
-
-    def _hash_f(code: str, lo: float, hi: float, step: float = 0.01) -> float:
-        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
-        steps = int((hi - lo) / step)
-        return round(lo + (h % (steps + 1)) * step, 2)
-
-    def _hash_i(code: str, lo: int, hi: int) -> int:
-        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
-        return lo + (h % (hi - lo + 1))
-
-    lines = [
-        'run:',
-        '  simulation_name: "My Simulation Run"',
-        '  start_date: "2024-01-01"',
-        '  end_date:   "2026-06-30"',
-        '  seed: 42',
-        '',
-        '  store_target_wos:        2',
-        '  retailer_dc_target_wos:  4',
-        '  supplier_dc_initial_wos: 4',
-    ]
-
-    if supplier_dcs:
-        lines += ['', '  suppliers:']
-        for row in supplier_dcs:
-            code = row["dc_code"]
-            lines += [
-                f'    {code}:',
-                f'      on_time:     {_hash_f(code + "_ot", 0.88, 0.97)}',
-                f'      partial:     {_hash_f(code + "_pt", 0.03, 0.09)}',
-                f'      lead_weeks:  {_hash_i(code + "_lw", 1, 2)}',
-                f'      initial_wos: {_hash_i(code + "_iwos", 5, 8)}',
-            ]
-
-    if retailer_dcs:
-        lines += ['', '  dcs:']
-        for row in retailer_dcs:
-            code = row["dc_code"]
-            lines += [
-                f'    {code}:',
-                f'      on_time:             {_hash_f(code + "_ot", 0.90, 0.97)}',
-                f'      partial:             {_hash_f(code + "_pt", 0.03, 0.07)}',
-                f'      lead_weeks_to_store: {_hash_i(code + "_lw", 1, 2)}',
-                f'      target_wos:          {_hash_i(code + "_wos", 4, 6)}',
-                f'      initial_wos:         {_hash_i(code + "_iwos", 4, 7)}',
-            ]
-
-    if stores:
-        lines += ['', '  stores:']
-        for row in stores:
-            code = row["store_code"]
-            lines += [
-                f'    {code}:',
-                f'      target_wos:  {_hash_i(code + "_wos", 2, 3)}',
-                f'      initial_wos: {_hash_i(code + "_iwos", 2, 4)}',
-            ]
-
-    lines.append('')
-    return {"yaml": '\n'.join(lines)}
-
-
-# ── Network mappings ──────────────────────────────────────────────────────────
-
-@app.get("/mappings")
-def get_mappings(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["retailer_account_id"]
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, retailer_account_id)
-
-            def q(sql, params):
-                cur.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in cur.fetchall()]
-
-            acct = (data_acct,)
-            return {
-                "store_items":    q("SELECT si.store_id::text, si.item_id::text FROM store_items si JOIN stores s ON si.store_id = s.store_id WHERE s.retailer_account_id = %s", acct),
-                "dc_items":       q("SELECT di.dc_id::text, di.item_id::text FROM dc_items di JOIN distribution_centers dc ON di.dc_id = dc.dc_id WHERE dc.retailer_account_id = %s", acct),
-                "supplier_items": q("SELECT si.supplier_id::text, si.item_id::text FROM supplier_items si JOIN suppliers s ON si.supplier_id = s.supplier_id WHERE s.retailer_account_id = %s", acct),
-                "store_mappings": q("SELECT sm.from_store_id::text, sm.to_dc_id::text, sm.mapping_type FROM store_mappings sm JOIN stores s ON sm.from_store_id = s.store_id WHERE s.retailer_account_id = %s", acct),
-                "dc_mappings":    q("SELECT dm.from_dc_id::text, dm.to_node_id::text, dm.mapping_type FROM dc_mappings dm JOIN distribution_centers dc ON dm.from_dc_id = dc.dc_id WHERE dc.retailer_account_id = %s", acct),
-            }
-    finally:
-        conn.close()
-
-
-@app.post("/mappings")
-def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["retailer_account_id"]   # always from JWT, never from body
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            acct = (retailer_account_id,)
-            cur.execute("DELETE FROM store_items WHERE store_id IN (SELECT store_id FROM stores WHERE retailer_account_id = %s)", acct)
-            cur.execute("DELETE FROM dc_items WHERE dc_id IN (SELECT dc_id FROM distribution_centers WHERE retailer_account_id = %s)", acct)
-            cur.execute("DELETE FROM supplier_items WHERE supplier_id IN (SELECT supplier_id FROM suppliers WHERE retailer_account_id = %s)", acct)
-            cur.execute("DELETE FROM store_mappings WHERE from_store_id IN (SELECT store_id FROM stores WHERE retailer_account_id = %s)", acct)
-            cur.execute("DELETE FROM dc_mappings WHERE from_dc_id IN (SELECT dc_id FROM distribution_centers WHERE retailer_account_id = %s)", acct)
-
-            def bulk_insert(table: str, cols: list[str], rows: list[dict]):
-                if not rows:
-                    return
-                placeholders = ", ".join([f"({', '.join(['%s'] * len(cols))})"] * len(rows))
-                values = [row[c] for row in rows for c in cols]
-                cur.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES {placeholders}", values)
-
-            bulk_insert("store_items",    ["store_id", "item_id"],                           body.get("store_items", []))
-            bulk_insert("dc_items",       ["dc_id", "item_id"],                              body.get("dc_items", []))
-            bulk_insert("supplier_items", ["supplier_id", "item_id"],                        body.get("supplier_items", []))
-            bulk_insert("store_mappings", ["from_store_id", "to_dc_id", "mapping_type"],     body.get("store_mappings", []))
-            bulk_insert("dc_mappings",    ["from_dc_id", "to_node_id", "mapping_type"],      body.get("dc_mappings", []))
-
-        conn.commit()
-        return {"status": "ok"}
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        conn.close()
-
-
-# ── Promos ────────────────────────────────────────────────────────────────────
-
-@app.get("/promos")
-def get_promos(current_user: dict = Depends(get_current_user)):
-    retailer_account_id = current_user["retailer_account_id"]
-    if not POSTGRES_DSN:
-        raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, retailer_account_id)
-            cur.execute(
-                """
-                SELECT p.promo_id::text, p.promo_name, p.start_date::text, p.end_date::text,
-                       p.demand_multiplier, pg.promo_group_name,
-                       array_agg(pgi.item_id::text) AS item_ids
-                FROM promos p
-                JOIN promo_groups pg ON p.promo_group_id = pg.promo_group_id
-                JOIN promo_group_items pgi ON pg.promo_group_id = pgi.promo_group_id
-                WHERE p.retailer_account_id = %s AND p.simulation_id IS NULL
-                GROUP BY p.promo_id, p.promo_name, p.start_date, p.end_date,
-                         p.demand_multiplier, pg.promo_group_name
-                ORDER BY p.start_date
-                """,
-                (data_acct,),
-            )
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-            for row in rows:
-                for k, v in row.items():
-                    if hasattr(v, "isoformat"):
-                        row[k] = v.isoformat()
-            return rows
-    finally:
-        conn.close()
-
-
-# ── Simulation proxy ──────────────────────────────────────────────────────────
-
-@app.post("/run")
-async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
-    req["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
-    req["user_id"]             = current_user["user_id"]
-    account = current_user["retailer_account_id"]
-    logger.info("run  account=%s  name=%r  dates=%s→%s  policy=%s",
-                account, req.get("simulation_name"), req.get("start_date"), req.get("end_date"),
-                req.get("replenishment_policy"))
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(f"{SIM_ENGINE_URL}/simulate", json=req)
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        logger.error("run  account=%s  engine unreachable", account)
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.TimeoutException:
-        logger.error("run  account=%s  engine timed out", account)
-        raise HTTPException(status_code=504, detail="Simulation timed out")
-    except httpx.HTTPStatusError as e:
-        logger.error("run  account=%s  engine error %d: %s", account, e.response.status_code, e.response.text[:200])
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-
-
-# ── YAML-based simulation run proxy ──────────────────────────────────────────
-
-@app.post("/run/yaml")
-async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_current_user)):
-    """
-    Accept {"yaml_content": "<yaml string>"}, inject retailer_account_id into
-    the run: block at parse time (engine enforces it), and proxy to /simulate/yaml.
-    """
-    import yaml as _yaml
-
-    account = current_user["retailer_account_id"]
-    logger.info("run/yaml  account=%s", account)
-    yaml_text = body.get("yaml_content", "")
-    # Inject retailer_account_id into the run: block so the engine picks it up
-    try:
-        raw = _yaml.safe_load(yaml_text)
-        if isinstance(raw, dict) and isinstance(raw.get("run"), dict):
-            raw["run"]["retailer_account_id"] = current_user["retailer_account_id"]
-            raw["run"]["user_id"] = current_user["user_id"]
-            yaml_text = _yaml.dump(raw, default_flow_style=False)
-    except Exception:
-        pass  # engine will surface the YAML error with a clear 422
-
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(
-                f"{SIM_ENGINE_URL}/simulate/yaml",
-                json={"yaml_content": yaml_text},
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        logger.error("run/yaml  account=%s  engine unreachable", account)
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.TimeoutException:
-        logger.error("run/yaml  account=%s  engine timed out", account)
-        raise HTTPException(status_code=504, detail="Simulation timed out")
-    except httpx.HTTPStatusError as e:
-        logger.error("run/yaml  account=%s  engine error %d: %s", account, e.response.status_code, e.response.text[:200])
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-
-
-# ── Scenario validate proxy ───────────────────────────────────────────────────
-
-@app.post("/scenario/validate")
-async def validate_scenario(body: dict, current_user: dict = Depends(get_current_user)):
-    body["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(f"{SIM_ENGINE_URL}/scenario/validate", json=body)
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-
-
-# ── Past simulation retrieval (proxy) ─────────────────────────────────────────
-
-@app.get("/simulation/{simulation_id}")
-async def get_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.get(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-
-
-@app.get("/run-config/{simulation_id}")
-async def get_run_config(simulation_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(f"{SIM_ENGINE_URL}/run-config/{simulation_id}")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-
-
-@app.delete("/simulation/{simulation_id}")
-async def delete_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.delete(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-
-
-@app.get("/analytics/{simulation_id}/{path:path}")
-async def proxy_analytics(
-    simulation_id: str,
-    path: str,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-):
-    """Proxy analytics GET requests to the simulation engine, forwarding all query params."""
-    account = current_user["retailer_account_id"]
-    logger.info("analytics  account=%s  sim=%s  path=%s", account, simulation_id[:8], path)
-    params = dict(request.query_params)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(
-                f"{SIM_ENGINE_URL}/analytics/{simulation_id}/{path}",
-                params=params,
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Analytics request timed out")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)

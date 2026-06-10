@@ -1,21 +1,24 @@
 import { apiClient } from './client'
 import type { RunYamlResponse, RunConfig, SimulationRun } from './types'
 
-export const runSimulation = (yamlContent: string) =>
-  apiClient.post<RunYamlResponse>('/run/yaml', { yaml_content: yamlContent }).then(r => r.data)
+export const runSimulation = (yamlContent: string, promoYamlContent = '') =>
+  apiClient.post<RunYamlResponse>('/simulate', {
+    yaml_content: yamlContent,
+    promo_yaml_content: promoYamlContent,
+  }).then(r => r.data)
 
 export const getRunConfig = (simulationId: string) =>
   apiClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
 
-export const getRuns = (retailerAccountId: string, userId: string) =>
+export const getRuns = (retailerAccountId: string) =>
   apiClient
     .get<SimulationRun[]>('/runs', {
-      params: { retailer_account_id: retailerAccountId, user_id: userId },
+      params: { retailer_account_id: retailerAccountId },
     })
     .then(r => r.data)
 
-export const getRunYamlTemplate = () =>
-  apiClient.get<{ yaml: string }>('/run-yaml-template').then(r => r.data)
+export const getRunYamlTemplate = (retailerAccountId: string) =>
+  apiClient.get<{ yaml: string }>('/run-yaml-template', { params: { retailer_account_id: retailerAccountId } }).then(r => r.data)
 
 export const getSimulation = (simulationId: string) =>
   apiClient.get<Record<string, unknown>>(`/simulation/${simulationId}`).then(r => r.data)

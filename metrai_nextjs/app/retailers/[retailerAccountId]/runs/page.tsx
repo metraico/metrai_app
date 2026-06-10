@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useAuthStore } from '@/lib/store/authStore'
 import { getRuns, deleteSimulation } from '@/lib/api/simulation'
 import type { SimulationRun } from '@/lib/api/types'
 import { Plus, Zap, Trash2 } from 'lucide-react'
@@ -22,7 +21,6 @@ const STATUS_LABELS: Record<string, string> = {
 export default function RunsPage() {
   const params = useParams()
   const router = useRouter()
-  const { userId } = useAuthStore()
   const retailerAccountId = params.retailerAccountId as string
 
   const [runs, setRuns] = useState<SimulationRun[]>([])
@@ -31,15 +29,14 @@ export default function RunsPage() {
   const [deleting, setDeleting] = useState<string | null>(null)
 
   const fetchRuns = () => {
-    if (!userId) return
     setLoading(true)
-    getRuns(retailerAccountId, userId)
+    getRuns(retailerAccountId)
       .then(setRuns)
       .catch(err => setError(err?.response?.data?.detail ?? 'Failed to load runs'))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetchRuns() }, [retailerAccountId, userId])
+  useEffect(() => { fetchRuns() }, [retailerAccountId])
 
   const handleDelete = async (e: React.MouseEvent, simulationId: string) => {
     e.stopPropagation()

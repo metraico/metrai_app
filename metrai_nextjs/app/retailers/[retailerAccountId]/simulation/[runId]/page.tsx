@@ -13,7 +13,6 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ReferenceLine,
 } from 'recharts'
 import { getAnalyticsMeta, getStoreSales, getSupplyChainSales, getUpstreamInventory } from '@/lib/api/analytics'
 import { getRunConfig } from '@/lib/api/simulation'
@@ -25,29 +24,39 @@ import type {
 } from '@/lib/api/types'
 
 // Aggregate per-row ClickHouse data by week
-function aggregateStoreSales(data: StoreSalesResponse) {
-  const posMap = new Map<string, { demand: number; sales: number; lost: number; revenue: number }>()
+function aggregatePOS(data: StoreSalesResponse) {
+  const posMap = new Map<string, { demand: number; sales: number; lost: number }>()
   for (const r of data.weekly_pos) {
-    const cur = posMap.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0 }
+    const cur = posMap.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0 }
     posMap.set(r.pos_week, {
       demand: cur.demand + parseInt(r.demand_qty),
       sales: cur.sales + parseInt(r.sales_qty),
       lost: cur.lost + parseInt(r.lost_sales_qty),
-      revenue: cur.revenue + parseFloat(r.sales_amount),
     })
   }
-  const invMap = new Map<string, number>()
+  return [...posMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, v]) => ({
+    week,
+    demand_qty: v.demand,
+    sales_qty: v.sales,
+    lost_sales_qty: v.lost,
+  }))
+}
+
+function aggregateStoreInventory(data: StoreSalesResponse) {
+  const map = new Map<string, { on_hand: number; available: number; on_order: number }>()
   for (const r of data.store_inventory) {
-    invMap.set(r.inventory_week, (invMap.get(r.inventory_week) ?? 0) + parseInt(r.on_hand_quantity))
+    const cur = map.get(r.inventory_week) ?? { on_hand: 0, available: 0, on_order: 0 }
+    map.set(r.inventory_week, {
+      on_hand: cur.on_hand + parseInt(r.on_hand_quantity),
+      available: cur.available + parseInt(r.available_quantity),
+      on_order: cur.on_order + parseInt(r.on_order_quantity),
+    })
   }
-  const weeks = [...new Set([...posMap.keys(), ...invMap.keys()])].sort()
-  return weeks.map(w => ({
-    week: w,
-    demand_qty: posMap.get(w)?.demand ?? 0,
-    sales_qty: posMap.get(w)?.sales ?? 0,
-    lost_sales_qty: posMap.get(w)?.lost ?? 0,
-    sales_amount: posMap.get(w)?.revenue ?? 0,
-    store_inventory: invMap.get(w) ?? 0,
+  return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, v]) => ({
+    week,
+    on_hand: v.on_hand,
+    available: v.available,
+    on_order: v.on_order,
   }))
 }
 
@@ -97,6 +106,28 @@ function kpiSummary(posRows: StoreSalesResponse['weekly_pos'], shipRows: SupplyC
   return { totalSales, totalRevenue, fillRate, stockoutRate }
 }
 
+function FilterSelect({
+  value, onChange, options, placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: { id: string; label: string }[]
+  placeholder: string
+}) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="text-xs rounded-lg border border-charcoal-blue-200 bg-white px-2 py-1 text-charcoal-blue-700 focus:outline-none focus:ring-1 focus:ring-majorelle-blue-400"
+    >
+      <option value="">{placeholder}</option>
+      {options.map(o => (
+        <option key={o.id} value={o.id}>{o.label}</option>
+      ))}
+    </select>
+  )
+}
+
 function KPICard({ label, value, icon: Icon, color }: { label: string; value: string; icon: React.ElementType; color: string }) {
   return (
     <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
@@ -125,10 +156,23 @@ export default function SimulationResultsPage() {
   const [activeTab, setActiveTab] = useState('dashboard')
 
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
-  const [posChartData, setPosChartData] = useState<ReturnType<typeof aggregateStoreSales>>([])
+  const [posChartData, setPosChartData] = useState<ReturnType<typeof aggregatePOS>>([])
+  const [storeInvChartData, setStoreInvChartData] = useState<ReturnType<typeof aggregateStoreInventory>>([])
   const [shipChartData, setShipChartData] = useState<ReturnType<typeof aggregateShipments>>([])
   const [upstreamChartData, setUpstreamChartData] = useState<ReturnType<typeof aggregateUpstream>>([])
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
+
+  const [posItemFilter, setPosItemFilter] = useState('')
+  const [posStoreFilter, setPosStoreFilter] = useState('')
+  const [posLoading, setPosLoading] = useState(false)
+
+  const [shipItemFilter, setShipItemFilter] = useState('')
+  const [shipDcFilter, setShipDcFilter] = useState('')
+  const [shipLoading, setShipLoading] = useState(false)
+
+  const [dcItemFilter, setDcItemFilter] = useState('')
+  const [dcDcFilter, setDcDcFilter] = useState('')
+  const [dcLoading, setDcLoading] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -144,7 +188,8 @@ export default function SimulationResultsPage() {
         ])
         if (cancelled) return
         setMeta(metaData)
-        setPosChartData(aggregateStoreSales(storeSales))
+        setPosChartData(aggregatePOS(storeSales))
+        setStoreInvChartData(aggregateStoreInventory(storeSales))
         setShipChartData(aggregateShipments(supplyChain))
         setUpstreamChartData(aggregateUpstream(upstream))
         setKpis(kpiSummary(storeSales.weekly_pos, supplyChain.weekly_shipments))
@@ -183,6 +228,38 @@ export default function SimulationResultsPage() {
     return () => { cancelled = true; clearTimeout(pollTimer) }
   }, [simulationId])
 
+  useEffect(() => {
+    if (loadState !== 'ready') return
+    setPosLoading(true)
+    getStoreSales(simulationId, {
+      item_id: posItemFilter || undefined,
+      store_id: posStoreFilter || undefined,
+    }).then(data => {
+      setPosChartData(aggregatePOS(data))
+      setStoreInvChartData(aggregateStoreInventory(data))
+    }).catch(() => {}).finally(() => setPosLoading(false))
+  }, [posItemFilter, posStoreFilter, loadState, simulationId])
+
+  useEffect(() => {
+    if (loadState !== 'ready') return
+    setShipLoading(true)
+    getSupplyChainSales(simulationId, {
+      item_id: shipItemFilter || undefined,
+      retailer_dc_id: shipDcFilter || undefined,
+    }).then(data => setShipChartData(aggregateShipments(data)))
+      .catch(() => {}).finally(() => setShipLoading(false))
+  }, [shipItemFilter, shipDcFilter, loadState, simulationId])
+
+  useEffect(() => {
+    if (loadState !== 'ready') return
+    setDcLoading(true)
+    getUpstreamInventory(simulationId, {
+      item_id: dcItemFilter || undefined,
+      dc_id: dcDcFilter || undefined,
+    }).then(data => setUpstreamChartData(aggregateUpstream(data)))
+      .catch(() => {}).finally(() => setDcLoading(false))
+  }, [dcItemFilter, dcDcFilter, loadState, simulationId])
+
   if (loadState === 'loading' || loadState === 'polling') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 py-32">
@@ -207,11 +284,17 @@ export default function SimulationResultsPage() {
     )
   }
 
+  const itemOptions = (meta?.items_meta ?? []).map(i => ({ id: i.item_id, label: i.item_name }))
+  const storeOptions = (meta?.stores_meta ?? []).map(s => ({ id: s.store_id, label: s.store_code }))
+  const retailerDcOptions = (meta?.dcs_meta ?? [])
+    .filter(d => d.dc_role !== 'SUPPLIER_DC')
+    .map(d => ({ id: d.dc_id, label: d.dc_code }))
+
   return (
-    <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-6 py-6">
+    <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-4 py-4">
       <div className="mx-auto max-w-7xl">
         {/* Header */}
-        <div className="mb-8 flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-center">
+        <div className="mb-4 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             <h1 className="text-4xl font-black tracking-tight text-charcoal-blue-950">{simulationName}</h1>
             {meta && (
@@ -227,7 +310,7 @@ export default function SimulationResultsPage() {
         </div>
 
         {/* Tabs */}
-        <div className="mb-8 flex gap-2 border-b border-charcoal-blue-200">
+        <div className="mb-4 flex gap-2 border-b border-charcoal-blue-200">
           {['dashboard', 'narrative'].map(tab => (
             <button
               key={tab}
@@ -246,69 +329,118 @@ export default function SimulationResultsPage() {
         {activeTab === 'dashboard' && (
           <>
             {/* KPIs */}
-            <div className="mb-8 grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mb-4 grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
               <KPICard label="Total Sales (units)" value={kpis.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
               <KPICard label="Total Revenue" value={`$${(kpis.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
               <KPICard label="Avg Fill Rate" value={`${kpis.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
               <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
 
-            <div className="mb-8 grid gap-6 grid-cols-1 lg:grid-cols-2">
-              {/* POS Chart */}
+            <div className="mb-4 grid gap-4 grid-cols-1">
+              {/* POS — Store Sales */}
               <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
-                <h3 className="mb-1 text-lg font-bold text-charcoal-blue-950">POS — Store Sales</h3>
-                <p className="mb-4 text-xs text-charcoal-blue-400">Weekly demand, sales, and lost sales across all stores</p>
-                <ResponsiveContainer width="100%" height={380}>
-                  <ComposedChart data={posChartData} margin={{ top: 5, right: 30, left: 0, bottom: 60 }}>
+                <div className="mb-4 flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-bold text-charcoal-blue-950">POS — Store Sales</h3>
+                    <p className="text-xs text-charcoal-blue-400">Weekly demand, sales and lost sales across all stores</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {posLoading && <Loader2 size={14} className="animate-spin text-charcoal-blue-400" />}
+                    <FilterSelect value={posItemFilter} onChange={setPosItemFilter} options={itemOptions} placeholder="All Items" />
+                    <FilterSelect value={posStoreFilter} onChange={setPosStoreFilter} options={storeOptions} placeholder="All Stores" />
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={420}>
+                  <ComposedChart data={posChartData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 11 }} />
-                    <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                    <YAxis yAxisId="right" orientation="right" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 10 }} />
+                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
                     <Tooltip formatter={(v) => (v != null ? Number(v).toLocaleString() : '')} />
                     <Legend />
-                    <Bar yAxisId="left" dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
-                    <Bar yAxisId="left" dataKey="sales_qty" fill="#10b981" name="Sales" />
-                    <Bar yAxisId="left" dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
-                    <Line yAxisId="right" dataKey="store_inventory" stroke="#0ea5e9" name="Store Inventory" type="monotone" strokeWidth={2} dot={false} />
+                    <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
+                    <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                    <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
 
-              {/* Shipments Chart */}
+              {/* Store Inventory */}
               <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
-                <h3 className="mb-1 text-lg font-bold text-charcoal-blue-950">Supply Chain Shipments</h3>
-                <p className="mb-4 text-xs text-charcoal-blue-400">Supplier DC → Retailer DC ordered vs shipped with fill rate</p>
-                <ResponsiveContainer width="100%" height={380}>
-                  <ComposedChart data={shipChartData} margin={{ top: 5, right: 30, left: 0, bottom: 60 }}>
+                <div className="mb-4 flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-bold text-charcoal-blue-950">Store Inventory</h3>
+                    <p className="text-xs text-charcoal-blue-400">Weekly on-hand, available and on-order inventory at stores</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {posLoading && <Loader2 size={14} className="animate-spin text-charcoal-blue-400" />}
+                    <FilterSelect value={posItemFilter} onChange={setPosItemFilter} options={itemOptions} placeholder="All Items" />
+                    <FilterSelect value={posStoreFilter} onChange={setPosStoreFilter} options={storeOptions} placeholder="All Stores" />
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={420}>
+                  <ComposedChart data={storeInvChartData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 11 }} />
-                    <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                    <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tickFormatter={v => `${v}%`} />
-                    <Tooltip formatter={(v, name) => v != null ? (name === 'Fill Rate %' ? `${Number(v)}%` : Number(v).toLocaleString()) : ''} />
+                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 10 }} />
+                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v) => (v != null ? Number(v).toLocaleString() : '')} />
+                    <Legend />
+                    <Line dataKey="available" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                    <Line dataKey="on_hand" stroke="#0ea5e9" name="On Hand" type="monotone" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                    <Line dataKey="on_order" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Supply Chain Shipments */}
+              <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
+                <div className="mb-4 flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-bold text-charcoal-blue-950">Supply Chain Shipments</h3>
+                    <p className="text-xs text-charcoal-blue-400">Supplier DC → Retailer DC ordered vs shipped and fill rate</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {shipLoading && <Loader2 size={14} className="animate-spin text-charcoal-blue-400" />}
+                    <FilterSelect value={shipItemFilter} onChange={setShipItemFilter} options={itemOptions} placeholder="All Items" />
+                    <FilterSelect value={shipDcFilter} onChange={setShipDcFilter} options={retailerDcOptions} placeholder="All DCs" />
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={420}>
+                  <ComposedChart data={shipChartData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 10 }} />
+                    <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tickFormatter={v => `${v}%`} tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v, name) => v != null ? (name === 'Fill Rate' ? `${Number(v)}%` : Number(v).toLocaleString()) : ''} />
                     <Legend />
                     <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
                     <Bar yAxisId="left" dataKey="shipped_qty" fill="#60a5fa" name="Shipped" />
-                    <Line yAxisId="right" dataKey="fill_rate" stroke="#f59e0b" name="Fill Rate %" type="monotone" strokeWidth={2} dot={false} />
-                    <ReferenceLine yAxisId="right" y={95} stroke="#d1d5db" strokeDasharray="5 5" />
+                    <Line yAxisId="right" dataKey="fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
-            </div>
 
-            {/* Upstream Inventory */}
-            <div className="mb-8">
+              {/* DC Inventory */}
               <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
-                <h3 className="mb-1 text-lg font-bold text-charcoal-blue-950">Upstream Inventory</h3>
-                <p className="mb-4 text-xs text-charcoal-blue-400">Weekly on-hand inventory at Retailer DCs and Supplier DCs</p>
-                <ResponsiveContainer width="100%" height={320}>
-                  <ComposedChart data={upstreamChartData} margin={{ top: 5, right: 30, left: 0, bottom: 60 }}>
+                <div className="mb-4 flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-lg font-bold text-charcoal-blue-950">DC Inventory</h3>
+                    <p className="text-xs text-charcoal-blue-400">Weekly on-hand inventory at Retailer DCs and Supplier DCs</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {dcLoading && <Loader2 size={14} className="animate-spin text-charcoal-blue-400" />}
+                    <FilterSelect value={dcItemFilter} onChange={setDcItemFilter} options={itemOptions} placeholder="All Items" />
+                    <FilterSelect value={dcDcFilter} onChange={setDcDcFilter} options={retailerDcOptions} placeholder="All DCs" />
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={420}>
+                  <ComposedChart data={upstreamChartData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 11 }} />
-                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                    <XAxis dataKey="week" angle={-45} textAnchor="end" height={100} tick={{ fontSize: 10 }} />
+                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 11 }} />
                     <Tooltip formatter={(v) => (v != null ? Number(v).toLocaleString() : '')} />
                     <Legend />
-                    <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC Inventory" type="monotone" strokeWidth={2} dot={false} />
-                    <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC Inventory" type="monotone" strokeWidth={2} dot={false} />
+                    <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
+                    <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>

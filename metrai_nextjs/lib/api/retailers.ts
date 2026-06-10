@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import type { RetailerAccount, CreateAccountRequest } from './types'
 
 export const getRetailers = () =>
-  apiClient.get<RetailerAccount[]>('/retailers').then(r => r.data)
+  apiClient.get<{ retailers: RetailerAccount[] }>('/retailers').then(r => r.data.retailers)
 
 export const createAccount = (data: CreateAccountRequest) =>
   apiClient.post<RetailerAccount>('/accounts', data).then(r => r.data)

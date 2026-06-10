@@ -34,7 +34,7 @@ export const getSupplyChainSales = (
   params?: { item_id?: string; supplier_dc_id?: string; retailer_dc_id?: string }
 ) =>
   apiClient
-    .get<SupplyChainSalesResponse>(`/analytics/${simulationId}/supply-chain-sales`, { params })
+    .get<SupplyChainSalesResponse>(`/analytics/${simulationId}/supplier-sales`, { params })
     .then(r => r.data)
 
 export const getUpstreamInventory = (
@@ -42,5 +42,5 @@ export const getUpstreamInventory = (
   params?: { item_id?: string; dc_id?: string; supplier_dc_id?: string }
 ) =>
   apiClient
-    .get<UpstreamInventoryResponse>(`/analytics/${simulationId}/upstream-inventory`, { params })
+    .get<UpstreamInventoryResponse>(`/analytics/${simulationId}/dc-inventory`, { params })
     .then(r => r.data)

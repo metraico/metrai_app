@@ -5,17 +5,10 @@ import { useParams, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
 import { getRunYamlTemplate, runSimulation, pollSimulationUntilDone } from '@/lib/api/simulation'
 import { generateDemand, pollDemandUntilDone } from '@/lib/api/demand'
-import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp } from 'lucide-react'
+import { getSimulatePreview, getPromoYamlTemplate } from '@/lib/api/promos'
+import type { SimulatePreviewResponse } from '@/lib/api/types'
+import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp, Tag, FileEdit } from 'lucide-react'
 import yaml from 'js-yaml'
-
-const PROMO_SCENARIO_TEMPLATE = `scenario:
-  type: promo_forecast
-  promos:
-    - name: "Promo Event"
-      start_date: "2024-06-01"
-      end_date: "2024-06-30"
-      factor: 1.5
-`
 
 function StepIndicator({ currentStep, totalSteps }: { currentStep: number; totalSteps: number }) {
   return (
@@ -91,18 +84,21 @@ type RunStage =
 export default function NewSimulationPage() {
   const params = useParams()
   const router = useRouter()
-  const { userId, retailerAccountId } = useAuthStore()
+  const { retailerAccountId } = useAuthStore()
   const routeAccountId = params.retailerAccountId as string
 
   const [currentStep, setCurrentStep] = useState(0)
   const [runYaml, setRunYaml] = useState('')
-  const [addScenario, setAddScenario] = useState(false)
-  const [scenarioYaml, setScenarioYaml] = useState(PROMO_SCENARIO_TEMPLATE)
+  const [promoYaml, setPromoYaml] = useState('')
+  const [promoYamlValid, setPromoYamlValid] = useState<boolean | null>(null)
+  const [promoYamlLoading, setPromoYamlLoading] = useState(false)
   const [stage, setStage] = useState<RunStage>({ type: 'idle' })
   const [templateLoading, setTemplateLoading] = useState(true)
+  const [promoPreview, setPromoPreview] = useState<SimulatePreviewResponse | null>(null)
+  const [promoPreviewLoading, setPromoPreviewLoading] = useState(false)
 
   useEffect(() => {
-    getRunYamlTemplate()
+    getRunYamlTemplate(routeAccountId)
       .then(({ yaml: tpl }) => setRunYaml(tpl))
       .catch(() => {
         setRunYaml(`run:
@@ -135,6 +131,29 @@ export default function NewSimulationPage() {
     }
   }
 
+  const handleNext = () => {
+    if (currentStep === 0) {
+      const runParams = parseRunParams()
+      setCurrentStep(1)
+      if (runParams?.start_date && runParams?.end_date) {
+        setPromoPreviewLoading(true)
+        getSimulatePreview(routeAccountId, runParams.start_date, runParams.end_date)
+          .then(setPromoPreview)
+          .catch(() => setPromoPreview(null))
+          .finally(() => setPromoPreviewLoading(false))
+        if (!promoYaml) {
+          setPromoYamlLoading(true)
+          getPromoYamlTemplate(routeAccountId, runParams.start_date, runParams.end_date)
+            .then(({ yaml: tpl }) => setPromoYaml(tpl))
+            .catch(() => {})
+            .finally(() => setPromoYamlLoading(false))
+        }
+      }
+    } else {
+      setCurrentStep(s => s + 1)
+    }
+  }
+
   const handleRun = async () => {
     const runParams = parseRunParams()
     if (!runParams?.start_date || !runParams?.end_date) {
@@ -148,10 +167,7 @@ export default function NewSimulationPage() {
       return
     }
 
-    const combinedYaml = addScenario ? `${runYaml.trimEnd()}\n\n${scenarioYaml}` : runYaml
-
     try {
-      // Step 1: generate demand
       setStage({ type: 'generating_demand', message: 'Generating demand data…' })
       const { job_id } = await generateDemand({
         retailer_account_id: accountId,
@@ -163,9 +179,8 @@ export default function NewSimulationPage() {
         setStage({ type: 'generating_demand', message: `Demand generation: ${s.status}…` })
       })
 
-      // Step 2: run simulation
       setStage({ type: 'running_simulation', message: 'Starting simulation…' })
-      const { simulation_id } = await runSimulation(combinedYaml)
+      const { simulation_id } = await runSimulation(runYaml, promoYaml)
       await pollSimulationUntilDone(simulation_id, 3000, (s) => {
         setStage({ type: 'running_simulation', message: `Simulation: ${s.status}…` })
       })
@@ -209,56 +224,140 @@ export default function NewSimulationPage() {
           </div>
         )}
 
-        {/* Step 2: Optional Scenario */}
+        {/* Step 2: Promo Preview + Overrides */}
         {currentStep === 1 && (
           <div className="mb-8 space-y-6">
+            {/* Preview card */}
             <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
-              <h3 className="mb-4 text-lg font-bold text-charcoal-blue-950">Add a Scenario? (Optional)</h3>
-              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
-                <button
-                  onClick={() => setAddScenario(false)}
-                  className={`rounded-2xl border-2 p-5 text-left transition-all ${
-                    !addScenario
-                      ? 'border-majorelle-blue-500 bg-majorelle-blue-50'
-                      : 'border-charcoal-blue-200 hover:border-majorelle-blue-300'
-                  }`}
-                >
-                  <div className="mb-2 flex items-center gap-3">
-                    <div className={`rounded-xl p-2 ${!addScenario ? 'bg-majorelle-blue-500' : 'bg-charcoal-blue-100'}`}>
-                      <Check size={20} className={!addScenario ? 'text-white' : 'text-charcoal-blue-400'} />
-                    </div>
-                    <span className="font-bold text-charcoal-blue-950">No Scenario</span>
-                  </div>
-                  <p className="text-sm text-charcoal-blue-400">Run with baseline demand only</p>
-                </button>
-
-                <button
-                  onClick={() => setAddScenario(true)}
-                  className={`rounded-2xl border-2 p-5 text-left transition-all ${
-                    addScenario
-                      ? 'border-majorelle-blue-500 bg-majorelle-blue-50'
-                      : 'border-charcoal-blue-200 hover:border-majorelle-blue-300'
-                  }`}
-                >
-                  <div className="mb-2 flex items-center gap-3">
-                    <div className={`rounded-xl p-2 ${addScenario ? 'bg-majorelle-blue-500' : 'bg-charcoal-blue-100'}`}>
-                      <TrendingUp size={20} className={addScenario ? 'text-white' : 'text-charcoal-blue-400'} />
-                    </div>
-                    <span className="font-bold text-charcoal-blue-950">Promo Forecast</span>
-                  </div>
-                  <p className="text-sm text-charcoal-blue-400">Inject promotional demand uplift</p>
-                </button>
+              <div className="mb-5 flex items-center gap-3">
+                <TrendingUp size={22} className="text-majorelle-blue-500" />
+                <div>
+                  <h3 className="text-lg font-bold text-charcoal-blue-950">Promo Preview</h3>
+                  <p className="text-xs text-charcoal-blue-400">Promos active during your simulation window</p>
+                </div>
               </div>
+
+              {promoPreviewLoading && (
+                <div className="flex items-center justify-center py-16">
+                  <div className="h-7 w-7 animate-spin rounded-full border-4 border-majorelle-blue-500 border-t-transparent" />
+                </div>
+              )}
+
+              {!promoPreviewLoading && promoPreview && (
+                <>
+                  <div className="mb-6 grid grid-cols-3 gap-4">
+                    <div className="rounded-xl bg-majorelle-blue-50 p-4 text-center">
+                      <p className="text-2xl font-black text-majorelle-blue-600">{promoPreview.active_promos}</p>
+                      <p className="mt-1 text-xs font-semibold text-charcoal-blue-400">Active Promos</p>
+                    </div>
+                    <div className="rounded-xl bg-charcoal-blue-50 p-4 text-center">
+                      <p className="text-2xl font-black text-charcoal-blue-950">{promoPreview.total_promo_groups}</p>
+                      <p className="mt-1 text-xs font-semibold text-charcoal-blue-400">Promo Groups</p>
+                    </div>
+                    <div className="rounded-xl bg-charcoal-blue-50 p-4 text-center">
+                      <p className="text-2xl font-black text-charcoal-blue-950">{promoPreview.total_promos}</p>
+                      <p className="mt-1 text-xs font-semibold text-charcoal-blue-400">Total in Account</p>
+                    </div>
+                  </div>
+
+                  {promoPreview.active_promos === 0 ? (
+                    <div className="rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-8 text-center">
+                      <Tag size={32} className="mx-auto mb-3 text-charcoal-blue-300" />
+                      <p className="font-semibold text-charcoal-blue-950">No promos active in this date range</p>
+                      <p className="mt-1 text-sm text-charcoal-blue-400">Simulation will run on baseline demand only.</p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-charcoal-blue-200 overflow-hidden">
+                      <div className="overflow-y-auto max-h-52">
+                        <table className="w-full text-xs">
+                          <thead className="bg-charcoal-blue-50 sticky top-0 z-10">
+                            <tr>
+                              <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-charcoal-blue-400">Promo Name</th>
+                              <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-charcoal-blue-400">Event Type</th>
+                              <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-charcoal-blue-400">Dates</th>
+                              <th className="px-3 py-2 text-center font-bold uppercase tracking-wide text-charcoal-blue-400">Uplift</th>
+                              <th className="px-3 py-2 text-center font-bold uppercase tracking-wide text-charcoal-blue-400">Stores</th>
+                              <th className="px-3 py-2 text-center font-bold uppercase tracking-wide text-charcoal-blue-400">Items</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-charcoal-blue-100">
+                            {promoPreview.promos.map((p) => (
+                              <tr key={p.promo_id} className="bg-white hover:bg-charcoal-blue-50 transition-colors">
+                                <td className="px-3 py-1.5 font-semibold text-charcoal-blue-950">{p.promo_name}</td>
+                                <td className="px-3 py-1.5">
+                                  <span className="rounded-md bg-majorelle-blue-50 px-1.5 py-0.5 font-bold text-majorelle-blue-600">
+                                    {p.event_type || '—'}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-1.5 text-charcoal-blue-400 whitespace-nowrap">
+                                  {p.start_date} → {p.end_date}
+                                </td>
+                                <td className="px-3 py-1.5 text-center font-bold text-emerald-600">
+                                  {p.demand_multiplier}×
+                                </td>
+                                <td className="px-3 py-1.5 text-center text-charcoal-blue-950">{p.store_count}</td>
+                                <td className="px-3 py-1.5 text-center text-charcoal-blue-950">{p.item_count}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!promoPreviewLoading && !promoPreview && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  Could not load promo preview. The simulation will still run using promos from the database.
+                </div>
+              )}
             </div>
 
-            {addScenario && (
-              <YamlEditor
-                value={scenarioYaml}
-                onChange={setScenarioYaml}
-                label="Scenario Configuration"
-                description="Customize the promo uplift dates and factor"
-              />
-            )}
+            {/* Promo YAML overrides card */}
+            <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
+              <div className="mb-4 flex items-center gap-2">
+                <FileEdit size={20} className="text-majorelle-blue-500" />
+                <div>
+                  <h3 className="text-lg font-bold text-charcoal-blue-950">Promo Overrides</h3>
+                  <p className="text-xs text-charcoal-blue-400">
+                    Override start date, end date, or demand multiplier for any promo — for this run only
+                  </p>
+                </div>
+              </div>
+              {promoYamlLoading ? (
+                <div className="flex items-center justify-center py-10">
+                  <div className="h-7 w-7 animate-spin rounded-full border-4 border-majorelle-blue-500 border-t-transparent" />
+                </div>
+              ) : (
+                <textarea
+                  value={promoYaml}
+                  onChange={(e) => {
+                    setPromoYaml(e.target.value)
+                    try { yaml.load(e.target.value); setPromoYamlValid(true) }
+                    catch { setPromoYamlValid(false) }
+                  }}
+                  className="w-full rounded-2xl border border-charcoal-blue-200 bg-charcoal-blue-50 px-4 py-3 font-mono text-sm text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none focus:ring-1 focus:ring-majorelle-blue-500"
+                  rows={14}
+                  spellCheck={false}
+                />
+              )}
+              {!promoYamlLoading && promoYaml && promoYamlValid === false && (
+                <p className="mt-2 flex items-center gap-1 text-xs text-rose-600">
+                  <AlertCircle size={12} /> Invalid YAML — fix syntax errors before continuing
+                </p>
+              )}
+              {!promoYamlLoading && promoYaml && promoYamlValid === true && (
+                <p className="mt-2 flex items-center gap-1 text-xs text-emerald-600">
+                  <Check size={12} /> Valid YAML
+                </p>
+              )}
+              {!promoYamlLoading && !promoYaml && (
+                <p className="mt-2 text-xs text-charcoal-blue-400">
+                  Leave empty to use all promos exactly as stored in the database.
+                </p>
+              )}
+            </div>
           </div>
         )}
 
@@ -275,11 +374,21 @@ export default function NewSimulationPage() {
                 </p>
               </div>
               <div className="rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-4">
-                <p className="text-sm font-semibold text-charcoal-blue-950">Scenario</p>
+                <p className="text-sm font-semibold text-charcoal-blue-950">Promos</p>
                 <p className="mt-1 text-xs text-majorelle-blue-500">
-                  {addScenario ? 'Promo Forecast' : 'None — baseline demand'}
+                  {promoPreview
+                    ? `${promoPreview.active_promos} active promo${promoPreview.active_promos !== 1 ? 's' : ''} in simulation window`
+                    : 'Loaded from database'}
                 </p>
               </div>
+              {promoYaml.trim() && (
+                <div className="rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 p-4">
+                  <p className="text-sm font-semibold text-charcoal-blue-950">Promo Overrides</p>
+                  <p className="mt-1 text-xs text-majorelle-blue-600">
+                    {(promoYaml.match(/promo_name:/g) ?? []).length} promo(s) overridden for this run
+                  </p>
+                </div>
+              )}
             </div>
 
             {stage.type === 'error' && (
@@ -323,8 +432,9 @@ export default function NewSimulationPage() {
 
           {currentStep < 2 ? (
             <button
-              onClick={() => setCurrentStep(s => s + 1)}
-              className="inline-flex items-center gap-2 rounded-2xl bg-majorelle-blue-500 px-6 py-3 font-bold text-white transition-all hover:bg-majorelle-blue-600 hover:shadow-lg hover:shadow-majorelle-blue-500/30"
+              onClick={handleNext}
+              disabled={currentStep === 0 && templateLoading}
+              className="inline-flex items-center gap-2 rounded-2xl bg-majorelle-blue-500 px-6 py-3 font-bold text-white transition-all hover:bg-majorelle-blue-600 hover:shadow-lg hover:shadow-majorelle-blue-500/30 disabled:cursor-not-allowed disabled:bg-charcoal-blue-300"
             >
               Next
               <ChevronRight size={20} />
