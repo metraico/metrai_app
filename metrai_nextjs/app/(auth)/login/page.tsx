@@ -97,7 +97,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-sm">
         {/* Header */}
         <div className="border-b border-charcoal-blue-200 px-8 py-10">
-          <h1 className="text-3xl font-bold text-charcoal-blue-950">MetRAI</h1>
+          <h1 className="text-3xl font-bold text-charcoal-blue-950">Metrai</h1>
           <p className="mt-1 text-sm font-medium text-charcoal-blue-400">Simulation Engine</p>
         </div>
 

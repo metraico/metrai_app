@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'next/navigation'
-import { Download, TrendingUp, Package, Truck, ShoppingCart, AlertCircle, Loader2 } from 'lucide-react'
+import { Download, TrendingUp, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
@@ -105,14 +105,14 @@ function computeKPIs(pos: any[], shipments: any[]) {
 
 function KPICard({ label, value, icon: Icon, color }: { label: string; value: string; icon: React.ElementType; color: string }) {
   return (
-    <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
+    <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
       <div className="flex items-start justify-between">
         <div className="flex-1">
-          <p className="text-sm font-medium text-charcoal-blue-400">{label}</p>
-          <p className="mt-2 text-2xl font-black text-charcoal-blue-950">{value}</p>
+          <p className="text-[10px] font-medium text-charcoal-blue-400">{label}</p>
+          <p className="mt-1 text-lg font-black text-charcoal-blue-950">{value}</p>
         </div>
-        <div className={`flex-shrink-0 rounded-2xl p-3 ${color}`}>
-          <Icon size={24} className="text-white" />
+        <div className={`flex-shrink-0 rounded-xl p-2 ${color}`}>
+          <Icon size={15} className="text-white" />
         </div>
       </div>
     </div>
@@ -121,9 +121,9 @@ function KPICard({ label, value, icon: Icon, color }: { label: string; value: st
 
 function ChartError({ message }: { message: string }) {
   return (
-    <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 mb-4">
-      <AlertCircle size={16} className="flex-shrink-0 text-rose-500" />
-      <p className="text-sm font-medium text-rose-700">{message}</p>
+    <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 mb-3">
+      <AlertCircle size={13} className="flex-shrink-0 text-rose-500" />
+      <p className="text-xs font-medium text-rose-700">{message}</p>
     </div>
   )
 }
@@ -135,36 +135,79 @@ function FilterSelect({ label, value, onChange, options }: {
   return (
     <div className="flex items-center gap-2">
       <span className="text-xs font-semibold text-charcoal-blue-500">{label}</span>
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="rounded-xl border border-charcoal-blue-200 bg-white px-3 py-1.5 text-xs font-medium text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none"
-      >
-        <option value="">All</option>
-        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
+      <div className="relative">
+        <select
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="appearance-none rounded-xl border border-charcoal-blue-200 bg-white px-3 py-1.5 pr-7 text-xs font-medium text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none"
+        >
+          <option value="">All</option>
+          {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-charcoal-blue-400">▼</span>
+      </div>
     </div>
   )
 }
 
-function ChartShell({ title, subtitle, filters, error, loading, children }: {
+function ChartModal({ title, subtitle, filters, error, children, onClose }: {
   title: string; subtitle: string; filters?: React.ReactNode
-  error: string; loading: boolean; children: React.ReactNode
+  error: string; children: React.ReactNode; onClose: () => void
 }) {
   return (
-    <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-6 shadow-sm">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-bold text-charcoal-blue-950">{title}</h3>
-          <p className="text-xs text-charcoal-blue-400">{subtitle}</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
+      <div className="w-full max-w-5xl rounded-xl border border-charcoal-blue-200 bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-charcoal-blue-950">{title}</h3>
+            <p className="text-[10px] text-charcoal-blue-400">{subtitle}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {filters}
+            <button onClick={onClose} className="ml-2 rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
+          </div>
         </div>
-        {filters && <div className="flex flex-wrap gap-2">{filters}</div>}
+        {error && <ChartError message={error} />}
+        {children}
       </div>
-      {error && <ChartError message={error} />}
-      {loading
-        ? <div className="flex h-64 items-center justify-center"><Loader2 size={28} className="animate-spin text-majorelle-blue-400" /></div>
-        : children}
     </div>
+  )
+}
+
+function ChartShell({ title, subtitle, filters, error, loading, chart }: {
+  title: string; subtitle: string; filters?: React.ReactNode
+  error: string; loading: boolean; chart: (height: number) => React.ReactNode
+}) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <>
+      <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm flex flex-col">
+        {/* Header with Expand button top-right */}
+        <div className="mb-4 flex items-start justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-bold text-charcoal-blue-950">{title}</h3>
+            <p className="text-[10px] text-charcoal-blue-400">{subtitle}</p>
+          </div>
+          <button onClick={() => setExpanded(true)} className="flex-shrink-0 rounded-xl border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">⤢ Expand</button>
+        </div>
+        {/* Filters below heading */}
+        {filters && <div className="mb-4 flex flex-wrap items-center gap-2">{filters}</div>}
+        {error && <ChartError message={error} />}
+        {/* Chart — centered with minimal spacing */}
+        <div className="flex flex-col items-center justify-center my-1">
+          {loading
+            ? <Loader2 size={22} className="animate-spin text-majorelle-blue-400" />
+            : chart(220)}
+        </div>
+      </div>
+      {expanded && (
+        <ChartModal title={title} subtitle={subtitle} filters={filters} error={error} onClose={() => setExpanded(false)}>
+          <div className="flex flex-col items-center justify-center my-2">
+            {chart(450)}
+          </div>
+        </ChartModal>
+      )}
+    </>
   )
 }
 
@@ -181,6 +224,7 @@ export default function SimulationResultsPage() {
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
   const [activeTab, setActiveTab] = useState('dashboard')
+  const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
 
   // Chart 1 — POS (store sales)
@@ -373,28 +417,28 @@ export default function SimulationResultsPage() {
 
   return (
     <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-6 py-6">
-      <div className="mx-auto max-w-7xl">
+      <div className="w-full">
 
         {/* Header */}
-        <div className="mb-8 flex flex-col items-start justify-between gap-6 sm:flex-row sm:items-center">
+        <div className="mb-5 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
           <div>
-            <h1 className="text-4xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
+            <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
             {meta && (
-              <p className="mt-2 text-base font-medium text-charcoal-blue-400">
+              <p className="mt-0.5 text-xs font-medium text-charcoal-blue-400">
                 {meta.items_meta.length} items · {meta.stores_meta.length} stores · {meta.dcs_meta.length} DCs
               </p>
             )}
           </div>
-          <button className="inline-flex items-center gap-2 whitespace-nowrap rounded-2xl bg-majorelle-blue-500 px-6 py-3 font-bold text-white transition-all hover:bg-majorelle-blue-600">
-            <Download size={16} /> Export
+          <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600">
+            <Download size={13} /> Export
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="mb-8 flex gap-2 border-b border-charcoal-blue-200">
+        <div className="mb-5 flex gap-2 border-b border-charcoal-blue-200">
           {['dashboard', 'narrative'].map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`px-4 py-3 text-sm font-semibold transition-all border-b-2 capitalize ${
+              className={`px-3 py-2 text-xs font-semibold transition-all border-b-2 capitalize ${
                 activeTab === tab
                   ? 'border-majorelle-blue-500 text-majorelle-blue-600'
                   : 'border-transparent text-charcoal-blue-400 hover:text-charcoal-blue-950'
@@ -408,14 +452,14 @@ export default function SimulationResultsPage() {
         {activeTab === 'dashboard' && (
           <>
             {/* KPIs */}
-            <div className="mb-8 grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mb-5 grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
               <KPICard label="Total Sales (units)" value={kpis.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
               <KPICard label="Total Revenue" value={`$${(kpis.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
               <KPICard label="Avg Fill Rate" value={`${kpis.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
               <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
 
-            <div className="mb-6 grid gap-6 grid-cols-1 lg:grid-cols-2">
+            <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
               {/* Chart 1 — POS Store Sales */}
               <ChartShell
@@ -428,20 +472,21 @@ export default function SimulationResultsPage() {
                   <FilterSelect label="Store" value={posStoreFilter} options={storeOptions}
                     onChange={v => { setPosStoreFilter(v); (posItemFilter || v) ? fetchPOSFiltered(posItemFilter, v) : resetToSummary('pos') }} />
                 </>}
-              >
-                <ResponsiveContainer width="100%" height={300}>
-                  <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" {...xAxisProps} />
-                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(v) => Number(v).toLocaleString()} />
-                    <Legend />
-                    <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
-                    <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                    <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </ChartShell>
+                chart={(h) => (
+                  <ResponsiveContainer width="100%" height={h}>
+                    <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="week" {...xAxisProps} />
+                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
+                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
+                      <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              />
 
               {/* Chart 2 — Store Inventory */}
               <ChartShell
@@ -454,20 +499,21 @@ export default function SimulationResultsPage() {
                   <FilterSelect label="Store" value={invStoreFilter} options={storeOptions}
                     onChange={v => { setInvStoreFilter(v); (invItemFilter || v) ? fetchStoreInvFiltered(invItemFilter, v) : resetToSummary('inv') }} />
                 </>}
-              >
-                <ResponsiveContainer width="100%" height={300}>
-                  <ComposedChart data={storeInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" {...xAxisProps} />
-                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(v) => Number(v).toLocaleString()} />
-                    <Legend />
-                    <Line dataKey="on_hand_quantity" stroke="#0ea5e9" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
-                    <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
-                    <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </ChartShell>
+                chart={(h) => (
+                  <ResponsiveContainer width="100%" height={h}>
+                    <ComposedChart data={storeInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="week" {...xAxisProps} />
+                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Line dataKey="on_hand_quantity" stroke="#0ea5e9" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
+                      <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
+                      <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              />
 
               {/* Chart 3 — Supply Chain Shipments */}
               <ChartShell
@@ -478,22 +524,23 @@ export default function SimulationResultsPage() {
                   <FilterSelect label="Item" value={shipItemFilter} options={itemOptions}
                     onChange={v => { setShipItemFilter(v); v ? fetchShipFiltered(v) : resetToSummary('ship') }} />
                 }
-              >
-                <ResponsiveContainer width="100%" height={300}>
-                  <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" {...xAxisProps} />
-                    <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                    <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
-                    <Tooltip formatter={(v, name) => String(name).includes('Fill') ? `${(Number(v) * 100).toFixed(1)}%` : Number(v).toLocaleString()} />
-                    <Legend />
-                    <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
-                    <Bar yAxisId="left" dataKey="shipped_qty" fill="#60a5fa" name="Shipped" />
-                    <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
-                    <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </ChartShell>
+                chart={(h) => (
+                  <ResponsiveContainer width="100%" height={h}>
+                    <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="week" {...xAxisProps} />
+                      <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
+                      <Tooltip formatter={(v, name) => String(name).includes('Fill') ? `${(Number(v) * 100).toFixed(1)}%` : Number(v).toLocaleString()} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#60a5fa" name="Shipped" />
+                      <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
+                      <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              />
 
               {/* Chart 4 — DC Inventory */}
               <ChartShell
@@ -506,31 +553,183 @@ export default function SimulationResultsPage() {
                   <FilterSelect label="DC" value={dcFilter} options={dcOptions}
                     onChange={v => { setDcFilter(v); (dcItemFilter || v) ? fetchDCInvFiltered(dcItemFilter, v) : resetToSummary('dc') }} />
                 </>}
-              >
-                <ResponsiveContainer width="100%" height={300}>
-                  <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                    <XAxis dataKey="week" {...xAxisProps} />
-                    <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(v) => Number(v).toLocaleString()} />
-                    <Legend />
-                    <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
-                    <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </ChartShell>
+                chart={(h) => (
+                  <ResponsiveContainer width="100%" height={h}>
+                    <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis dataKey="week" {...xAxisProps} />
+                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
+                      <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              />
 
             </div>
           </>
         )}
 
-        {activeTab === 'narrative' && (
-          <div className="rounded-2xl border border-charcoal-blue-200 bg-white p-8 text-center shadow-sm">
-            <TrendingUp size={48} className="mx-auto mb-4 text-charcoal-blue-300" />
-            <h3 className="text-xl font-bold text-charcoal-blue-950">Guided Narrative</h3>
-            <p className="mt-2 text-charcoal-blue-400">AI-generated story of your simulation will appear here.</p>
-          </div>
-        )}
+        {activeTab === 'narrative' && (() => {
+          const third = Math.ceil(posData.length / 3)
+          const steps = [
+            {
+              label: 'The Baseline',
+              weekRange: `${posData[0]?.week ?? '—'} – ${posData[third - 1]?.week ?? '—'}`,
+              description: 'Stable demand history. All supply chain nodes operating within target weeks-of-supply.',
+              posSlice: posData.slice(0, third),
+              invSlice: storeInvData.slice(0, third),
+              shipSlice: shipData.slice(0, third),
+              kpis: [
+                { label: 'Avg Weekly Sales', value: posData.slice(0, third).length ? `${Math.round(posData.slice(0, third).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
+                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.lost_sales_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
+                { label: 'Avg Fill Rate', value: shipData.slice(0, third).length ? `${(shipData.slice(0, third).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
+                { label: 'Peak On-Hand', value: storeInvData.slice(0, third).length ? `${Math.max(...storeInvData.slice(0, third).map((r: any) => r.on_hand_quantity)).toLocaleString()}` : '—' },
+              ],
+              narrative: 'The simulation opens with all supply chain nodes operating smoothly. Store inventory levels are well above target, the retailer DC is shipping full replenishment orders, and the supplier is fulfilling close to 100% of DC orders. Demand is steady with predictable weekly patterns — this baseline period establishes the "healthy state" benchmark for the rest of the run.',
+              finding: 'When the system starts healthy, the replenishment logic performs exactly as designed. This period confirms the model is calibrated correctly.',
+              findingColor: 'border-emerald-300 bg-emerald-50 text-emerald-800',
+            },
+            {
+              label: 'The Constraint Emerges',
+              weekRange: `${posData[third]?.week ?? '—'} – ${posData[third * 2 - 1]?.week ?? '—'}`,
+              description: 'Supplier fill rate begins to fall. Retailer DC inventory declines below target WOS.',
+              posSlice: posData.slice(third, third * 2),
+              invSlice: storeInvData.slice(third, third * 2),
+              shipSlice: shipData.slice(third, third * 2),
+              kpis: [
+                { label: 'Avg Weekly Sales', value: posData.slice(third, third * 2).length ? `${Math.round(posData.slice(third, third * 2).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
+                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.lost_sales_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
+                { label: 'Avg Fill Rate', value: shipData.slice(third, third * 2).length ? `${(shipData.slice(third, third * 2).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
+                { label: 'DC On-Hand Drop', value: storeInvData.slice(third, third * 2).length ? `${Math.round((1 - storeInvData[third * 2 - 1]?.on_hand_quantity / (storeInvData[third]?.on_hand_quantity || 1)) * 100)}%` : '—' },
+              ],
+              narrative: 'Midway through the simulation, supplier fill rates begin to deteriorate. The retailer DC can no longer replenish its full ordered quantity, and on-hand inventory at the DC starts declining. Stores begin experiencing isolated stockouts — initially masked in the aggregate data but visible when filtered by individual store. The replenishment engine responds by ordering more, but the supplier cannot keep up.',
+              finding: 'A drop in fill rate at the supplier level takes 3–4 weeks to visibly impact store shelves. This lag is the window where intervention is possible before lost sales cascade.',
+              findingColor: 'border-amber-300 bg-amber-50 text-amber-800',
+            },
+            {
+              label: 'Vendor Comparison',
+              weekRange: `${shipData[0]?.week ?? '—'} – ${shipData[shipData.length - 1]?.week ?? '—'}`,
+              description: 'Retailer DC vs Supplier DC — who absorbed the pressure and who passed it on.',
+              posSlice: dcInvData,
+              invSlice: storeInvData,
+              shipSlice: shipData,
+              kpis: [
+                { label: 'Total Ordered', value: shipData.length ? `${Math.round(shipData.reduce((s: number, r: any) => s + r.ordered_qty, 0) / 1000).toLocaleString()}K` : '—' },
+                { label: 'Total Shipped', value: shipData.length ? `${Math.round(shipData.reduce((s: number, r: any) => s + r.shipped_qty, 0) / 1000).toLocaleString()}K` : '—' },
+                { label: 'Overall Fill Rate', value: shipData.length ? `${(shipData.reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / shipData.length * 100).toFixed(1)}%` : '—' },
+                { label: 'Unfulfilled Units', value: shipData.length ? `${Math.round((shipData.reduce((s: number, r: any) => s + r.ordered_qty, 0) - shipData.reduce((s: number, r: any) => s + r.shipped_qty, 0)) / 1000).toLocaleString()}K` : '—' },
+              ],
+              narrative: 'Comparing inventory levels at the Retailer DC and Supplier DC reveals a clear divergence. The Supplier DC maintains high on-hand inventory throughout the run, while the Retailer DC is persistently depleted. This pattern indicates the supplier is holding inventory upstream rather than releasing it — the bottleneck is not production capacity but allocation and order fulfillment policy at the vendor level.',
+              finding: 'When the Supplier DC holds inventory while the Retailer DC starves, the issue is vendor allocation policy — not a supply shortage. Escalating fill rate SLAs or shifting to vendor-managed inventory would address the root cause.',
+              findingColor: 'border-majorelle-blue-200 bg-majorelle-blue-50 text-majorelle-blue-800',
+            },
+          ]
+
+          const step = steps[narrativeStep]
+
+          return (
+            <div>
+              {/* Step progress */}
+              <div className="mb-6 flex items-center gap-0">
+                {steps.map((s, i) => (
+                  <div key={i} className="flex flex-1 items-center">
+                    <button
+                      onClick={() => setNarrativeStep(i)}
+                      className="flex flex-shrink-0 flex-col items-center gap-1"
+                    >
+                      <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-all ${
+                        i < narrativeStep ? 'bg-emerald-500 text-white' : i === narrativeStep ? 'bg-majorelle-blue-500 text-white' : 'bg-charcoal-blue-100 text-charcoal-blue-400'
+                      }`}>
+                        {i < narrativeStep ? '✓' : i + 1}
+                      </div>
+                      <span className={`text-[10px] font-semibold whitespace-nowrap ${i === narrativeStep ? 'text-majorelle-blue-600' : 'text-charcoal-blue-400'}`}>{s.label}</span>
+                    </button>
+                    {i < steps.length - 1 && (
+                      <div className={`mx-2 mb-4 h-px flex-1 ${i < narrativeStep ? 'bg-emerald-400' : 'bg-charcoal-blue-200'}`} />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Step content */}
+              <div className="rounded-xl border border-charcoal-blue-200 bg-white p-5 shadow-sm">
+                <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Step {narrativeStep + 1} of {steps.length}</p>
+                <h2 className="text-lg font-black tracking-tight text-charcoal-blue-950">{step.label}</h2>
+                <p className="mb-4 mt-0.5 text-xs text-charcoal-blue-400">{step.weekRange} — {step.description}</p>
+
+                {/* Chart */}
+                <div className="mb-4 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 p-3">
+                  <ResponsiveContainer width="100%" height={220}>
+                    {narrativeStep === 2 ? (
+                      <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
+                        <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
+                        <Tooltip formatter={(v: number) => v.toLocaleString()} />
+                        <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                        <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
+                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
+                        <Bar dataKey="ordered_qty" yAxisId={undefined} fill="transparent" />
+                      </ComposedChart>
+                    ) : (
+                      <ComposedChart data={step.posSlice} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
+                        <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
+                        <Tooltip formatter={(v: number) => v.toLocaleString()} />
+                        <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
+                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
+                        <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                      </ComposedChart>
+                    )}
+                  </ResponsiveContainer>
+                </div>
+
+                {/* KPI row */}
+                <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {step.kpis.map((kpi, i) => (
+                    <div key={i} className="rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 px-3 py-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-charcoal-blue-400">{kpi.label}</p>
+                      <p className="mt-0.5 text-sm font-black text-charcoal-blue-950">{kpi.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Narrative text */}
+                <p className="mb-3 text-xs leading-relaxed text-charcoal-blue-700">{step.narrative}</p>
+
+                {/* Key finding */}
+                <div className={`rounded-lg border px-3 py-2.5 ${step.findingColor}`}>
+                  <span className="mr-1 text-[10px] font-black uppercase tracking-wide">Key finding:</span>
+                  <span className="text-[11px] leading-relaxed">{step.finding}</span>
+                </div>
+              </div>
+
+              {/* Navigation */}
+              <div className="mt-4 flex items-center justify-between">
+                <button
+                  onClick={() => setNarrativeStep(s => Math.max(0, s - 1))}
+                  disabled={narrativeStep === 0}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-charcoal-blue-200 bg-white px-4 py-2 text-xs font-bold text-charcoal-blue-600 transition hover:bg-charcoal-blue-50 disabled:opacity-30"
+                >
+                  <ChevronLeft size={14} /> Previous
+                </button>
+                <span className="text-xs text-charcoal-blue-400">{narrativeStep + 1} / {steps.length}</span>
+                <button
+                  onClick={() => setNarrativeStep(s => Math.min(steps.length - 1, s + 1))}
+                  disabled={narrativeStep === steps.length - 1}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition hover:bg-majorelle-blue-600 disabled:opacity-30"
+                >
+                  Next <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
