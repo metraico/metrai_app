@@ -4,8 +4,11 @@ COPY metrai_nextjs/package*.json ./
 RUN npm ci
 COPY metrai_nextjs/ .
 
-ARG NEXT_PUBLIC_BACKEND_URL=http://localhost:8080
+ARG NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
 ENV NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL
+
+ARG NEXT_PUBLIC_ENGINE_URL=http://localhost:8000
+ENV NEXT_PUBLIC_ENGINE_URL=$NEXT_PUBLIC_ENGINE_URL
 
 RUN npm run build
 
