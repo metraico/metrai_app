@@ -917,8 +917,8 @@ export default function SimulationResultsPage() {
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
-                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
+                        <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Vendor A" type="monotone" strokeWidth={2} dot={false} />
+                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Vendor B" type="monotone" strokeWidth={2} dot={false} />
                         <Bar dataKey="ordered_qty" yAxisId={undefined} fill="transparent" />
                       </ComposedChart>
                     ) : (

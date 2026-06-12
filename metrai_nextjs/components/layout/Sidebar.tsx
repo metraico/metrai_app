@@ -1,14 +1,15 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter, useParams } from 'next/navigation'
+import { useRouter, useParams, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
 import { logout } from '@/lib/api/auth'
-import { LogOut, Home, BarChart3, Settings } from 'lucide-react'
+import { LogOut, Home, BarChart3, Plus, Settings } from 'lucide-react'
 
 export function Sidebar() {
   const router = useRouter()
   const params = useParams()
+  const pathname = usePathname()
   const { clearAuth, fullName, refreshToken } = useAuthStore()
   const retailerAccountId = params.retailerAccountId as string
 
@@ -20,11 +21,18 @@ export function Sidebar() {
     router.push('/login')
   }
 
+  const isRuns = retailerAccountId && (
+    pathname === `/retailers/${retailerAccountId}` ||
+    pathname === `/retailers/${retailerAccountId}/runs`
+  )
+  const isNewSim = retailerAccountId && pathname.includes('/simulation/new')
+  const isScenario = retailerAccountId && pathname.includes('/scenario')
+
   const navItems = [
     { label: 'Retailers', href: '/retailers', icon: Home, current: !retailerAccountId },
-    retailerAccountId && { label: 'Runs', href: `/retailers/${retailerAccountId}/runs`, icon: BarChart3, current: params.section === 'runs' },
-    retailerAccountId && { label: 'New Simulation', href: `/retailers/${retailerAccountId}/simulation/new`, icon: BarChart3, current: params.section === 'simulation' },
-    retailerAccountId && { label: 'Scenario Setup', href: `/retailers/${retailerAccountId}/scenario`, icon: Settings, current: params.section === 'scenario' },
+    retailerAccountId && { label: 'Runs', href: `/retailers/${retailerAccountId}`, icon: BarChart3, current: !!isRuns },
+    retailerAccountId && { label: 'New Simulation', href: `/retailers/${retailerAccountId}/simulation/new`, icon: Plus, current: !!isNewSim },
+    retailerAccountId && { label: 'Scenario Setup', href: `/retailers/${retailerAccountId}/scenario`, icon: Settings, current: !!isScenario },
   ].filter(Boolean)
 
   return (
