@@ -369,6 +369,12 @@ export default function SimulationResultsPage() {
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
+  // ── Global filters ────────────────────────────────────────────────────────
+  const [globalItem, setGlobalItem]   = useState('')
+  const [globalStore, setGlobalStore] = useState('')
+  const [globalSdc, setGlobalSdc]     = useState('')
+  const [globalRdc, setGlobalRdc]     = useState('')
+
   // ── Apply inline summary data ─────────────────────────────────────────────
 
   const applySummary = useCallback((s: SimulationSummary) => {
@@ -473,6 +479,26 @@ export default function SimulationResultsPage() {
       loadSummary()
     }
   }, [cache, simulationId, loadSummary])
+
+  const applyGlobalFilters = useCallback((item: string, store: string, sdc: string, rdc: string) => {
+    setGlobalItem(item); setGlobalStore(store); setGlobalSdc(sdc); setGlobalRdc(rdc)
+    // Broadcast to per-chart filters
+    setPosItemFilter(item);     setPosStoreFilter(store)
+    setInvItemFilter(item);     setInvStoreFilter(store)
+    setShipItemFilter(item);    setShipSdcFilter(sdc);   setShipRdcFilter(rdc)
+    setDcItemFilter(item);      setDcSdcFilter(sdc);     setDcFilter(rdc)
+    // Re-fetch each chart
+    const anyPos  = !!(item || store)
+    const anyShip = !!(item || sdc || rdc)
+    if (anyPos)  { fetchPOSFiltered(item, store); fetchStoreInvFiltered(item, store) }
+    else         { resetToSummary('pos'); resetToSummary('inv') }
+    if (anyShip) { fetchShipFiltered(item, sdc, rdc); fetchDCInvFiltered(item, rdc, sdc) }
+    else         { resetToSummary('ship'); resetToSummary('dc') }
+  }, [fetchPOSFiltered, fetchStoreInvFiltered, fetchShipFiltered, fetchDCInvFiltered, resetToSummary])
+
+  const resetAllFilters = useCallback(() => {
+    applyGlobalFilters('', '', '', '')
+  }, [applyGlobalFilters])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -639,6 +665,27 @@ export default function SimulationResultsPage() {
               <KPICard label="Total Revenue" value={`$${(kpis.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
               <KPICard label="Avg Fill Rate" value={`${kpis.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
               <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
+            </div>
+
+            {/* Global Filter Bar */}
+            <div className="mb-5 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-4 py-3 flex flex-wrap items-center gap-3">
+              <span className="text-xs font-bold text-majorelle-blue-700 shrink-0">Global Filter</span>
+              <FilterSelect label="Item" value={globalItem} options={allItemOptions}
+                onChange={v => applyGlobalFilters(v, globalStore, globalSdc, globalRdc)} />
+              <FilterSelect label="Store" value={globalStore} options={filteredStoreOptions(globalItem)}
+                onChange={v => applyGlobalFilters(globalItem, v, globalSdc, globalRdc)} />
+              <FilterSelect label="Supplier DC" value={globalSdc} options={filteredShipSdcOptions(globalItem, globalRdc)}
+                onChange={v => applyGlobalFilters(globalItem, globalStore, v, globalRdc)} />
+              <FilterSelect label="Retailer DC" value={globalRdc} options={filteredShipRdcOptions(globalItem, globalSdc)}
+                onChange={v => applyGlobalFilters(globalItem, globalStore, globalSdc, v)} />
+              {(globalItem || globalStore || globalSdc || globalRdc) && (
+                <button
+                  onClick={resetAllFilters}
+                  className="ml-auto text-xs font-semibold text-majorelle-blue-600 hover:text-majorelle-blue-800 underline underline-offset-2 shrink-0"
+                >
+                  Clear all
+                </button>
+              )}
             </div>
 
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
