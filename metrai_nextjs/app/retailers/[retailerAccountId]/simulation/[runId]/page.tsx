@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'next/navigation'
-import { Download, TrendingUp, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
@@ -83,15 +83,27 @@ function aggShipments(rows: any[]) {
 }
 
 function aggDCInv(dc: any[], sup: any[]) {
-  const dcMap  = new Map<string, number>()
-  const supMap = new Map<string, number>()
-  for (const r of dc)  dcMap.set(r.inventory_week,  (dcMap.get(r.inventory_week)  ?? 0) + Number(r.on_hand_quantity))
-  for (const r of sup) supMap.set(r.inventory_week, (supMap.get(r.inventory_week) ?? 0) + Number(r.on_hand_quantity))
-  const weeks = [...new Set([...dcMap.keys(), ...supMap.keys()])].sort()
+  const dcOnHand   = new Map<string, number>()
+  const dcOnOrder  = new Map<string, number>()
+  const supOnHand  = new Map<string, number>()
+  const supOnOrder = new Map<string, number>()
+  for (const r of dc) {
+    const w = r.inventory_week
+    dcOnHand.set(w,  (dcOnHand.get(w)  ?? 0) + Number(r.on_hand_quantity))
+    dcOnOrder.set(w, (dcOnOrder.get(w) ?? 0) + Number(r.on_order_quantity ?? 0))
+  }
+  for (const r of sup) {
+    const w = r.inventory_week
+    supOnHand.set(w,  (supOnHand.get(w)  ?? 0) + Number(r.on_hand_quantity))
+    supOnOrder.set(w, (supOnOrder.get(w) ?? 0) + Number(r.on_order_quantity ?? 0))
+  }
+  const weeks = [...new Set([...dcOnHand.keys(), ...supOnHand.keys()])].sort()
   return weeks.map(w => ({
     week: w,
-    dc_inventory: dcMap.get(w) ?? 0,
-    supplier_dc_inventory: supMap.get(w) ?? 0,
+    dc_inventory:          dcOnHand.get(w)   ?? 0,
+    dc_on_order:           dcOnOrder.get(w)  ?? 0,
+    supplier_dc_inventory: supOnHand.get(w)  ?? 0,
+    supplier_dc_on_order:  supOnOrder.get(w) ?? 0,
   }))
 }
 
@@ -135,6 +147,46 @@ function ChartTooltip({ active, payload, label, promoWeekMap }: {
   )
 }
 
+function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
+  const rdcOnHand  = d.dc_inventory          ?? 0
+  const rdcOnOrder = d.dc_on_order           ?? 0
+  const sdcOnHand  = d.supplier_dc_inventory ?? 0
+  const sdcOnOrder = d.supplier_dc_on_order  ?? 0
+  const rdcStatus  = rdcOnHand === 0 && rdcOnOrder > 0 ? 'in-transit' : rdcOnHand === 0 ? 'stockout' : null
+  const sdcStatus  = sdcOnHand === 0 && sdcOnOrder > 0 ? 'in-transit' : sdcOnHand === 0 ? 'stockout' : null
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[190px]">
+      <p className="mb-2 font-semibold text-charcoal-blue-700">{label}</p>
+      <div className="mb-1.5">
+        <p className="font-semibold text-indigo-600 mb-0.5">Retailer DC</p>
+        <p className="flex justify-between gap-4 text-charcoal-blue-700">
+          <span>On Hand</span><span className="font-medium">{rdcOnHand.toLocaleString()}</span>
+        </p>
+        <p className="flex justify-between gap-4 text-charcoal-blue-500">
+          <span>On Order</span><span className="font-medium">{rdcOnOrder.toLocaleString()}</span>
+        </p>
+        {rdcStatus === 'stockout'   && <p className="mt-0.5 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
+        {rdcStatus === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
+      </div>
+      {(sdcOnHand > 0 || sdcOnOrder > 0) && (
+        <div className="border-t border-charcoal-blue-100 pt-1.5">
+          <p className="font-semibold text-rose-500 mb-0.5">Supplier DC</p>
+          <p className="flex justify-between gap-4 text-charcoal-blue-700">
+            <span>On Hand</span><span className="font-medium">{sdcOnHand.toLocaleString()}</span>
+          </p>
+          <p className="flex justify-between gap-4 text-charcoal-blue-500">
+            <span>On Order</span><span className="font-medium">{sdcOnOrder.toLocaleString()}</span>
+          </p>
+          {sdcStatus === 'stockout'   && <p className="mt-0.5 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
+          {sdcStatus === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Small components ──────────────────────────────────────────────────────────
 
 function KPICard({ label, value, icon: Icon, color }: { label: string; value: string; icon: React.ElementType; color: string }) {
@@ -158,6 +210,29 @@ function ChartError({ message }: { message: string }) {
     <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 mb-3">
       <AlertCircle size={13} className="flex-shrink-0 text-rose-500" />
       <p className="text-xs font-medium text-rose-700">{message}</p>
+    </div>
+  )
+}
+
+function ToggleSegment({ value, onChange, options }: {
+  value: string; onChange: (v: string) => void
+  options: { value: string; label: string }[]
+}) {
+  return (
+    <div className="flex rounded-xl border border-charcoal-blue-200 overflow-hidden">
+      {options.map(o => (
+        <button
+          key={o.value}
+          onClick={() => onChange(o.value)}
+          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+            value === o.value
+              ? 'bg-majorelle-blue-500 text-white'
+              : 'bg-white text-charcoal-blue-600 hover:bg-charcoal-blue-50'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   )
 }
@@ -280,6 +355,8 @@ export default function SimulationResultsPage() {
   const [shipError, setShipError] = useState('')
   const [shipLoading, setShipLoading] = useState(false)
   const [shipItemFilter, setShipItemFilter] = useState('')
+  const [shipSdcFilter, setShipSdcFilter]   = useState('')
+  const [shipRdcFilter, setShipRdcFilter]   = useState('')
 
   // Chart 4 — DC inventory
   const [dcInvData, setDcInvData] = useState<any[]>([])
@@ -287,6 +364,8 @@ export default function SimulationResultsPage() {
   const [dcInvLoading, setDcInvLoading] = useState(false)
   const [dcItemFilter, setDcItemFilter] = useState('')
   const [dcFilter, setDcFilter] = useState('')
+  const [dcSdcFilter, setDcSdcFilter]   = useState('')
+  const [dcViewMode, setDcViewMode]     = useState<'both' | 'rdc_only'>('both')
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -357,19 +436,27 @@ export default function SimulationResultsPage() {
     finally { setStoreInvLoading(false) }
   }, [simulationId])
 
-  const fetchShipFiltered = useCallback(async (itemId: string) => {
+  const fetchShipFiltered = useCallback(async (itemId: string, sdcId: string, rdcId: string) => {
     setShipLoading(true); setShipError('')
     try {
-      const data = await getSupplierSales(simulationId, { item_id: itemId || undefined })
+      const data = await getSupplierSales(simulationId, {
+        item_id:          itemId || undefined,
+        supplier_dc_id:   sdcId  || undefined,
+        retailer_dc_id:   rdcId  || undefined,
+      })
       setShipData(aggShipments(data.weekly_shipments ?? []))
     } catch (e: any) { setShipError(e?.message ?? 'Failed') }
     finally { setShipLoading(false) }
   }, [simulationId])
 
-  const fetchDCInvFiltered = useCallback(async (itemId: string, dcId: string) => {
+  const fetchDCInvFiltered = useCallback(async (itemId: string, rdcId: string, sdcId: string) => {
     setDcInvLoading(true); setDcInvError('')
     try {
-      const data = await getDCInventory(simulationId, { item_id: itemId || undefined, dc_id: dcId || undefined })
+      const data = await getDCInventory(simulationId, {
+        item_id:        itemId || undefined,
+        dc_id:          rdcId  || undefined,
+        supplier_dc_id: sdcId  || undefined,
+      })
       setDcInvData(aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? []))
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
     finally { setDcInvLoading(false) }
@@ -421,7 +508,6 @@ export default function SimulationResultsPage() {
 
   const allItemOptions  = [...new Map((meta?.items_meta ?? []).map((m: any) => [m.item_id, { value: m.item_id, label: m.item_description ? `${m.item_name} — ${m.item_description}` : m.item_name }])).values()]
   const allStoreOptions = (meta?.stores_meta ?? []).map((m: any) => ({ value: m.store_id, label: m.store_code }))
-  const dcOptions       = (meta?.dcs_meta    ?? []).map((m: any) => ({ value: m.dc_id,    label: m.dc_code    }))
 
   // Build item→stores and store→items lookup from store_item_map
   const storeItemMap = meta?.store_item_map ?? {}
@@ -431,6 +517,47 @@ export default function SimulationResultsPage() {
       if (!itemStoreMap[itemId]) itemStoreMap[itemId] = []
       itemStoreMap[itemId].push(storeId)
     }
+  }
+
+  const allSupplierDCOptions = (meta?.dcs_meta ?? [])
+    .filter((m: any) => m.dc_role === 'SUPPLIER_DC')
+    .map((m: any) => ({ value: m.dc_id, label: m.dc_code }))
+  const allRetailerDCOptions = (meta?.dcs_meta ?? [])
+    .filter((m: any) => m.dc_role !== 'SUPPLIER_DC')
+    .map((m: any) => ({ value: m.dc_id, label: m.dc_code }))
+
+  const supplierDcItemMap = meta?.supplier_dc_item_map ?? {}
+  const rdcToSdcMap       = meta?.rdc_to_sdc_map       ?? {}
+
+  // item→SDCs: SDCs that carry the item (with optional RDC cross-filter)
+  function filteredShipSdcOptions(itemId: string, rdcId: string) {
+    let opts = allSupplierDCOptions
+    if (rdcId) {
+      const sdcsForRdc = new Set(rdcToSdcMap[rdcId] ?? [])
+      opts = opts.filter(o => sdcsForRdc.has(o.value))
+    }
+    if (itemId) {
+      opts = opts.filter(o => (supplierDcItemMap[o.value] ?? []).includes(itemId))
+    }
+    return opts
+  }
+
+  // item→RDCs: RDCs served by the selected SDC (with optional item cross-filter)
+  function filteredShipRdcOptions(itemId: string, sdcId: string) {
+    let opts = allRetailerDCOptions
+    if (sdcId) {
+      const rdcsForSdc = new Set(
+        Object.entries(rdcToSdcMap)
+          .filter(([, sdcs]) => (sdcs as string[]).includes(sdcId))
+          .map(([rdc]) => rdc)
+      )
+      opts = opts.filter(o => rdcsForSdc.has(o.value))
+    }
+    if (itemId) {
+      const dcItemMap = meta?.dc_item_map ?? {}
+      opts = opts.filter(o => (dcItemMap[o.value] ?? []).includes(itemId))
+    }
+    return opts
   }
 
   function filteredItemOptions(activeStoreId: string) {
@@ -565,7 +692,6 @@ export default function SimulationResultsPage() {
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip formatter={(v) => Number(v).toLocaleString()} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Line dataKey="on_hand_quantity" stroke="#0ea5e9" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
                     </ComposedChart>
@@ -578,10 +704,14 @@ export default function SimulationResultsPage() {
                 title="Supply Chain Shipments"
                 subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
                 error={shipError} loading={shipLoading}
-                filters={
+                filters={<>
                   <FilterSelect label="Item" value={shipItemFilter} options={allItemOptions}
-                    onChange={v => { setShipItemFilter(v); v ? fetchShipFiltered(v) : resetToSummary('ship') }} />
-                }
+                    onChange={v => { setShipItemFilter(v); (v || shipSdcFilter || shipRdcFilter) ? fetchShipFiltered(v, shipSdcFilter, shipRdcFilter) : resetToSummary('ship') }} />
+                  <FilterSelect label="Supplier DC" value={shipSdcFilter} options={filteredShipSdcOptions(shipItemFilter, shipRdcFilter)}
+                    onChange={v => { setShipSdcFilter(v); (shipItemFilter || v || shipRdcFilter) ? fetchShipFiltered(shipItemFilter, v, shipRdcFilter) : resetToSummary('ship') }} />
+                  <FilterSelect label="Retailer DC" value={shipRdcFilter} options={filteredShipRdcOptions(shipItemFilter, shipSdcFilter)}
+                    onChange={v => { setShipRdcFilter(v); (shipItemFilter || shipSdcFilter || v) ? fetchShipFiltered(shipItemFilter, shipSdcFilter, v) : resetToSummary('ship') }} />
+                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
@@ -595,7 +725,7 @@ export default function SimulationResultsPage() {
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
-                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#60a5fa" name="Shipped" />
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" />
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -610,9 +740,16 @@ export default function SimulationResultsPage() {
                 error={dcInvError} loading={dcInvLoading}
                 filters={<>
                   <FilterSelect label="Item" value={dcItemFilter} options={allItemOptions}
-                    onChange={v => { setDcItemFilter(v); (v || dcFilter) ? fetchDCInvFiltered(v, dcFilter) : resetToSummary('dc') }} />
-                  <FilterSelect label="DC" value={dcFilter} options={dcOptions}
-                    onChange={v => { setDcFilter(v); (dcItemFilter || v) ? fetchDCInvFiltered(dcItemFilter, v) : resetToSummary('dc') }} />
+                    onChange={v => { setDcItemFilter(v); (v || dcFilter || dcSdcFilter) ? fetchDCInvFiltered(v, dcFilter, dcSdcFilter) : resetToSummary('dc') }} />
+                  <FilterSelect label="Supplier DC" value={dcSdcFilter} options={filteredShipSdcOptions(dcItemFilter, dcFilter)}
+                    onChange={v => { setDcSdcFilter(v); (dcItemFilter || dcFilter || v) ? fetchDCInvFiltered(dcItemFilter, dcFilter, v) : resetToSummary('dc') }} />
+                  <FilterSelect label="Retailer DC" value={dcFilter} options={filteredShipRdcOptions(dcItemFilter, dcSdcFilter)}
+                    onChange={v => { setDcFilter(v); (dcItemFilter || v || dcSdcFilter) ? fetchDCInvFiltered(dcItemFilter, v, dcSdcFilter) : resetToSummary('dc') }} />
+                  <ToggleSegment
+                    value={dcViewMode}
+                    onChange={v => setDcViewMode(v as 'both' | 'rdc_only')}
+                    options={[{ value: 'both', label: 'Both' }, { value: 'rdc_only', label: 'Retailer DC only' }]}
+                  />
                 </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
@@ -620,10 +757,12 @@ export default function SimulationResultsPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Tooltip content={<DCInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
-                      <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
+                      {dcViewMode === 'both' && (
+                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
