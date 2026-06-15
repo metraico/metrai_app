@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
@@ -14,6 +14,7 @@ import {
 } from '@/lib/api/analytics'
 import { getRunConfig } from '@/lib/api/simulation'
 import { useSimulationStore } from '@/lib/store/simulationStore'
+import { useFilterStore } from '@/lib/store/filterStore'
 import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ function aggPOS(pos: any[]) {
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
-      lost: c.lost + Number(r.lost_sales_qty),
+      lost: c.lost + Number(r.stockout_qty),
       revenue: c.revenue + Number(r.sales_amount),
       isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
       promoName: c.promoName || (r.promo_name ?? ''),
@@ -35,7 +36,7 @@ function aggPOS(pos: any[]) {
     week,
     demand_qty: v.demand,
     sales_qty: v.sales,
-    lost_sales_qty: v.lost,
+    stockout_qty: v.lost,
     sales_amount: v.revenue,
     is_promo_week: v.isPromo ? 1 : 0,
     promo_name: v.promoName,
@@ -109,7 +110,7 @@ function aggDCInv(dc: any[], sup: any[]) {
 
 function computeKPIs(pos: any[], shipments: any[]) {
   const totalSales   = pos.reduce((s: number, r: any) => s + Number(r.sales_qty ?? 0), 0)
-  const totalLost    = pos.reduce((s: number, r: any) => s + Number(r.lost_sales_qty ?? 0), 0)
+  const totalLost    = pos.reduce((s: number, r: any) => s + Number(r.stockout_qty ?? 0), 0)
   const totalRevenue = pos.reduce((s: number, r: any) => s + Number(r.sales_amount ?? 0), 0)
   const fillSum      = shipments.reduce((s: number, r: any) => s + Number(r.avg_fill_rate ?? r.fill_rate ?? 0), 0)
   const fillRate     = shipments.length > 0 ? (fillSum / shipments.length) * 100 : 0
@@ -237,27 +238,6 @@ function ToggleSegment({ value, onChange, options }: {
   )
 }
 
-function FilterSelect({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void
-  options: { value: string; label: string }[]
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs font-semibold text-charcoal-blue-500">{label}</span>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          className="w-48 truncate appearance-none rounded-xl border border-charcoal-blue-200 bg-white px-3 py-1.5 pr-7 text-xs font-medium text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none"
-        >
-          <option value="">All</option>
-          {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-charcoal-blue-400">▼</span>
-      </div>
-    </div>
-  )
-}
 
 function ChartModal({ title, subtitle, filters, error, children, onClose }: {
   title: string; subtitle: string; filters?: React.ReactNode
@@ -273,7 +253,7 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {filters}
-            <button onClick={onClose} className="ml-2 rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
+            <button onClick={onClose} className="ml-2 rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
           </div>
         </div>
         {error && <ChartError message={error} />}
@@ -329,6 +309,8 @@ export default function SimulationResultsPage() {
   const simulationId = params.runId as string
   const { cache } = useSimulationStore()
 
+  const { setOptions, clearOptions, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand } = useFilterStore()
+
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
@@ -340,40 +322,24 @@ export default function SimulationResultsPage() {
   const [posData, setPosData] = useState<any[]>([])
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
-  const [posItemFilter, setPosItemFilter] = useState('')
-  const [posStoreFilter, setPosStoreFilter] = useState('')
 
   // Chart 2 — Store inventory
   const [storeInvData, setStoreInvData] = useState<any[]>([])
   const [storeInvError, setStoreInvError] = useState('')
   const [storeInvLoading, setStoreInvLoading] = useState(false)
-  const [invItemFilter, setInvItemFilter] = useState('')
-  const [invStoreFilter, setInvStoreFilter] = useState('')
 
   // Chart 3 — Shipments
   const [shipData, setShipData] = useState<any[]>([])
   const [shipError, setShipError] = useState('')
   const [shipLoading, setShipLoading] = useState(false)
-  const [shipItemFilter, setShipItemFilter] = useState('')
-  const [shipSdcFilter, setShipSdcFilter]   = useState('')
-  const [shipRdcFilter, setShipRdcFilter]   = useState('')
 
   // Chart 4 — DC inventory
   const [dcInvData, setDcInvData] = useState<any[]>([])
   const [dcInvError, setDcInvError] = useState('')
   const [dcInvLoading, setDcInvLoading] = useState(false)
-  const [dcItemFilter, setDcItemFilter] = useState('')
-  const [dcFilter, setDcFilter] = useState('')
-  const [dcSdcFilter, setDcSdcFilter]   = useState('')
-  const [dcViewMode, setDcViewMode]     = useState<'both' | 'rdc_only'>('both')
+  const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
-
-  // ── Global filters ────────────────────────────────────────────────────────
-  const [globalItem, setGlobalItem]   = useState('')
-  const [globalStore, setGlobalStore] = useState('')
-  const [globalSdc, setGlobalSdc]     = useState('')
-  const [globalRdc, setGlobalRdc]     = useState('')
 
   // ── Apply inline summary data ─────────────────────────────────────────────
 
@@ -422,46 +388,52 @@ export default function SimulationResultsPage() {
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
-  const fetchPOSFiltered = useCallback(async (itemId: string, storeId: string) => {
+  const fetchPOSFiltered = useCallback(async (itemId: string, storeId: string, category: string, subcategory: string, brand: string) => {
     setPosLoading(true); setPosError('')
     try {
-      const p = { item_id: itemId || undefined, store_id: storeId || undefined }
+      const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
       const data = await getStoreSales(simulationId, p)
       setPosData(aggPOS(data.weekly_pos ?? []))
     } catch (e: any) { setPosError(e?.message ?? 'Failed') }
     finally { setPosLoading(false) }
   }, [simulationId])
 
-  const fetchStoreInvFiltered = useCallback(async (itemId: string, storeId: string) => {
+  const fetchStoreInvFiltered = useCallback(async (itemId: string, storeId: string, category: string, subcategory: string, brand: string) => {
     setStoreInvLoading(true); setStoreInvError('')
     try {
-      const p = { item_id: itemId || undefined, store_id: storeId || undefined }
+      const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
       const data = await getStoreInventory(simulationId, p)
       setStoreInvData(aggStoreInv(data.store_inventory ?? []))
     } catch (e: any) { setStoreInvError(e?.message ?? 'Failed') }
     finally { setStoreInvLoading(false) }
   }, [simulationId])
 
-  const fetchShipFiltered = useCallback(async (itemId: string, sdcId: string, rdcId: string) => {
+  const fetchShipFiltered = useCallback(async (itemId: string, sdcId: string, rdcId: string, category: string, subcategory: string, brand: string) => {
     setShipLoading(true); setShipError('')
     try {
       const data = await getSupplierSales(simulationId, {
         item_id:          itemId || undefined,
         supplier_dc_id:   sdcId  || undefined,
         retailer_dc_id:   rdcId  || undefined,
+        category:         category  || undefined,
+        subcategory:      subcategory || undefined,
+        brand:            brand    || undefined,
       })
       setShipData(aggShipments(data.weekly_shipments ?? []))
     } catch (e: any) { setShipError(e?.message ?? 'Failed') }
     finally { setShipLoading(false) }
   }, [simulationId])
 
-  const fetchDCInvFiltered = useCallback(async (itemId: string, rdcId: string, sdcId: string) => {
+  const fetchDCInvFiltered = useCallback(async (itemId: string, rdcId: string, sdcId: string, category: string, subcategory: string, brand: string) => {
     setDcInvLoading(true); setDcInvError('')
     try {
       const data = await getDCInventory(simulationId, {
         item_id:        itemId || undefined,
         dc_id:          rdcId  || undefined,
         supplier_dc_id: sdcId  || undefined,
+        category:       category  || undefined,
+        subcategory:    subcategory || undefined,
+        brand:          brand    || undefined,
       })
       setDcInvData(aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? []))
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
@@ -480,25 +452,25 @@ export default function SimulationResultsPage() {
     }
   }, [cache, simulationId, loadSummary])
 
-  const applyGlobalFilters = useCallback((item: string, store: string, sdc: string, rdc: string) => {
-    setGlobalItem(item); setGlobalStore(store); setGlobalSdc(sdc); setGlobalRdc(rdc)
-    // Broadcast to per-chart filters
-    setPosItemFilter(item);     setPosStoreFilter(store)
-    setInvItemFilter(item);     setInvStoreFilter(store)
-    setShipItemFilter(item);    setShipSdcFilter(sdc);   setShipRdcFilter(rdc)
-    setDcItemFilter(item);      setDcSdcFilter(sdc);     setDcFilter(rdc)
-    // Re-fetch each chart
-    const anyPos  = !!(item || store)
-    const anyShip = !!(item || sdc || rdc)
-    if (anyPos)  { fetchPOSFiltered(item, store); fetchStoreInvFiltered(item, store) }
-    else         { resetToSummary('pos'); resetToSummary('inv') }
-    if (anyShip) { fetchShipFiltered(item, sdc, rdc); fetchDCInvFiltered(item, rdc, sdc) }
-    else         { resetToSummary('ship'); resetToSummary('dc') }
-  }, [fetchPOSFiltered, fetchStoreInvFiltered, fetchShipFiltered, fetchDCInvFiltered, resetToSummary])
+  // Clear sidebar options on unmount
+  useEffect(() => () => clearOptions(), [clearOptions])
 
-  const resetAllFilters = useCallback(() => {
-    applyGlobalFilters('', '', '', '')
-  }, [applyGlobalFilters])
+  // React to any sidebar filter change and re-fetch affected charts.
+  // Category/Subcategory/Brand narrow the item list but the backend only takes item_id,
+  // so when those change we still call the API with the current item (or reset to summary).
+  // Skip the initial mount run (all filters are empty on first render).
+  const filterMountedRef = useRef(false)
+  useEffect(() => {
+    if (!filterMountedRef.current) { filterMountedRef.current = true; return }
+    if (pageState !== 'ready') return
+    const anyPos  = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
+    const anyShip = !!(globalItem || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
+    if (anyPos)  { fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand); fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand) }
+    else         { resetToSummary('pos'); resetToSummary('inv') }
+    if (anyShip) { fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand); fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand) }
+    else         { resetToSummary('ship'); resetToSummary('dc') }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -586,16 +558,63 @@ export default function SimulationResultsPage() {
     return opts
   }
 
-  function filteredItemOptions(activeStoreId: string) {
-    if (!activeStoreId) return allItemOptions
-    const allowed = new Set(storeItemMap[activeStoreId] ?? [])
-    return allItemOptions.filter(o => allowed.has(o.value))
-  }
   function filteredStoreOptions(activeItemId: string) {
     if (!activeItemId) return allStoreOptions
     const allowed = new Set(itemStoreMap[activeItemId] ?? [])
     return allStoreOptions.filter(o => allowed.has(o.value))
   }
+
+  // Populate sidebar filter panel options whenever meta changes
+  useEffect(() => {
+    if (!meta) return
+    const itemsMeta = meta.items_meta ?? []
+
+    const categoryOptions = [...new Set(itemsMeta.map((m: any) => m.category).filter(Boolean))]
+      .sort().map((v: string) => ({ value: v, label: v }))
+    const subcategoryOptions = [...new Set(itemsMeta.map((m: any) => m.subcategory).filter(Boolean))]
+      .sort().map((v: string) => ({ value: v, label: v }))
+    const brandOptions = [...new Set(itemsMeta.map((m: any) => m.brand).filter(Boolean))]
+      .sort().map((v: string) => ({ value: v, label: v }))
+
+    function filteredItemOptions(category: string, subcategory: string, brand: string) {
+      let items = itemsMeta
+      if (category)    items = items.filter((m: any) => m.category    === category)
+      if (subcategory) items = items.filter((m: any) => m.subcategory === subcategory)
+      if (brand)       items = items.filter((m: any) => m.brand       === brand)
+      return items.map((m: any) => ({ value: m.item_id, label: m.item_description || m.item_name || m.item_code }))
+    }
+
+    function filteredSubcategoryOptions(category: string) {
+      const items = category ? itemsMeta.filter((m: any) => m.category === category) : itemsMeta
+      return [...new Set(items.map((m: any) => m.subcategory).filter(Boolean))]
+        .sort().map((v: string) => ({ value: v, label: v }))
+    }
+
+    function filteredBrandOptions(category: string, subcategory: string) {
+      let items = itemsMeta
+      if (category)    items = items.filter((m: any) => m.category    === category)
+      if (subcategory) items = items.filter((m: any) => m.subcategory === subcategory)
+      return [...new Set(items.map((m: any) => m.brand).filter(Boolean))]
+        .sort().map((v: string) => ({ value: v, label: v }))
+    }
+
+    setOptions({
+      itemOptions: allItemOptions,
+      storeOptions: allStoreOptions,
+      sdcOptions: allSupplierDCOptions,
+      rdcOptions: allRetailerDCOptions,
+      categoryOptions,
+      subcategoryOptions,
+      brandOptions,
+      filteredStoreOptions: (itemId) => filteredStoreOptions(itemId),
+      filteredSdcOptions: (itemId, rdcId) => filteredShipSdcOptions(itemId, rdcId),
+      filteredRdcOptions: (itemId, sdcId) => filteredShipRdcOptions(itemId, sdcId),
+      filteredItemOptions,
+      filteredSubcategoryOptions,
+      filteredBrandOptions,
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta])
 
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
 
@@ -667,26 +686,6 @@ export default function SimulationResultsPage() {
               <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
 
-            {/* Global Filter Bar */}
-            <div className="mb-5 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-4 py-3 flex flex-wrap items-center gap-3">
-              <span className="text-xs font-bold text-majorelle-blue-700 shrink-0">Global Filter</span>
-              <FilterSelect label="Item" value={globalItem} options={allItemOptions}
-                onChange={v => applyGlobalFilters(v, globalStore, globalSdc, globalRdc)} />
-              <FilterSelect label="Store" value={globalStore} options={filteredStoreOptions(globalItem)}
-                onChange={v => applyGlobalFilters(globalItem, v, globalSdc, globalRdc)} />
-              <FilterSelect label="Supplier DC" value={globalSdc} options={filteredShipSdcOptions(globalItem, globalRdc)}
-                onChange={v => applyGlobalFilters(globalItem, globalStore, v, globalRdc)} />
-              <FilterSelect label="Retailer DC" value={globalRdc} options={filteredShipRdcOptions(globalItem, globalSdc)}
-                onChange={v => applyGlobalFilters(globalItem, globalStore, globalSdc, v)} />
-              {(globalItem || globalStore || globalSdc || globalRdc) && (
-                <button
-                  onClick={resetAllFilters}
-                  className="ml-auto text-xs font-semibold text-majorelle-blue-600 hover:text-majorelle-blue-800 underline underline-offset-2 shrink-0"
-                >
-                  Clear all
-                </button>
-              )}
-            </div>
 
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
@@ -695,12 +694,6 @@ export default function SimulationResultsPage() {
                 title="POS — Store Sales"
                 subtitle="Weekly demand, sales and lost sales across all stores"
                 error={posError} loading={posLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={posItemFilter} options={filteredItemOptions(posStoreFilter)}
-                    onChange={v => { setPosItemFilter(v); (v || posStoreFilter) ? fetchPOSFiltered(v, posStoreFilter) : resetToSummary('pos') }} />
-                  <FilterSelect label="Store" value={posStoreFilter} options={filteredStoreOptions(posItemFilter)}
-                    onChange={v => { setPosStoreFilter(v); (posItemFilter || v) ? fetchPOSFiltered(posItemFilter, v) : resetToSummary('pos') }} />
-                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
@@ -712,9 +705,9 @@ export default function SimulationResultsPage() {
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<ChartTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
-                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                      <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
+                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
+                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -725,12 +718,6 @@ export default function SimulationResultsPage() {
                 title="Store Inventory"
                 subtitle="Weekly on-hand, available and on-order inventory at stores"
                 error={storeInvError} loading={storeInvLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={invItemFilter} options={filteredItemOptions(invStoreFilter)}
-                    onChange={v => { setInvItemFilter(v); (v || invStoreFilter) ? fetchStoreInvFiltered(v, invStoreFilter) : resetToSummary('inv') }} />
-                  <FilterSelect label="Store" value={invStoreFilter} options={filteredStoreOptions(invItemFilter)}
-                    onChange={v => { setInvStoreFilter(v); (invItemFilter || v) ? fetchStoreInvFiltered(invItemFilter, v) : resetToSummary('inv') }} />
-                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={storeInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
@@ -751,14 +738,6 @@ export default function SimulationResultsPage() {
                 title="Supply Chain Shipments"
                 subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
                 error={shipError} loading={shipLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={shipItemFilter} options={allItemOptions}
-                    onChange={v => { setShipItemFilter(v); (v || shipSdcFilter || shipRdcFilter) ? fetchShipFiltered(v, shipSdcFilter, shipRdcFilter) : resetToSummary('ship') }} />
-                  <FilterSelect label="Supplier DC" value={shipSdcFilter} options={filteredShipSdcOptions(shipItemFilter, shipRdcFilter)}
-                    onChange={v => { setShipSdcFilter(v); (shipItemFilter || v || shipRdcFilter) ? fetchShipFiltered(shipItemFilter, v, shipRdcFilter) : resetToSummary('ship') }} />
-                  <FilterSelect label="Retailer DC" value={shipRdcFilter} options={filteredShipRdcOptions(shipItemFilter, shipSdcFilter)}
-                    onChange={v => { setShipRdcFilter(v); (shipItemFilter || shipSdcFilter || v) ? fetchShipFiltered(shipItemFilter, shipSdcFilter, v) : resetToSummary('ship') }} />
-                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
@@ -771,8 +750,8 @@ export default function SimulationResultsPage() {
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
-                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" />
+                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -785,19 +764,13 @@ export default function SimulationResultsPage() {
                 title="DC Inventory"
                 subtitle="Weekly on-hand inventory at Retailer DCs and Supplier DCs"
                 error={dcInvError} loading={dcInvLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={dcItemFilter} options={allItemOptions}
-                    onChange={v => { setDcItemFilter(v); (v || dcFilter || dcSdcFilter) ? fetchDCInvFiltered(v, dcFilter, dcSdcFilter) : resetToSummary('dc') }} />
-                  <FilterSelect label="Supplier DC" value={dcSdcFilter} options={filteredShipSdcOptions(dcItemFilter, dcFilter)}
-                    onChange={v => { setDcSdcFilter(v); (dcItemFilter || dcFilter || v) ? fetchDCInvFiltered(dcItemFilter, dcFilter, v) : resetToSummary('dc') }} />
-                  <FilterSelect label="Retailer DC" value={dcFilter} options={filteredShipRdcOptions(dcItemFilter, dcSdcFilter)}
-                    onChange={v => { setDcFilter(v); (dcItemFilter || v || dcSdcFilter) ? fetchDCInvFiltered(dcItemFilter, v, dcSdcFilter) : resetToSummary('dc') }} />
+                filters={
                   <ToggleSegment
                     value={dcViewMode}
                     onChange={v => setDcViewMode(v as 'both' | 'rdc_only')}
                     options={[{ value: 'both', label: 'Both' }, { value: 'rdc_only', label: 'Retailer DC only' }]}
                   />
-                </>}
+                }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
@@ -831,7 +804,7 @@ export default function SimulationResultsPage() {
               shipSlice: shipData.slice(0, third),
               kpis: [
                 { label: 'Avg Weekly Sales', value: posData.slice(0, third).length ? `${Math.round(posData.slice(0, third).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.lost_sales_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
+                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
                 { label: 'Avg Fill Rate', value: shipData.slice(0, third).length ? `${(shipData.slice(0, third).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
                 { label: 'Peak On-Hand', value: storeInvData.slice(0, third).length ? `${Math.max(...storeInvData.slice(0, third).map((r: any) => r.on_hand_quantity)).toLocaleString()}` : '—' },
               ],
@@ -848,7 +821,7 @@ export default function SimulationResultsPage() {
               shipSlice: shipData.slice(third, third * 2),
               kpis: [
                 { label: 'Avg Weekly Sales', value: posData.slice(third, third * 2).length ? `${Math.round(posData.slice(third, third * 2).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.lost_sales_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
+                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
                 { label: 'Avg Fill Rate', value: shipData.slice(third, third * 2).length ? `${(shipData.slice(third, third * 2).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
                 { label: 'DC On-Hand Drop', value: storeInvData.slice(third, third * 2).length ? `${Math.round((1 - storeInvData[third * 2 - 1]?.on_hand_quantity / (storeInvData[third]?.on_hand_quantity || 1)) * 100)}%` : '—' },
               ],
@@ -928,9 +901,9 @@ export default function SimulationResultsPage() {
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
-                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                        <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
+                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
+                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
                       </ComposedChart>
                     )}
                   </ResponsiveContainer>

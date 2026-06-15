@@ -96,7 +96,7 @@ export interface SimulationSummary {
     pos_week: string
     demand_qty: number
     sales_qty: number
-    lost_sales_qty: number
+    stockout_qty: number
     sales_amount: number
   }>
   store_inventory: Array<{
@@ -218,6 +218,7 @@ export interface ItemMeta {
   unit_price?: number
   category?: string
   subcategory?: string
+  brand?: string
   velocity_class?: string
 }
 export interface StoreMeta {
@@ -258,7 +259,7 @@ export interface POSRecord {
   pos_week: string
   demand_qty: string
   sales_qty: string
-  lost_sales_qty: string
+  stockout_qty: string
   sales_amount: string
   is_promo_demand: string
 }
