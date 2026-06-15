@@ -17,7 +17,7 @@ export const getAnalyticsMeta = (simulationId: string) =>
 // GET /analytics/{simulation_id}/store-sales?item_id=&store_id=
 export const getStoreSales = (
   simulationId: string,
-  params?: { store_id?: string; item_id?: string }
+  params?: { store_id?: string; item_id?: string; category?: string; subcategory?: string; brand?: string }
 ) =>
   engineClient
     .get<StoreSalesResponse>(`/analytics/${simulationId}/store-sales`, { params })
@@ -26,7 +26,7 @@ export const getStoreSales = (
 // GET /analytics/{simulation_id}/store-inventory?item_id=&store_id=
 export const getStoreInventory = (
   simulationId: string,
-  params?: { store_id?: string; item_id?: string }
+  params?: { store_id?: string; item_id?: string; category?: string; subcategory?: string; brand?: string }
 ) =>
   engineClient
     .get<{ store_inventory: StoreInventoryRecord[] }>(`/analytics/${simulationId}/store-inventory`, { params })
@@ -35,7 +35,7 @@ export const getStoreInventory = (
 // GET /analytics/{simulation_id}/supplier-sales?item_id=&supplier_dc_id=&retailer_dc_id=
 export const getSupplierSales = (
   simulationId: string,
-  params?: { item_id?: string; supplier_dc_id?: string; retailer_dc_id?: string }
+  params?: { item_id?: string; supplier_dc_id?: string; retailer_dc_id?: string; category?: string; subcategory?: string; brand?: string }
 ) =>
   engineClient
     .get<SupplyChainSalesResponse>(`/analytics/${simulationId}/supplier-sales`, { params })
@@ -44,7 +44,7 @@ export const getSupplierSales = (
 // GET /analytics/{simulation_id}/dc-inventory?item_id=&dc_id=&supplier_dc_id=
 export const getDCInventory = (
   simulationId: string,
-  params?: { item_id?: string; dc_id?: string; supplier_dc_id?: string }
+  params?: { item_id?: string; dc_id?: string; supplier_dc_id?: string; category?: string; subcategory?: string; brand?: string }
 ) =>
   engineClient
     .get<UpstreamInventoryResponse>(`/analytics/${simulationId}/dc-inventory`, { params })
