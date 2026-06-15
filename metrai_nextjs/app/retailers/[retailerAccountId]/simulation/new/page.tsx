@@ -37,6 +37,7 @@ interface RunFormValues {
   supplier_in_full_rate: number
   dc_otd_rate: number
   dc_in_full_rate: number
+  disable_promo_decay: boolean
 }
 
 const DEFAULT_FORM: RunFormValues = {
@@ -56,6 +57,7 @@ const DEFAULT_FORM: RunFormValues = {
   supplier_in_full_rate: 0.95,
   dc_otd_rate: 0.95,
   dc_in_full_rate: 0.95,
+  disable_promo_decay: false,
 }
 
 function StepIndicator({ currentStep, totalSteps }: { currentStep: number; totalSteps: number }) {
@@ -194,6 +196,7 @@ export default function NewSimulationPage() {
             supplier_in_full_rate: Number(run.supplier_in_full_rate ?? DEFAULT_FORM.supplier_in_full_rate),
             dc_otd_rate: Number(run.dc_otd_rate ?? DEFAULT_FORM.dc_otd_rate),
             dc_in_full_rate: Number(run.dc_in_full_rate ?? DEFAULT_FORM.dc_in_full_rate),
+            disable_promo_decay: Boolean(run.disable_promo_decay ?? DEFAULT_FORM.disable_promo_decay),
           })
           const entityObj: Record<string, unknown> = {}
           if (run.dcs) entityObj.dcs = run.dcs
@@ -550,10 +553,26 @@ export default function NewSimulationPage() {
             </div>
 
             <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
-              <div className="mb-2">
+              <div className="mb-3">
                 <h3 className="text-sm font-bold text-charcoal-blue-950">Promo Overrides</h3>
                 <p className="text-[10px] text-charcoal-blue-400">Optionally override start date, end date, or demand multiplier for any baseline promo — this run only. Leave empty to use promos as stored.</p>
               </div>
+              <label className="mb-3 flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formValues.disable_promo_decay}
+                  onChange={e => setField('disable_promo_decay', e.target.checked)}
+                  className="h-4 w-4 rounded border-charcoal-blue-300 accent-majorelle-blue-500"
+                />
+                <span className="text-xs font-medium text-charcoal-blue-800">Disable post-promo demand decay</span>
+                <div className="group relative">
+                  <span className="cursor-default select-none text-[9px] text-charcoal-blue-300 hover:text-majorelle-blue-400">ⓘ</span>
+                  <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-lg bg-charcoal-blue-900 px-3 py-2 text-[10px] leading-relaxed text-white opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100">
+                    After a promo ends, demand gradually tapers back to baseline over the next <strong>28 days (4 weeks)</strong> by default — simulating the real-world effect where shoppers stock up during a promo and buy less immediately after. Checking this box removes that tail and demand returns to normal instantly at the end of the promo window.
+                    <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-charcoal-blue-900" />
+                  </div>
+                </div>
+              </label>
               {promoYamlLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <div className="h-5 w-5 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
