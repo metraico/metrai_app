@@ -705,9 +705,9 @@ export default function SimulationResultsPage() {
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<ChartTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
-                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" />
+                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
+                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
+                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -750,8 +750,8 @@ export default function SimulationResultsPage() {
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" />
-                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" />
+                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -901,9 +901,9 @@ export default function SimulationResultsPage() {
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
-                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" />
+                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
+                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
+                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
                       </ComposedChart>
                     )}
                   </ResponsiveContainer>
