@@ -218,6 +218,7 @@ export interface ItemMeta {
   unit_price?: number
   category?: string
   subcategory?: string
+  brand?: string
   velocity_class?: string
 }
 export interface StoreMeta {

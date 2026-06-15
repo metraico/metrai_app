@@ -14,6 +14,8 @@ import {
 } from '@/lib/api/analytics'
 import { getRunConfig } from '@/lib/api/simulation'
 import { useSimulationStore } from '@/lib/store/simulationStore'
+import { useFilterStore } from '@/lib/store/filterStore'
+import { FilterSelect } from '@/components/ui/filter-select'
 import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
@@ -237,27 +239,6 @@ function ToggleSegment({ value, onChange, options }: {
   )
 }
 
-function FilterSelect({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void
-  options: { value: string; label: string }[]
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs font-semibold text-charcoal-blue-500">{label}</span>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          className="w-48 truncate appearance-none rounded-xl border border-charcoal-blue-200 bg-white px-3 py-1.5 pr-7 text-xs font-medium text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none"
-        >
-          <option value="">All</option>
-          {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-charcoal-blue-400">▼</span>
-      </div>
-    </div>
-  )
-}
 
 function ChartModal({ title, subtitle, filters, error, children, onClose }: {
   title: string; subtitle: string; filters?: React.ReactNode
@@ -273,7 +254,7 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {filters}
-            <button onClick={onClose} className="ml-2 rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
+            <button onClick={onClose} className="ml-2 rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
           </div>
         </div>
         {error && <ChartError message={error} />}
@@ -329,6 +310,8 @@ export default function SimulationResultsPage() {
   const simulationId = params.runId as string
   const { cache } = useSimulationStore()
 
+  const { setOptions, setOnApplyGlobalFilters, clearOptions } = useFilterStore()
+
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
@@ -368,12 +351,6 @@ export default function SimulationResultsPage() {
   const [dcViewMode, setDcViewMode]     = useState<'both' | 'rdc_only'>('both')
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
-
-  // ── Global filters ────────────────────────────────────────────────────────
-  const [globalItem, setGlobalItem]   = useState('')
-  const [globalStore, setGlobalStore] = useState('')
-  const [globalSdc, setGlobalSdc]     = useState('')
-  const [globalRdc, setGlobalRdc]     = useState('')
 
   // ── Apply inline summary data ─────────────────────────────────────────────
 
@@ -481,7 +458,7 @@ export default function SimulationResultsPage() {
   }, [cache, simulationId, loadSummary])
 
   const applyGlobalFilters = useCallback((item: string, store: string, sdc: string, rdc: string) => {
-    setGlobalItem(item); setGlobalStore(store); setGlobalSdc(sdc); setGlobalRdc(rdc)
+    useFilterStore.getState().setFilters({ globalItem: item, globalStore: store, globalSdc: sdc, globalRdc: rdc })
     // Broadcast to per-chart filters
     setPosItemFilter(item);     setPosStoreFilter(store)
     setInvItemFilter(item);     setInvStoreFilter(store)
@@ -496,9 +473,11 @@ export default function SimulationResultsPage() {
     else         { resetToSummary('ship'); resetToSummary('dc') }
   }, [fetchPOSFiltered, fetchStoreInvFiltered, fetchShipFiltered, fetchDCInvFiltered, resetToSummary])
 
-  const resetAllFilters = useCallback(() => {
-    applyGlobalFilters('', '', '', '')
-  }, [applyGlobalFilters])
+  // Register applyGlobalFilters with sidebar filterStore; clear on unmount
+  useEffect(() => {
+    setOnApplyGlobalFilters(applyGlobalFilters)
+    return () => clearOptions()
+  }, [applyGlobalFilters, setOnApplyGlobalFilters, clearOptions])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -597,6 +576,58 @@ export default function SimulationResultsPage() {
     return allStoreOptions.filter(o => allowed.has(o.value))
   }
 
+  // Populate sidebar filter panel options whenever meta changes
+  useEffect(() => {
+    if (!meta) return
+    const itemsMeta = meta.items_meta ?? []
+
+    const categoryOptions = [...new Set(itemsMeta.map((m: any) => m.category).filter(Boolean))]
+      .sort().map((v: string) => ({ value: v, label: v }))
+    const subcategoryOptions = [...new Set(itemsMeta.map((m: any) => m.subcategory).filter(Boolean))]
+      .sort().map((v: string) => ({ value: v, label: v }))
+    const brandOptions = [...new Set(itemsMeta.map((m: any) => m.brand).filter(Boolean))]
+      .sort().map((v: string) => ({ value: v, label: v }))
+
+    function filteredItemOptions(category: string, subcategory: string, brand: string) {
+      let items = itemsMeta
+      if (category)    items = items.filter((m: any) => m.category    === category)
+      if (subcategory) items = items.filter((m: any) => m.subcategory === subcategory)
+      if (brand)       items = items.filter((m: any) => m.brand       === brand)
+      return items.map((m: any) => ({ value: m.item_id, label: m.item_description || m.item_name || m.item_code }))
+    }
+
+    function filteredSubcategoryOptions(category: string) {
+      const items = category ? itemsMeta.filter((m: any) => m.category === category) : itemsMeta
+      return [...new Set(items.map((m: any) => m.subcategory).filter(Boolean))]
+        .sort().map((v: string) => ({ value: v, label: v }))
+    }
+
+    function filteredBrandOptions(category: string, subcategory: string) {
+      let items = itemsMeta
+      if (category)    items = items.filter((m: any) => m.category    === category)
+      if (subcategory) items = items.filter((m: any) => m.subcategory === subcategory)
+      return [...new Set(items.map((m: any) => m.brand).filter(Boolean))]
+        .sort().map((v: string) => ({ value: v, label: v }))
+    }
+
+    setOptions({
+      itemOptions: allItemOptions,
+      storeOptions: allStoreOptions,
+      sdcOptions: allSupplierDCOptions,
+      rdcOptions: allRetailerDCOptions,
+      categoryOptions,
+      subcategoryOptions,
+      brandOptions,
+      filteredStoreOptions: (itemId) => filteredStoreOptions(itemId),
+      filteredSdcOptions: (itemId, rdcId) => filteredShipSdcOptions(itemId, rdcId),
+      filteredRdcOptions: (itemId, sdcId) => filteredShipRdcOptions(itemId, sdcId),
+      filteredItemOptions,
+      filteredSubcategoryOptions,
+      filteredBrandOptions,
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta])
+
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
 
   if (pageState === 'loading' || pageState === 'polling') {
@@ -667,26 +698,6 @@ export default function SimulationResultsPage() {
               <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
 
-            {/* Global Filter Bar */}
-            <div className="mb-5 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-4 py-3 flex flex-wrap items-center gap-3">
-              <span className="text-xs font-bold text-majorelle-blue-700 shrink-0">Global Filter</span>
-              <FilterSelect label="Item" value={globalItem} options={allItemOptions}
-                onChange={v => applyGlobalFilters(v, globalStore, globalSdc, globalRdc)} />
-              <FilterSelect label="Store" value={globalStore} options={filteredStoreOptions(globalItem)}
-                onChange={v => applyGlobalFilters(globalItem, v, globalSdc, globalRdc)} />
-              <FilterSelect label="Supplier DC" value={globalSdc} options={filteredShipSdcOptions(globalItem, globalRdc)}
-                onChange={v => applyGlobalFilters(globalItem, globalStore, v, globalRdc)} />
-              <FilterSelect label="Retailer DC" value={globalRdc} options={filteredShipRdcOptions(globalItem, globalSdc)}
-                onChange={v => applyGlobalFilters(globalItem, globalStore, globalSdc, v)} />
-              {(globalItem || globalStore || globalSdc || globalRdc) && (
-                <button
-                  onClick={resetAllFilters}
-                  className="ml-auto text-xs font-semibold text-majorelle-blue-600 hover:text-majorelle-blue-800 underline underline-offset-2 shrink-0"
-                >
-                  Clear all
-                </button>
-              )}
-            </div>
 
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
