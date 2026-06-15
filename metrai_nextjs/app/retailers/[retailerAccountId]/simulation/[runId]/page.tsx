@@ -26,7 +26,7 @@ function aggPOS(pos: any[]) {
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
-      lost: c.lost + Number(r.lost_sales_qty),
+      lost: c.lost + Number(r.stockout_qty),
       revenue: c.revenue + Number(r.sales_amount),
       isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
       promoName: c.promoName || (r.promo_name ?? ''),
@@ -36,7 +36,7 @@ function aggPOS(pos: any[]) {
     week,
     demand_qty: v.demand,
     sales_qty: v.sales,
-    lost_sales_qty: v.lost,
+    stockout_qty: v.lost,
     sales_amount: v.revenue,
     is_promo_week: v.isPromo ? 1 : 0,
     promo_name: v.promoName,
@@ -110,7 +110,7 @@ function aggDCInv(dc: any[], sup: any[]) {
 
 function computeKPIs(pos: any[], shipments: any[]) {
   const totalSales   = pos.reduce((s: number, r: any) => s + Number(r.sales_qty ?? 0), 0)
-  const totalLost    = pos.reduce((s: number, r: any) => s + Number(r.lost_sales_qty ?? 0), 0)
+  const totalLost    = pos.reduce((s: number, r: any) => s + Number(r.stockout_qty ?? 0), 0)
   const totalRevenue = pos.reduce((s: number, r: any) => s + Number(r.sales_amount ?? 0), 0)
   const fillSum      = shipments.reduce((s: number, r: any) => s + Number(r.avg_fill_rate ?? r.fill_rate ?? 0), 0)
   const fillRate     = shipments.length > 0 ? (fillSum / shipments.length) * 100 : 0
@@ -707,7 +707,7 @@ export default function SimulationResultsPage() {
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
                       <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                      <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" />
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -804,7 +804,7 @@ export default function SimulationResultsPage() {
               shipSlice: shipData.slice(0, third),
               kpis: [
                 { label: 'Avg Weekly Sales', value: posData.slice(0, third).length ? `${Math.round(posData.slice(0, third).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.lost_sales_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
+                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
                 { label: 'Avg Fill Rate', value: shipData.slice(0, third).length ? `${(shipData.slice(0, third).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
                 { label: 'Peak On-Hand', value: storeInvData.slice(0, third).length ? `${Math.max(...storeInvData.slice(0, third).map((r: any) => r.on_hand_quantity)).toLocaleString()}` : '—' },
               ],
@@ -821,7 +821,7 @@ export default function SimulationResultsPage() {
               shipSlice: shipData.slice(third, third * 2),
               kpis: [
                 { label: 'Avg Weekly Sales', value: posData.slice(third, third * 2).length ? `${Math.round(posData.slice(third, third * 2).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.lost_sales_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
+                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
                 { label: 'Avg Fill Rate', value: shipData.slice(third, third * 2).length ? `${(shipData.slice(third, third * 2).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
                 { label: 'DC On-Hand Drop', value: storeInvData.slice(third, third * 2).length ? `${Math.round((1 - storeInvData[third * 2 - 1]?.on_hand_quantity / (storeInvData[third]?.on_hand_quantity || 1)) * 100)}%` : '—' },
               ],
@@ -903,7 +903,7 @@ export default function SimulationResultsPage() {
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" />
                         <Bar dataKey="sales_qty" fill="#10b981" name="Sales" />
-                        <Bar dataKey="lost_sales_qty" fill="#ef4444" name="Lost Sales" />
+                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" />
                       </ComposedChart>
                     )}
                   </ResponsiveContainer>
