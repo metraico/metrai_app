@@ -17,7 +17,6 @@ interface FilterState {
   categoryOptions: FilterOption[]
   subcategoryOptions: FilterOption[]
   brandOptions: FilterOption[]
-  // cross-filter helpers passed from simulation page
   filteredStoreOptions: (itemId: string) => FilterOption[]
   filteredSdcOptions: (itemId: string, rdcId: string) => FilterOption[]
   filteredRdcOptions: (itemId: string, sdcId: string) => FilterOption[]
@@ -44,12 +43,9 @@ interface FilterState {
   }) => void
   resetFilters: () => void
   clearOptions: () => void
-  // callback set by simulation page so sidebar can trigger chart refetch
-  onApplyGlobalFilters: ((item: string, store: string, sdc: string, rdc: string) => void) | null
-  setOnApplyGlobalFilters: (fn: (item: string, store: string, sdc: string, rdc: string) => void) => void
 }
 
-export const useFilterStore = create<FilterState>((set, get) => ({
+export const useFilterStore = create<FilterState>((set) => ({
   globalItem: '',
   globalStore: '',
   globalSdc: '',
@@ -70,20 +66,15 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   filteredItemOptions: () => [],
   filteredSubcategoryOptions: () => [],
   filteredBrandOptions: () => [],
-  onApplyGlobalFilters: null,
 
   setFilters: (partial) => set(partial),
 
   setOptions: (opts) => set(opts),
 
-  resetFilters: () => {
-    const fn = get().onApplyGlobalFilters
-    if (fn) fn('', '', '', '')
-    set({
-      globalItem: '', globalStore: '', globalSdc: '', globalRdc: '',
-      globalCategory: '', globalSubcategory: '', globalBrand: '',
-    })
-  },
+  resetFilters: () => set({
+    globalItem: '', globalStore: '', globalSdc: '', globalRdc: '',
+    globalCategory: '', globalSubcategory: '', globalBrand: '',
+  }),
 
   clearOptions: () => set({
     itemOptions: [],
@@ -99,10 +90,7 @@ export const useFilterStore = create<FilterState>((set, get) => ({
     filteredItemOptions: () => [],
     filteredSubcategoryOptions: () => [],
     filteredBrandOptions: () => [],
-    onApplyGlobalFilters: null,
     globalItem: '', globalStore: '', globalSdc: '', globalRdc: '',
     globalCategory: '', globalSubcategory: '', globalBrand: '',
   }),
-
-  setOnApplyGlobalFilters: (fn) => set({ onApplyGlobalFilters: fn }),
 }))

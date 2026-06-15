@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
@@ -15,7 +15,6 @@ import {
 import { getRunConfig } from '@/lib/api/simulation'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
-import { FilterSelect } from '@/components/ui/filter-select'
 import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
@@ -310,7 +309,7 @@ export default function SimulationResultsPage() {
   const simulationId = params.runId as string
   const { cache } = useSimulationStore()
 
-  const { setOptions, setOnApplyGlobalFilters, clearOptions } = useFilterStore()
+  const { setOptions, clearOptions, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand } = useFilterStore()
 
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
@@ -323,32 +322,22 @@ export default function SimulationResultsPage() {
   const [posData, setPosData] = useState<any[]>([])
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
-  const [posItemFilter, setPosItemFilter] = useState('')
-  const [posStoreFilter, setPosStoreFilter] = useState('')
 
   // Chart 2 — Store inventory
   const [storeInvData, setStoreInvData] = useState<any[]>([])
   const [storeInvError, setStoreInvError] = useState('')
   const [storeInvLoading, setStoreInvLoading] = useState(false)
-  const [invItemFilter, setInvItemFilter] = useState('')
-  const [invStoreFilter, setInvStoreFilter] = useState('')
 
   // Chart 3 — Shipments
   const [shipData, setShipData] = useState<any[]>([])
   const [shipError, setShipError] = useState('')
   const [shipLoading, setShipLoading] = useState(false)
-  const [shipItemFilter, setShipItemFilter] = useState('')
-  const [shipSdcFilter, setShipSdcFilter]   = useState('')
-  const [shipRdcFilter, setShipRdcFilter]   = useState('')
 
   // Chart 4 — DC inventory
   const [dcInvData, setDcInvData] = useState<any[]>([])
   const [dcInvError, setDcInvError] = useState('')
   const [dcInvLoading, setDcInvLoading] = useState(false)
-  const [dcItemFilter, setDcItemFilter] = useState('')
-  const [dcFilter, setDcFilter] = useState('')
-  const [dcSdcFilter, setDcSdcFilter]   = useState('')
-  const [dcViewMode, setDcViewMode]     = useState<'both' | 'rdc_only'>('both')
+  const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -399,46 +388,52 @@ export default function SimulationResultsPage() {
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
-  const fetchPOSFiltered = useCallback(async (itemId: string, storeId: string) => {
+  const fetchPOSFiltered = useCallback(async (itemId: string, storeId: string, category: string, subcategory: string, brand: string) => {
     setPosLoading(true); setPosError('')
     try {
-      const p = { item_id: itemId || undefined, store_id: storeId || undefined }
+      const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
       const data = await getStoreSales(simulationId, p)
       setPosData(aggPOS(data.weekly_pos ?? []))
     } catch (e: any) { setPosError(e?.message ?? 'Failed') }
     finally { setPosLoading(false) }
   }, [simulationId])
 
-  const fetchStoreInvFiltered = useCallback(async (itemId: string, storeId: string) => {
+  const fetchStoreInvFiltered = useCallback(async (itemId: string, storeId: string, category: string, subcategory: string, brand: string) => {
     setStoreInvLoading(true); setStoreInvError('')
     try {
-      const p = { item_id: itemId || undefined, store_id: storeId || undefined }
+      const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
       const data = await getStoreInventory(simulationId, p)
       setStoreInvData(aggStoreInv(data.store_inventory ?? []))
     } catch (e: any) { setStoreInvError(e?.message ?? 'Failed') }
     finally { setStoreInvLoading(false) }
   }, [simulationId])
 
-  const fetchShipFiltered = useCallback(async (itemId: string, sdcId: string, rdcId: string) => {
+  const fetchShipFiltered = useCallback(async (itemId: string, sdcId: string, rdcId: string, category: string, subcategory: string, brand: string) => {
     setShipLoading(true); setShipError('')
     try {
       const data = await getSupplierSales(simulationId, {
         item_id:          itemId || undefined,
         supplier_dc_id:   sdcId  || undefined,
         retailer_dc_id:   rdcId  || undefined,
+        category:         category  || undefined,
+        subcategory:      subcategory || undefined,
+        brand:            brand    || undefined,
       })
       setShipData(aggShipments(data.weekly_shipments ?? []))
     } catch (e: any) { setShipError(e?.message ?? 'Failed') }
     finally { setShipLoading(false) }
   }, [simulationId])
 
-  const fetchDCInvFiltered = useCallback(async (itemId: string, rdcId: string, sdcId: string) => {
+  const fetchDCInvFiltered = useCallback(async (itemId: string, rdcId: string, sdcId: string, category: string, subcategory: string, brand: string) => {
     setDcInvLoading(true); setDcInvError('')
     try {
       const data = await getDCInventory(simulationId, {
         item_id:        itemId || undefined,
         dc_id:          rdcId  || undefined,
         supplier_dc_id: sdcId  || undefined,
+        category:       category  || undefined,
+        subcategory:    subcategory || undefined,
+        brand:          brand    || undefined,
       })
       setDcInvData(aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? []))
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
@@ -457,27 +452,25 @@ export default function SimulationResultsPage() {
     }
   }, [cache, simulationId, loadSummary])
 
-  const applyGlobalFilters = useCallback((item: string, store: string, sdc: string, rdc: string) => {
-    useFilterStore.getState().setFilters({ globalItem: item, globalStore: store, globalSdc: sdc, globalRdc: rdc })
-    // Broadcast to per-chart filters
-    setPosItemFilter(item);     setPosStoreFilter(store)
-    setInvItemFilter(item);     setInvStoreFilter(store)
-    setShipItemFilter(item);    setShipSdcFilter(sdc);   setShipRdcFilter(rdc)
-    setDcItemFilter(item);      setDcSdcFilter(sdc);     setDcFilter(rdc)
-    // Re-fetch each chart
-    const anyPos  = !!(item || store)
-    const anyShip = !!(item || sdc || rdc)
-    if (anyPos)  { fetchPOSFiltered(item, store); fetchStoreInvFiltered(item, store) }
-    else         { resetToSummary('pos'); resetToSummary('inv') }
-    if (anyShip) { fetchShipFiltered(item, sdc, rdc); fetchDCInvFiltered(item, rdc, sdc) }
-    else         { resetToSummary('ship'); resetToSummary('dc') }
-  }, [fetchPOSFiltered, fetchStoreInvFiltered, fetchShipFiltered, fetchDCInvFiltered, resetToSummary])
+  // Clear sidebar options on unmount
+  useEffect(() => () => clearOptions(), [clearOptions])
 
-  // Register applyGlobalFilters with sidebar filterStore; clear on unmount
+  // React to any sidebar filter change and re-fetch affected charts.
+  // Category/Subcategory/Brand narrow the item list but the backend only takes item_id,
+  // so when those change we still call the API with the current item (or reset to summary).
+  // Skip the initial mount run (all filters are empty on first render).
+  const filterMountedRef = useRef(false)
   useEffect(() => {
-    setOnApplyGlobalFilters(applyGlobalFilters)
-    return () => clearOptions()
-  }, [applyGlobalFilters, setOnApplyGlobalFilters, clearOptions])
+    if (!filterMountedRef.current) { filterMountedRef.current = true; return }
+    if (pageState !== 'ready') return
+    const anyPos  = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
+    const anyShip = !!(globalItem || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
+    if (anyPos)  { fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand); fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand) }
+    else         { resetToSummary('pos'); resetToSummary('inv') }
+    if (anyShip) { fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand); fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand) }
+    else         { resetToSummary('ship'); resetToSummary('dc') }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -565,11 +558,6 @@ export default function SimulationResultsPage() {
     return opts
   }
 
-  function filteredItemOptions(activeStoreId: string) {
-    if (!activeStoreId) return allItemOptions
-    const allowed = new Set(storeItemMap[activeStoreId] ?? [])
-    return allItemOptions.filter(o => allowed.has(o.value))
-  }
   function filteredStoreOptions(activeItemId: string) {
     if (!activeItemId) return allStoreOptions
     const allowed = new Set(itemStoreMap[activeItemId] ?? [])
@@ -706,12 +694,6 @@ export default function SimulationResultsPage() {
                 title="POS — Store Sales"
                 subtitle="Weekly demand, sales and lost sales across all stores"
                 error={posError} loading={posLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={posItemFilter} options={filteredItemOptions(posStoreFilter)}
-                    onChange={v => { setPosItemFilter(v); (v || posStoreFilter) ? fetchPOSFiltered(v, posStoreFilter) : resetToSummary('pos') }} />
-                  <FilterSelect label="Store" value={posStoreFilter} options={filteredStoreOptions(posItemFilter)}
-                    onChange={v => { setPosStoreFilter(v); (posItemFilter || v) ? fetchPOSFiltered(posItemFilter, v) : resetToSummary('pos') }} />
-                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
@@ -736,12 +718,6 @@ export default function SimulationResultsPage() {
                 title="Store Inventory"
                 subtitle="Weekly on-hand, available and on-order inventory at stores"
                 error={storeInvError} loading={storeInvLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={invItemFilter} options={filteredItemOptions(invStoreFilter)}
-                    onChange={v => { setInvItemFilter(v); (v || invStoreFilter) ? fetchStoreInvFiltered(v, invStoreFilter) : resetToSummary('inv') }} />
-                  <FilterSelect label="Store" value={invStoreFilter} options={filteredStoreOptions(invItemFilter)}
-                    onChange={v => { setInvStoreFilter(v); (invItemFilter || v) ? fetchStoreInvFiltered(invItemFilter, v) : resetToSummary('inv') }} />
-                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={storeInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
@@ -762,14 +738,6 @@ export default function SimulationResultsPage() {
                 title="Supply Chain Shipments"
                 subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
                 error={shipError} loading={shipLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={shipItemFilter} options={allItemOptions}
-                    onChange={v => { setShipItemFilter(v); (v || shipSdcFilter || shipRdcFilter) ? fetchShipFiltered(v, shipSdcFilter, shipRdcFilter) : resetToSummary('ship') }} />
-                  <FilterSelect label="Supplier DC" value={shipSdcFilter} options={filteredShipSdcOptions(shipItemFilter, shipRdcFilter)}
-                    onChange={v => { setShipSdcFilter(v); (shipItemFilter || v || shipRdcFilter) ? fetchShipFiltered(shipItemFilter, v, shipRdcFilter) : resetToSummary('ship') }} />
-                  <FilterSelect label="Retailer DC" value={shipRdcFilter} options={filteredShipRdcOptions(shipItemFilter, shipSdcFilter)}
-                    onChange={v => { setShipRdcFilter(v); (shipItemFilter || shipSdcFilter || v) ? fetchShipFiltered(shipItemFilter, shipSdcFilter, v) : resetToSummary('ship') }} />
-                </>}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
@@ -796,19 +764,13 @@ export default function SimulationResultsPage() {
                 title="DC Inventory"
                 subtitle="Weekly on-hand inventory at Retailer DCs and Supplier DCs"
                 error={dcInvError} loading={dcInvLoading}
-                filters={<>
-                  <FilterSelect label="Item" value={dcItemFilter} options={allItemOptions}
-                    onChange={v => { setDcItemFilter(v); (v || dcFilter || dcSdcFilter) ? fetchDCInvFiltered(v, dcFilter, dcSdcFilter) : resetToSummary('dc') }} />
-                  <FilterSelect label="Supplier DC" value={dcSdcFilter} options={filteredShipSdcOptions(dcItemFilter, dcFilter)}
-                    onChange={v => { setDcSdcFilter(v); (dcItemFilter || dcFilter || v) ? fetchDCInvFiltered(dcItemFilter, dcFilter, v) : resetToSummary('dc') }} />
-                  <FilterSelect label="Retailer DC" value={dcFilter} options={filteredShipRdcOptions(dcItemFilter, dcSdcFilter)}
-                    onChange={v => { setDcFilter(v); (dcItemFilter || v || dcSdcFilter) ? fetchDCInvFiltered(dcItemFilter, v, dcSdcFilter) : resetToSummary('dc') }} />
+                filters={
                   <ToggleSegment
                     value={dcViewMode}
                     onChange={v => setDcViewMode(v as 'both' | 'rdc_only')}
                     options={[{ value: 'both', label: 'Both' }, { value: 'rdc_only', label: 'Retailer DC only' }]}
                   />
-                </>}
+                }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>

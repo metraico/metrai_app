@@ -20,7 +20,7 @@ export function Sidebar() {
     categoryOptions, subcategoryOptions, brandOptions,
     filteredStoreOptions, filteredSdcOptions, filteredRdcOptions,
     filteredItemOptions, filteredSubcategoryOptions, filteredBrandOptions,
-    onApplyGlobalFilters, resetFilters, setFilters,
+    resetFilters, setFilters,
   } = useFilterStore()
 
   const retailerAccountId = params.retailerAccountId as string
@@ -46,18 +46,23 @@ export function Sidebar() {
 
   const applyFilter = (item: string, store: string, sdc: string, rdc: string) => {
     setFilters({ globalItem: item, globalStore: store, globalSdc: sdc, globalRdc: rdc })
-    onApplyGlobalFilters?.(item, store, sdc, rdc)
   }
 
-  // When a meta-filter changes, clear item selection if it no longer matches, then re-fetch
+  // When category/subcategory/brand changes, update meta fields and clear
+  // the item selection if it no longer belongs to the new filter set.
   const applyMetaFilter = (category: string, subcategory: string, brand: string) => {
-    setFilters({ globalCategory: category, globalSubcategory: subcategory, globalBrand: brand })
     const validItems = filteredItemOptions(category, subcategory, brand)
     const validIds = new Set(validItems.map(o => o.value))
     const newItem = globalItem && validIds.has(globalItem) ? globalItem : ''
-    if (newItem !== globalItem) {
-      applyFilter(newItem, globalStore, globalSdc, globalRdc)
-    }
+    setFilters({
+      globalCategory: category,
+      globalSubcategory: subcategory,
+      globalBrand: brand,
+      globalItem: newItem,    // cleared or kept — either way triggers the page effect
+      globalStore: newItem ? globalStore : '',
+      globalSdc:   newItem ? globalSdc   : '',
+      globalRdc:   newItem ? globalRdc   : '',
+    })
   }
 
   const navItems = [
