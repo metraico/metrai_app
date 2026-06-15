@@ -20,6 +20,44 @@ const PROMO_SCENARIO_TEMPLATE = `scenario:
       factor: 1.5
 `
 
+interface RunFormValues {
+  simulation_name: string
+  notes: string
+  start_date: string
+  end_date: string
+  seed: number
+  store_target_wos: number
+  store_initial_wos: number
+  retailer_dc_target_wos: number
+  retailer_dc_initial_wos: number
+  supplier_dc_initial_wos: number
+  supplier_dc_to_retailer_dc_lead_weeks: number
+  retailer_dc_to_store_lead_weeks: number
+  supplier_otd_rate: number
+  supplier_in_full_rate: number
+  dc_otd_rate: number
+  dc_in_full_rate: number
+}
+
+const DEFAULT_FORM: RunFormValues = {
+  simulation_name: 'New Simulation Run',
+  notes: '',
+  start_date: '2024-01-01',
+  end_date: '2024-12-31',
+  seed: 42,
+  store_target_wos: 2,
+  store_initial_wos: 2,
+  retailer_dc_target_wos: 4,
+  retailer_dc_initial_wos: 4,
+  supplier_dc_initial_wos: 4,
+  supplier_dc_to_retailer_dc_lead_weeks: 1,
+  retailer_dc_to_store_lead_weeks: 1,
+  supplier_otd_rate: 0.95,
+  supplier_in_full_rate: 0.95,
+  dc_otd_rate: 0.95,
+  dc_in_full_rate: 0.95,
+}
+
 function StepIndicator({ currentStep, totalSteps }: { currentStep: number; totalSteps: number }) {
   return (
     <div className="mb-5 flex items-center justify-between">
@@ -45,11 +83,13 @@ function YamlEditor({
   onChange,
   label,
   description,
+  rows = 20,
 }: {
   value: string
   onChange: (v: string) => void
   label: string
   description: string
+  rows?: number
 }) {
   return (
     <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
@@ -64,12 +104,42 @@ function YamlEditor({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 px-3 py-2 font-mono text-xs text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none focus:ring-1 focus:ring-majorelle-blue-500"
-        rows={20}
+        rows={rows}
         spellCheck={false}
       />
     </div>
   )
 }
+
+function FormField({
+  label,
+  info,
+  children,
+}: {
+  label: string
+  info?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">{label}</label>
+        {info && (
+          <div className="group relative">
+            <span className="cursor-default select-none text-[9px] text-charcoal-blue-300 hover:text-majorelle-blue-400">ⓘ</span>
+            <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 w-52 -translate-x-1/2 rounded-lg bg-charcoal-blue-900 px-3 py-2 text-[10px] leading-relaxed text-white opacity-0 shadow-xl transition-opacity duration-150 group-hover:opacity-100">
+              {info}
+              <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-charcoal-blue-900" />
+            </div>
+          </div>
+        )}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+const inputCls = 'w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50/60 px-2.5 py-1.5 text-xs font-medium text-charcoal-blue-900 placeholder:text-charcoal-blue-300 transition-all focus:border-majorelle-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-majorelle-blue-100'
 
 type RunStage =
   | { type: 'idle' }
@@ -85,7 +155,8 @@ export default function NewSimulationPage() {
 
   const { setCache } = useSimulationStore()
   const [currentStep, setCurrentStep] = useState(0)
-  const [runYaml, setRunYaml] = useState('')
+  const [formValues, setFormValues] = useState<RunFormValues>(DEFAULT_FORM)
+  const [entityYaml, setEntityYaml] = useState('')
   const [selectedScenario, setSelectedScenario] = useState<ScenarioId>('no_scenario')
   const [scenarioYaml, setScenarioYaml] = useState(PROMO_SCENARIO_TEMPLATE)
   const [stage, setStage] = useState<RunStage>({ type: 'idle' })
@@ -97,42 +168,79 @@ export default function NewSimulationPage() {
   const [promoYamlLoading, setPromoYamlLoading] = useState(false)
   const [promoYamlValid, setPromoYamlValid] = useState<boolean | null>(null)
 
+  const setField = <K extends keyof RunFormValues>(key: K, value: RunFormValues[K]) =>
+    setFormValues(prev => ({ ...prev, [key]: value }))
+
   useEffect(() => {
     getRunYamlTemplate(routeAccountId)
-      .then(({ yaml: tpl }) => setRunYaml(tpl))
+      .then(({ yaml: tpl }) => {
+        try {
+          const parsed = yaml.load(tpl) as { run?: Record<string, unknown> }
+          const run = parsed?.run ?? {}
+          setFormValues({
+            simulation_name: String(run.simulation_name ?? DEFAULT_FORM.simulation_name),
+            notes: String(run.notes ?? ''),
+            start_date: String(run.start_date ?? DEFAULT_FORM.start_date),
+            end_date: String(run.end_date ?? DEFAULT_FORM.end_date),
+            seed: Number(run.seed ?? DEFAULT_FORM.seed),
+            store_target_wos: Number(run.store_target_wos ?? DEFAULT_FORM.store_target_wos),
+            store_initial_wos: Number(run.store_initial_wos ?? DEFAULT_FORM.store_initial_wos),
+            retailer_dc_target_wos: Number(run.retailer_dc_target_wos ?? DEFAULT_FORM.retailer_dc_target_wos),
+            retailer_dc_initial_wos: Number(run.retailer_dc_initial_wos ?? DEFAULT_FORM.retailer_dc_initial_wos),
+            supplier_dc_initial_wos: Number(run.supplier_dc_initial_wos ?? DEFAULT_FORM.supplier_dc_initial_wos),
+            supplier_dc_to_retailer_dc_lead_weeks: Number(run.supplier_dc_to_retailer_dc_lead_weeks ?? DEFAULT_FORM.supplier_dc_to_retailer_dc_lead_weeks),
+            retailer_dc_to_store_lead_weeks: Number(run.retailer_dc_to_store_lead_weeks ?? DEFAULT_FORM.retailer_dc_to_store_lead_weeks),
+            supplier_otd_rate: Number(run.supplier_otd_rate ?? DEFAULT_FORM.supplier_otd_rate),
+            supplier_in_full_rate: Number(run.supplier_in_full_rate ?? DEFAULT_FORM.supplier_in_full_rate),
+            dc_otd_rate: Number(run.dc_otd_rate ?? DEFAULT_FORM.dc_otd_rate),
+            dc_in_full_rate: Number(run.dc_in_full_rate ?? DEFAULT_FORM.dc_in_full_rate),
+          })
+          const entityObj: Record<string, unknown> = {}
+          if (run.dcs) entityObj.dcs = run.dcs
+          if (run.suppliers) entityObj.suppliers = run.suppliers
+          if (run.stores) entityObj.stores = run.stores
+          if (Object.keys(entityObj).length > 0) setEntityYaml(yaml.dump(entityObj))
+        } catch {
+          // template parse failed — keep defaults
+        }
+      })
       .catch((err) => setStage({ type: 'error', message: `Failed to load template: ${err?.message ?? err}` }))
       .finally(() => setTemplateLoading(false))
   }, [])
 
-  // Steps: 0=Config, 1=Promo Preview+Overrides, 2=Scenario, 3=Scenario YAML (any scenario except no_scenario), 4=Review & Run
   const hasScenario = selectedScenario !== 'no_scenario'
   const isRunning = stage.type === 'generating_demand' || stage.type === 'running_simulation'
 
-  // Visual step indicator: skip step 3 when no scenario selected
   const totalVisualSteps = hasScenario ? 5 : 4
   const visualStep = (hasScenario || currentStep < 3) ? currentStep : currentStep - 1
 
-  const parseRunParams = (): { start_date: string; end_date: string; seed: number } | null => {
-    try {
-      const parsed = yaml.load(runYaml) as { run?: Record<string, unknown> }
-      const run = parsed?.run
-      if (!run) return null
-      return {
-        start_date: String(run.start_date ?? ''),
-        end_date: String(run.end_date ?? ''),
-        seed: Number(run.seed ?? 42),
-      }
-    } catch {
-      return null
+  const parseRunParams = () => ({
+    start_date: formValues.start_date,
+    end_date: formValues.end_date,
+    seed: formValues.seed,
+  })
+
+  const buildFullYaml = (): string => {
+    const accountId = routeAccountId || retailerAccountId
+    const runBlock: Record<string, unknown> = {
+      retailer_account_id: accountId,
+      ...(userId ? { user_id: userId } : {}),
+      ...formValues,
     }
+    try {
+      const entity = yaml.load(entityYaml) as Record<string, unknown>
+      if (entity?.dcs) runBlock.dcs = entity.dcs
+      if (entity?.suppliers) runBlock.suppliers = entity.suppliers
+      if (entity?.stores) runBlock.stores = entity.stores
+    } catch { /* invalid entity YAML — skip entity blocks */ }
+    return yaml.dump({ run: runBlock })
   }
 
   const handleNext = () => {
     if (currentStep === 0) {
-      // Step 0 → 1: fetch promo preview + overrides as we enter step 1
       const runParams = parseRunParams()
       setCurrentStep(1)
-      if (runParams?.start_date && runParams?.end_date) {
+      if (runParams.start_date && runParams.end_date) {
         setPromoPreviewLoading(true)
         getSimulatePreview(routeAccountId, runParams.start_date, runParams.end_date)
           .then(setPromoPreview).catch(() => {}).finally(() => setPromoPreviewLoading(false))
@@ -143,7 +251,6 @@ export default function NewSimulationPage() {
         }
       }
     } else if (currentStep === 2) {
-      // Step 2 → 3 (scenario YAML) if any scenario selected, else skip to step 4 (review)
       setCurrentStep(hasScenario ? 3 : 4)
     } else {
       setCurrentStep(s => s + 1)
@@ -153,7 +260,6 @@ export default function NewSimulationPage() {
   const handlePrev = () => {
     setStage({ type: 'idle' })
     if (currentStep === 4 && !hasScenario) {
-      // skipped step 3, go back to step 2
       setCurrentStep(2)
     } else {
       setCurrentStep(s => s - 1)
@@ -161,40 +267,26 @@ export default function NewSimulationPage() {
   }
 
   const handleRun = async () => {
-    const runParams = parseRunParams()
-    if (!runParams?.start_date || !runParams?.end_date) {
-      setStage({ type: 'error', message: 'Could not parse start_date, end_date, or seed from YAML.' })
+    const { start_date, end_date } = parseRunParams()
+    if (!start_date || !end_date) {
+      setStage({ type: 'error', message: 'Start date and end date are required.' })
       return
     }
-
     const accountId = routeAccountId || retailerAccountId
     if (!accountId) {
       setStage({ type: 'error', message: 'No retailer account selected.' })
       return
     }
 
-    // Inject retailer_account_id and user_id into YAML top level
-    let finalYaml = runYaml
-    try {
-      const parsed = yaml.load(runYaml) as Record<string, unknown>
-      parsed.retailer_account_id = accountId
-      if (userId) parsed.user_id = userId
-      finalYaml = yaml.dump(parsed)
-    } catch {
-      // keep original yaml if parse fails
-    }
-
+    const finalYaml = buildFullYaml()
     const combinedYaml = hasScenario ? `${finalYaml.trimEnd()}\n\n${scenarioYaml}` : finalYaml
 
     try {
-      // /simulate handles demand generation + simulation inline — no separate steps needed
       setStage({ type: 'running_simulation', message: 'Running simulation…' })
       const result = await runSimulation(combinedYaml, promoYaml)
       const { simulation_id, summary } = result
-
-      const simName = (yaml.load(runYaml) as any)?.run?.simulation_name ?? 'Simulation Results'
+      const simName = formValues.simulation_name || 'Simulation Results'
       if (summary) setCache({ simulationId: simulation_id, simulationName: simName, summary })
-
       router.push(`/retailers/${routeAccountId}/simulation/${simulation_id}`)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'An error occurred.'
@@ -212,22 +304,181 @@ export default function NewSimulationPage() {
           <p className="text-xs font-medium text-charcoal-blue-400">
             Configure your simulation parameters and run it
           </p>
+          <div className="mt-2 inline-flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-charcoal-blue-400">Account</span>
+            <span className="font-mono text-xs font-bold text-charcoal-blue-700">{routeAccountId || retailerAccountId}</span>
+          </div>
         </div>
 
         <StepIndicator currentStep={visualStep} totalSteps={totalVisualSteps} />
 
+        {/* Step 0 — Simulation Configuration form */}
         {currentStep === 0 && (
           <div className="mb-5">
             {templateLoading
               ? <div className="flex items-center justify-center py-16"><div className="h-6 w-6 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" /></div>
-              : <YamlEditor value={runYaml} onChange={setRunYaml} label="Simulation Configuration" description="Dates, seed, WOS targets, DC/supplier/store overrides" />}
+              : (
+                <div className="space-y-3">
+
+                  {/* Main card */}
+                  <div className="overflow-hidden rounded-xl border border-charcoal-blue-100 bg-white shadow-sm">
+
+                    {/* Simulation */}
+                    <div className="px-4 py-3">
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <span className="h-3 w-0.5 rounded-full bg-majorelle-blue-500" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Simulation</span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-2">
+                        <FormField label="Name">
+                          <input type="text" value={formValues.simulation_name}
+                            onChange={e => setField('simulation_name', e.target.value)}
+                            className={inputCls} placeholder="New Simulation Run" />
+                        </FormField>
+                        <FormField label="Notes">
+                          <input type="text" value={formValues.notes}
+                            onChange={e => setField('notes', e.target.value)}
+                            className={inputCls} placeholder="Optional" />
+                        </FormField>
+                        <FormField label="Start Date">
+                          <input type="date" value={formValues.start_date}
+                            onChange={e => setField('start_date', e.target.value)}
+                            className={inputCls} />
+                        </FormField>
+                        <FormField label="End Date">
+                          <input type="date" value={formValues.end_date}
+                            onChange={e => setField('end_date', e.target.value)}
+                            className={inputCls} />
+                        </FormField>
+                        <FormField label="Seed">
+                          <input type="number" value={formValues.seed}
+                            onChange={e => setField('seed', Number(e.target.value))}
+                            className={inputCls} />
+                        </FormField>
+                      </div>
+                    </div>
+
+                    <div className="mx-4 border-t border-charcoal-blue-100" />
+
+                    {/* Supplier DC */}
+                    <div className="px-4 py-3">
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <span className="h-3 w-0.5 rounded-full bg-majorelle-blue-400" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Supplier DC</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        <FormField label="Initial WOS" info="Opening weeks of supply for all Supplier DCs. Range: 1 – 12">
+                          <input type="number" value={formValues.supplier_dc_initial_wos}
+                            onChange={e => setField('supplier_dc_initial_wos', Number(e.target.value))}
+                            className={inputCls} min={1} max={12} step={1} />
+                        </FormField>
+                        <FormField label="Lead → Retail DC" info="Transit time in weeks from Supplier DC to Retailer DC. Used to schedule inbound PO receipts.">
+                          <input type="number" value={formValues.supplier_dc_to_retailer_dc_lead_weeks}
+                            onChange={e => setField('supplier_dc_to_retailer_dc_lead_weeks', Number(e.target.value))}
+                            className={inputCls} min={1} max={12} step={1} />
+                        </FormField>
+                        <FormField label="OTD Rate" info="On-Time Delivery rate — probability a supplier shipment arrives by the expected delivery date. Range: 0.0 – 1.0">
+                          <input type="number" value={formValues.supplier_otd_rate}
+                            onChange={e => setField('supplier_otd_rate', Number(e.target.value))}
+                            className={inputCls} min={0} max={1} step={0.01} />
+                        </FormField>
+                        <FormField label="In-Full Rate" info="In-Full rate — probability the supplier delivers the complete ordered quantity. Range: 0.5 – 1.0">
+                          <input type="number" value={formValues.supplier_in_full_rate}
+                            onChange={e => setField('supplier_in_full_rate', Number(e.target.value))}
+                            className={inputCls} min={0.5} max={1} step={0.01} />
+                        </FormField>
+                      </div>
+                    </div>
+
+                    <div className="mx-4 border-t border-charcoal-blue-100" />
+
+                    {/* Retail DC */}
+                    <div className="px-4 py-3">
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <span className="h-3 w-0.5 rounded-full bg-emerald-500" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Retail DC</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        <FormField label="Target WOS" info="Target weeks of supply for all Retailer DCs. Range: 1 – 12">
+                          <input type="number" value={formValues.retailer_dc_target_wos}
+                            onChange={e => setField('retailer_dc_target_wos', Number(e.target.value))}
+                            className={inputCls} min={1} max={12} step={1} />
+                        </FormField>
+                        <FormField label="Initial WOS" info="Opening weeks of supply for all Retail DCs at simulation start. Range: 1 – 12">
+                          <input type="number" value={formValues.retailer_dc_initial_wos}
+                            onChange={e => setField('retailer_dc_initial_wos', Number(e.target.value))}
+                            className={inputCls} min={1} max={12} step={1} />
+                        </FormField>
+                        <FormField label="Lead → Store" info="Transit time in weeks from Retailer DC to store. Used to schedule store replenishment receipts.">
+                          <input type="number" value={formValues.retailer_dc_to_store_lead_weeks}
+                            onChange={e => setField('retailer_dc_to_store_lead_weeks', Number(e.target.value))}
+                            className={inputCls} min={1} max={12} step={1} />
+                        </FormField>
+                        <FormField label="OTD Rate" info="On-Time Delivery rate — probability a DC shipment arrives at the store by the expected date. Range: 0.0 – 1.0">
+                          <input type="number" value={formValues.dc_otd_rate}
+                            onChange={e => setField('dc_otd_rate', Number(e.target.value))}
+                            className={inputCls} min={0} max={1} step={0.01} />
+                        </FormField>
+                        <FormField label="In-Full Rate" info="In-Full rate — probability a DC delivers the complete ordered quantity to stores. Range: 0.7 – 1.0">
+                          <input type="number" value={formValues.dc_in_full_rate}
+                            onChange={e => setField('dc_in_full_rate', Number(e.target.value))}
+                            className={inputCls} min={0.7} max={1} step={0.01} />
+                        </FormField>
+                      </div>
+                    </div>
+
+                    <div className="mx-4 border-t border-charcoal-blue-100" />
+
+                    {/* Store */}
+                    <div className="px-4 py-3">
+                      <div className="mb-2.5 flex items-center gap-2">
+                        <span className="h-3 w-0.5 rounded-full bg-amber-400" />
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-amber-600">Store</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        <FormField label="Target WOS" info="Store replenishment target in weeks of supply. Stores order when inventory falls below this level. Range: 1 – 8">
+                          <input type="number" value={formValues.store_target_wos}
+                            onChange={e => setField('store_target_wos', Number(e.target.value))}
+                            className={inputCls} min={1} max={8} step={1} />
+                        </FormField>
+                        <FormField label="Initial WOS" info="Opening weeks of supply for all stores at simulation start. Range: 1 – 8">
+                          <input type="number" value={formValues.store_initial_wos}
+                            onChange={e => setField('store_initial_wos', Number(e.target.value))}
+                            className={inputCls} min={1} max={8} step={1} />
+                        </FormField>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Entity overrides */}
+                  <div className="overflow-hidden rounded-xl border border-charcoal-blue-100 bg-white shadow-sm">
+                    <div className="flex items-center gap-2 border-b border-charcoal-blue-100 bg-charcoal-blue-50 px-4 py-2">
+                      <Code size={12} className="text-charcoal-blue-400" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-charcoal-blue-500">Entity Overrides</span>
+                      <span className="ml-auto text-[9px] text-charcoal-blue-400">dcs · suppliers · stores</span>
+                    </div>
+                    <textarea
+                      value={entityYaml}
+                      onChange={e => setEntityYaml(e.target.value)}
+                      className="w-full bg-white px-4 py-3 font-mono text-xs text-charcoal-blue-950 focus:outline-none"
+                      rows={12}
+                      spellCheck={false}
+                      placeholder="# dcs:\n#   DC_EAST:\n#     otd_rate: 0.95"
+                    />
+                  </div>
+                </div>
+              )
+            }
           </div>
         )}
 
         {/* Step 1 — Promo Preview + Promo Overrides */}
         {currentStep === 1 && (
           <div className="mb-5 space-y-3">
-            {/* Promo Preview */}
             <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
               <div className="mb-3 flex items-center gap-2">
                 <TrendingUp size={15} className="text-majorelle-blue-500" />
@@ -298,7 +549,6 @@ export default function NewSimulationPage() {
               )}
             </div>
 
-            {/* Promo Overrides YAML */}
             <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
               <div className="mb-2">
                 <h3 className="text-sm font-bold text-charcoal-blue-950">Promo Overrides</h3>
@@ -343,7 +593,6 @@ export default function NewSimulationPage() {
                 const Icon = s.icon
                 const active = selectedScenario === s.id
                 const isNoScenario = s.id === 'no_scenario'
-                const isPromoForecast = s.id === 'promo_forecast'
                 return (
                   <button key={s.id} onClick={() => setSelectedScenario(s.id as ScenarioId)}
                     className={`rounded-xl border-2 p-4 text-left transition-all ${active ? 'border-majorelle-blue-500 bg-majorelle-blue-50' : 'border-charcoal-blue-200 bg-white hover:border-majorelle-blue-300'}`}>
@@ -372,7 +621,7 @@ export default function NewSimulationPage() {
           </div>
         )}
 
-        {/* Step 3 — Scenario YAML config (under construction — Next is disabled) */}
+        {/* Step 3 — Scenario YAML config (under construction) */}
         {currentStep === 3 && hasScenario && (
           <div className="mb-5 space-y-4">
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -412,8 +661,10 @@ export default function NewSimulationPage() {
             <h3 className="mb-4 text-base font-bold text-charcoal-blue-950">Review & Run</h3>
             <div className="mb-4 space-y-2">
               <div className="rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 p-3">
-                <p className="text-xs font-semibold text-charcoal-blue-950">Simulation Config</p>
-                <p className="mt-0.5 text-[10px] text-charcoal-blue-400">{runYaml.split('\n').filter(Boolean).length} lines</p>
+                <p className="text-xs font-semibold text-charcoal-blue-950">Simulation</p>
+                <p className="mt-0.5 text-[10px] text-charcoal-blue-400">
+                  {formValues.simulation_name} · {formValues.start_date} → {formValues.end_date} · seed {formValues.seed}
+                </p>
               </div>
               <div className="rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 p-3">
                 <p className="text-xs font-semibold text-charcoal-blue-950">Scenario</p>
