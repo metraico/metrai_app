@@ -144,6 +144,7 @@ export interface SimulatePreviewResponse {
   active_promos: number
   total_promo_groups: number
   promos: PromoPreviewItem[]
+  excluded_promos: PromoPreviewItem[]
 }
 
 // POST /simulate → SimulateSyncResponse
@@ -165,6 +166,7 @@ export interface SimulationRun {
   random_seed: number
   notes: string
   simulation_granularity: string
+  scenario_type?: string  // 'no_scenario' when no scenario was applied
 }
 
 // GET /run-config/{simulation_id} → RunConfigResponse
@@ -187,6 +189,7 @@ export interface DeleteResponse { deleted: string }
 // ─────────────────────────────────────────────────────────────────────────────
 export interface ScenarioValidateRequest {
   scenario_yaml: string
+  retailer_account_id?: string
   start_date?: string
   end_date?: string
 }
