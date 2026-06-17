@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
-import { getRunYamlTemplate, runSimulation } from '@/lib/api/simulation'
+import { getRunYamlTemplate, runSimulation, engineBaseUrl } from '@/lib/api/simulation'
 import { getSimulatePreview, getPromoYamlTemplate } from '@/lib/api/promos'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp, Tag } from 'lucide-react'
@@ -169,6 +169,7 @@ export default function NewSimulationPage() {
   const [templateLoading, setTemplateLoading] = useState(true)
   const [entityYamlSyncing, setEntityYamlSyncing] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [simProgress, setSimProgress] = useState<{ week: number; total: number } | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [promoPreview, setPromoPreview] = useState<SimulatePreviewResponse | null>(null)
@@ -976,7 +977,12 @@ export default function NewSimulationPage() {
               <div className="mb-4 flex items-center justify-between gap-2 rounded-lg border border-majorelle-blue-200 bg-majorelle-blue-50 p-3">
                 <div className="flex items-center gap-2">
                   <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
-                  <p className="text-xs font-semibold text-majorelle-blue-950">{stage.message}</p>
+                  <div>
+                    <p className="text-xs font-semibold text-majorelle-blue-950">{stage.message}</p>
+                    {simProgress && simProgress.total > 0 && (
+                      <p className="text-[10px] text-majorelle-blue-600">Week {simProgress.week} / {simProgress.total}</p>
+                    )}
+                  </div>
                 </div>
                 <span className="font-mono text-xs font-bold text-majorelle-blue-600">
                   {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')}
@@ -1015,7 +1021,7 @@ export default function NewSimulationPage() {
                 {isRunning ? (
                   <>
                     <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                    <span>Running… {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')}</span>
+                    <span>Running…</span>
                   </>
                 ) : 'Run Simulation'}
               </button>

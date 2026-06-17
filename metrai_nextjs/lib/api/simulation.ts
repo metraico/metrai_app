@@ -1,6 +1,8 @@
 import { engineClient } from './client'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord, ExtensionPromoInput, SaveExtensionPromosResponse, GenerateExtensionDemandRequest } from './types'
 
+export const engineBaseUrl: string = (process.env.NEXT_PUBLIC_ENGINE_URL as string) || 'http://localhost:8001'
+
 // POST /simulate — synchronous, returns completed result inline
 export const runSimulation = (yamlContent: string, promoYamlContent = '', scenarioYamlContent = '', simulationId?: string) =>
   engineClient.post<RunYamlResponse>('/simulate', {
