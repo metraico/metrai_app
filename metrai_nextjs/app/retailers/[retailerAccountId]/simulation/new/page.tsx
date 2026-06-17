@@ -7,10 +7,11 @@ import { getRunYamlTemplate, runSimulation, engineBaseUrl } from '@/lib/api/simu
 import { getSimulatePreview, getPromoYamlTemplate } from '@/lib/api/promos'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp, Tag } from 'lucide-react'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Tabs, TabsContent } from '@/components/ui/tabs'
 import yaml from 'js-yaml'
 import type { SimulatePreviewResponse } from '@/lib/api/types'
 import { SCENARIOS, NO_SCENARIO, type ScenarioId } from '@/lib/scenarios'
+import { cn } from '@/lib/utils'
 
 interface RunFormValues {
   simulation_name: string
@@ -176,6 +177,7 @@ export default function NewSimulationPage() {
   const [promoYaml, setPromoYaml] = useState('')
   const [promoYamlLoading, setPromoYamlLoading] = useState(false)
   const [promoYamlValid, setPromoYamlValid] = useState<boolean | null>(null)
+  const [promoFilter, setPromoFilter] = useState<'active' | 'excluded' | 'all'>('active')
 
   const setField = <K extends keyof RunFormValues>(key: K, value: RunFormValues[K]) =>
     setFormValues(prev => ({ ...prev, [key]: value }))
@@ -651,31 +653,27 @@ export default function NewSimulationPage() {
               {!promoPreviewLoading && promoPreview && (
                 <>
                   <div className="mb-3 grid grid-cols-3 gap-2">
-                    <div className="rounded-lg bg-majorelle-blue-50 p-2 text-center">
-                      <p className="text-lg font-black text-majorelle-blue-600">{promoPreview.active_promos}</p>
-                      <p className="text-[9px] font-semibold text-charcoal-blue-400">Active Promos</p>
-                    </div>
-                    <div className="rounded-lg bg-charcoal-blue-50 p-2 text-center">
-                      <p className="text-lg font-black text-charcoal-blue-950">{promoPreview.total_promo_groups}</p>
-                      <p className="text-[9px] font-semibold text-charcoal-blue-400">Promo Groups</p>
-                    </div>
-                    <div className="rounded-lg bg-charcoal-blue-50 p-2 text-center">
-                      <p className="text-lg font-black text-charcoal-blue-950">{promoPreview.total_promos}</p>
-                      <p className="text-[9px] font-semibold text-charcoal-blue-400">Total in Account</p>
-                    </div>
+                    {([
+                      { value: 'active' as const,   count: promoPreview.active_promos,          label: 'Active Promos' },
+                      { value: 'excluded' as const, count: promoPreview.excluded_promos.length, label: 'Excluded' },
+                      { value: 'all' as const,      count: promoPreview.total_promos,           label: 'Total in Account' },
+                    ]).map(({ value, count, label }) => (
+                      <button
+                        key={value}
+                        onClick={() => setPromoFilter(value)}
+                        className={cn(
+                          'rounded-lg p-2 text-center transition-colors',
+                          promoFilter === value
+                            ? 'bg-majorelle-blue-50 ring-1 ring-majorelle-blue-300'
+                            : 'bg-charcoal-blue-50 hover:bg-charcoal-blue-100'
+                        )}
+                      >
+                        <p className={cn('text-lg font-black', promoFilter === value ? 'text-majorelle-blue-600' : 'text-charcoal-blue-950')}>{count}</p>
+                        <p className="text-[9px] font-semibold text-charcoal-blue-400">{label}</p>
+                      </button>
+                    ))}
                   </div>
-                  <Tabs defaultValue="active">
-                    <TabsList className="mb-2 h-7 w-full">
-                      <TabsTrigger value="active" className="flex-1 text-[10px]">
-                        Active ({promoPreview.active_promos})
-                      </TabsTrigger>
-                      <TabsTrigger value="excluded" className="flex-1 text-[10px]">
-                        Excluded ({promoPreview.excluded_promos.length})
-                      </TabsTrigger>
-                      <TabsTrigger value="all" className="flex-1 text-[10px]">
-                        All ({promoPreview.total_promos})
-                      </TabsTrigger>
-                    </TabsList>
+                  <Tabs value={promoFilter} onValueChange={(v) => setPromoFilter(v as typeof promoFilter)}>
                     {([
                       { value: 'active', promos: promoPreview.promos, emptyLabel: 'No promos active in this date range' },
                       { value: 'excluded', promos: promoPreview.excluded_promos, emptyLabel: 'No promos excluded — all promos fall within this window' },
@@ -693,7 +691,7 @@ export default function NewSimulationPage() {
                               <table className="w-full text-xs">
                                 <thead className="sticky top-0 bg-charcoal-blue-50">
                                   <tr>
-                                    {['Promo Name', 'Event Type', 'Dates', 'Uplift', 'Stores', 'Items'].map(h => (
+                                    {['Promo Name', 'Event Type', 'Dates', 'Uplift'].map(h => (
                                       <th key={h} className="px-2 py-1.5 text-left font-bold uppercase tracking-wide text-charcoal-blue-400 text-[9px]">{h}</th>
                                     ))}
                                   </tr>
@@ -707,8 +705,6 @@ export default function NewSimulationPage() {
                                       </td>
                                       <td className="px-2 py-1 whitespace-nowrap text-charcoal-blue-400">{p.start_date} → {p.end_date}</td>
                                       <td className="px-2 py-1 text-center font-bold text-emerald-600">{p.demand_multiplier}×</td>
-                                      <td className="px-2 py-1 text-center">{p.store_count}</td>
-                                      <td className="px-2 py-1 text-center">{p.item_count}</td>
                                     </tr>
                                   ))}
                                 </tbody>
