@@ -169,7 +169,7 @@ export default function NewSimulationPage() {
   const [templateLoading, setTemplateLoading] = useState(true)
   const [entityYamlSyncing, setEntityYamlSyncing] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const [simProgress, setSimProgress] = useState<{ week: number; total: number } | null>(null)
+  const [simProgress, setSimProgress] = useState<{ week: number; total: number; label: string } | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [promoPreview, setPromoPreview] = useState<SimulatePreviewResponse | null>(null)
@@ -378,7 +378,7 @@ export default function NewSimulationPage() {
         try {
           const d = JSON.parse(ev.data)
           if (d.done) { es.close(); return }
-          if (d.total > 0) setSimProgress({ week: d.week, total: d.total })
+          if (d.total > 0) setSimProgress({ week: d.week, total: d.total, label: d.label ?? '' })
         } catch { /* ignore malformed */ }
       }
       es.onerror = () => es.close()
@@ -804,7 +804,9 @@ export default function NewSimulationPage() {
                   <div>
                     <p className="text-xs font-semibold text-majorelle-blue-950">{stage.message}</p>
                     {simProgress && simProgress.total > 0 && (
-                      <p className="text-[10px] text-majorelle-blue-600">Week {simProgress.week} / {simProgress.total}</p>
+                      <p className="text-[10px] text-majorelle-blue-600">
+                        Week {simProgress.week} / {simProgress.total}{simProgress.label ? ` (${simProgress.label})` : ''}
+                      </p>
                     )}
                   </div>
                 </div>
