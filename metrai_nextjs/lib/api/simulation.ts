@@ -21,10 +21,27 @@ export const getRuns = (retailerAccountId: string, userId: string) =>
   engineClient.get<SimulationRun[]>('/runs', { params: { retailer_account_id: retailerAccountId, user_id: userId } }).then(r => r.data)
 
 // GET /run-yaml-template
-export const getRunYamlTemplate = (retailerAccountId?: string) =>
-  engineClient.get<{ yaml: string }>('/run-yaml-template', {
-    params: retailerAccountId ? { retailer_account_id: retailerAccountId } : undefined,
+export interface YamlTemplateParams {
+  retailerAccountId?: string
+  store_target_wos?: number
+  store_initial_wos?: number
+  retailer_dc_target_wos?: number
+  retailer_dc_initial_wos?: number
+  supplier_dc_initial_wos?: number
+  retailer_dc_to_store_lead_weeks?: number
+  supplier_dc_to_retailer_dc_lead_weeks?: number
+  dc_otd_rate?: number
+  dc_in_full_rate?: number
+  supplier_otd_rate?: number
+  supplier_in_full_rate?: number
+}
+
+export const getRunYamlTemplate = (params: YamlTemplateParams = {}) => {
+  const { retailerAccountId, ...rest } = params
+  return engineClient.get<{ yaml: string }>('/run-yaml-template', {
+    params: { ...(retailerAccountId ? { retailer_account_id: retailerAccountId } : {}), ...rest },
   }).then(r => r.data)
+}
 
 // GET /simulation/{simulation_id} — full ClickHouse output (available after background write)
 export const getSimulation = (simulationId: string) =>

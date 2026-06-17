@@ -167,6 +167,7 @@ export default function NewSimulationPage() {
   const [scenarioYaml, setScenarioYaml] = useState(PROMO_SCENARIO_TEMPLATE)
   const [stage, setStage] = useState<RunStage>({ type: 'idle' })
   const [templateLoading, setTemplateLoading] = useState(true)
+  const [entityYamlSyncing, setEntityYamlSyncing] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -208,8 +209,9 @@ export default function NewSimulationPage() {
     }
   }
 
+  // Initial load: fetch template to set metadata + scalar formValues (entity YAML handled by debounced effect)
   useEffect(() => {
-    getRunYamlTemplate(routeAccountId)
+    getRunYamlTemplate({ retailerAccountId: routeAccountId })
       .then(({ yaml: tpl }) => {
         try {
           const parsed = yaml.load(tpl) as { run?: Record<string, unknown> }
@@ -233,11 +235,6 @@ export default function NewSimulationPage() {
             dc_in_full_rate: Number(run.dc_in_full_rate ?? DEFAULT_FORM.dc_in_full_rate),
             disable_promo_decay: Boolean(run.disable_promo_decay ?? DEFAULT_FORM.disable_promo_decay),
           })
-          const entityObj: Record<string, unknown> = {}
-          if (run.dcs) entityObj.dcs = run.dcs
-          if (run.suppliers) entityObj.suppliers = run.suppliers
-          if (run.stores) entityObj.stores = run.stores
-          if (Object.keys(entityObj).length > 0) setEntityYaml(yaml.dump(entityObj))
         } catch {
           // template parse failed — keep defaults
         }
@@ -245,6 +242,47 @@ export default function NewSimulationPage() {
       .catch((err) => setStage({ type: 'error', message: `Failed to load template: ${err?.message ?? err}` }))
       .finally(() => setTemplateLoading(false))
   }, [])
+
+  // Auto-update entity YAML whenever scalars change (500ms debounce)
+  useEffect(() => {
+    if (templateLoading) return
+    const timer = setTimeout(async () => {
+      setEntityYamlSyncing(true)
+      try {
+        const { yaml: tpl } = await getRunYamlTemplate({
+          retailerAccountId: routeAccountId,
+          store_target_wos: formValues.store_target_wos,
+          store_initial_wos: formValues.store_initial_wos,
+          retailer_dc_target_wos: formValues.retailer_dc_target_wos,
+          retailer_dc_initial_wos: formValues.retailer_dc_initial_wos,
+          supplier_dc_initial_wos: formValues.supplier_dc_initial_wos,
+          retailer_dc_to_store_lead_weeks: formValues.retailer_dc_to_store_lead_weeks,
+          supplier_dc_to_retailer_dc_lead_weeks: formValues.supplier_dc_to_retailer_dc_lead_weeks,
+          dc_otd_rate: formValues.dc_otd_rate,
+          dc_in_full_rate: formValues.dc_in_full_rate,
+          supplier_otd_rate: formValues.supplier_otd_rate,
+          supplier_in_full_rate: formValues.supplier_in_full_rate,
+        })
+        const parsed = yaml.load(tpl) as { run?: Record<string, unknown> }
+        const run = parsed?.run ?? {}
+        const entityObj: Record<string, unknown> = {}
+        if (run.dcs) entityObj.dcs = run.dcs
+        if (run.suppliers) entityObj.suppliers = run.suppliers
+        if (run.stores) entityObj.stores = run.stores
+        setEntityYaml(Object.keys(entityObj).length > 0 ? yaml.dump(entityObj) : '')
+      } catch { /* keep existing entity YAML on error */ }
+      finally { setEntityYamlSyncing(false) }
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [
+    templateLoading,
+    formValues.store_target_wos, formValues.store_initial_wos,
+    formValues.retailer_dc_target_wos, formValues.retailer_dc_initial_wos,
+    formValues.supplier_dc_initial_wos,
+    formValues.retailer_dc_to_store_lead_weeks, formValues.supplier_dc_to_retailer_dc_lead_weeks,
+    formValues.dc_otd_rate, formValues.dc_in_full_rate,
+    formValues.supplier_otd_rate, formValues.supplier_in_full_rate,
+  ])
 
   const hasScenario = selectedScenario !== 'no_scenario'
   const isRunning = stage.type === 'generating_demand' || stage.type === 'running_simulation'
@@ -258,12 +296,12 @@ export default function NewSimulationPage() {
     seed: formValues.seed,
   })
 
-  const buildFullYaml = (): string => {
+  const buildFullYaml = (values: RunFormValues = formValues): string => {
     const accountId = routeAccountId || retailerAccountId
     const runBlock: Record<string, unknown> = {
       retailer_account_id: accountId,
       ...(userId ? { user_id: userId } : {}),
-      ...formValues,
+      ...values,
     }
     try {
       const entity = yaml.load(entityYaml) as Record<string, unknown>
@@ -316,7 +354,14 @@ export default function NewSimulationPage() {
       return
     }
 
-    const finalYaml = buildFullYaml()
+    // Flush any rawValues that are still pending (e.g. field was edited but form not re-rendered)
+    const flushedValues = { ...formValues }
+    for (const [k, raw] of Object.entries(rawValues)) {
+      const n = parseFloat(raw as string)
+      if (!isNaN(n)) (flushedValues as any)[k] = n
+    }
+
+    const finalYaml = buildFullYaml(flushedValues)
     const combinedYaml = hasScenario ? `${finalYaml.trimEnd()}\n\n${scenarioYaml}` : finalYaml
 
     try {
@@ -484,14 +529,22 @@ export default function NewSimulationPage() {
                       <span className="text-[10px] font-bold uppercase tracking-widest text-charcoal-blue-500">Entity Overrides</span>
                       <span className="ml-auto text-[9px] text-charcoal-blue-400">dcs · suppliers · stores</span>
                     </div>
-                    <textarea
-                      value={entityYaml}
-                      onChange={e => setEntityYaml(e.target.value)}
-                      className="w-full bg-white px-4 py-3 font-mono text-xs text-charcoal-blue-950 focus:outline-none"
-                      rows={12}
-                      spellCheck={false}
-                      placeholder="# dcs:\n#   DC_EAST:\n#     otd_rate: 0.95"
-                    />
+                    <div className="relative">
+                      <textarea
+                        value={entityYaml}
+                        onChange={e => setEntityYaml(e.target.value)}
+                        disabled={entityYamlSyncing}
+                        className="w-full bg-white px-4 py-3 font-mono text-xs text-charcoal-blue-950 focus:outline-none disabled:opacity-50"
+                        rows={12}
+                        spellCheck={false}
+                        placeholder="# dcs:\n#   DC_EAST:\n#     otd_rate: 0.95"
+                      />
+                      {entityYamlSyncing && (
+                        <div className="absolute inset-0 flex items-center justify-center rounded-b-xl bg-white/70">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )
