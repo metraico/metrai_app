@@ -1,11 +1,14 @@
 import { engineClient } from './client'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse } from './types'
 
+export const engineBaseUrl: string = (process.env.NEXT_PUBLIC_ENGINE_URL as string) || 'http://localhost:8001'
+
 // POST /simulate — synchronous, returns completed result inline
-export const runSimulation = (yamlContent: string, promoYamlContent = '') =>
+export const runSimulation = (yamlContent: string, promoYamlContent = '', simulationId?: string) =>
   engineClient.post<RunYamlResponse>('/simulate', {
     yaml_content: yamlContent,
     promo_yaml_content: promoYamlContent,
+    ...(simulationId ? { simulation_id: simulationId } : {}),
   }).then(r => r.data)
 
 // Compat shim — simulate is synchronous so there's nothing to poll

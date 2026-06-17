@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
+import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
@@ -245,8 +246,8 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
-      <div className="w-full max-w-5xl rounded-xl border border-charcoal-blue-200 bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+      <div className="flex w-full max-w-5xl max-h-[90vh] flex-col rounded-xl border border-charcoal-blue-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex-shrink-0 p-5 pb-3 flex flex-wrap items-start justify-between gap-2">
           <div>
             <h3 className="text-sm font-bold text-charcoal-blue-950">{title}</h3>
             <p className="text-[10px] text-charcoal-blue-400">{subtitle}</p>
@@ -256,8 +257,10 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
             <button onClick={onClose} className="ml-2 rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
           </div>
         </div>
-        {error && <ChartError message={error} />}
-        {children}
+        {error && <div className="flex-shrink-0 px-5"><ChartError message={error} /></div>}
+        <div className="flex-1 overflow-y-auto p-5 pt-0">
+          {children}
+        </div>
       </div>
     </div>
   )
@@ -314,10 +317,12 @@ export default function SimulationResultsPage() {
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
+  const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
+  const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
-  const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED'>('PENDING')
+  const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
   const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -483,6 +488,12 @@ export default function SimulationResultsPage() {
 
     if (cache?.simulationId === simulationId && cache.summary) {
       loadSummary()
+      getRunConfig(simulationId).then(cfg => {
+        if (!cancelled) {
+          setSimName(String((cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
+          setRunFullConfig(cfg.full_config)
+        }
+      }).catch(() => null)
       return
     }
 
@@ -490,7 +501,10 @@ export default function SimulationResultsPage() {
       try {
         const cfg = await getRunConfig(simulationId)
         const name = (cfg.full_config as any)?.run?.simulation_name ?? 'Simulation Results'
-        if (!cancelled) setSimName(String(name))
+        if (!cancelled) {
+          setSimName(String(name))
+          setRunFullConfig(cfg.full_config)
+        }
         if (cfg.status === 'COMPLETED') {
           if (!cancelled) await loadSummary()
         } else if (cfg.status === 'FAILED') {
@@ -517,7 +531,7 @@ export default function SimulationResultsPage() {
 
   // Poll analytics-status endpoint until CH write is done
   useEffect(() => {
-    if (pageState !== 'ready' || analyticsStatus !== 'PENDING') return
+    if (pageState !== 'ready' || (analyticsStatus !== 'PENDING' && analyticsStatus !== null)) return
     let cancelled = false
     const poll = async () => {
       try {
@@ -526,7 +540,7 @@ export default function SimulationResultsPage() {
         if (!cancelled && !ready) setTimeout(poll, 3000)
       } catch { /* silent — banner just stays */ }
     }
-    const t = setTimeout(poll, 3000)
+    const t = setTimeout(poll, 0)
     return () => { cancelled = true; clearTimeout(t) }
   }, [pageState, analyticsStatus, simulationId])
 
@@ -669,13 +683,23 @@ export default function SimulationResultsPage() {
   }
 
   return (
+    <>
     <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-6 py-6">
       <div className="w-full">
 
         {/* Header */}
         <div className="mb-5 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
           <div>
-            <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
+              <button
+                onClick={() => setYamlModalOpen(true)}
+                title="View run YAML config"
+                className="rounded-full p-1 text-charcoal-blue-400 hover:bg-charcoal-blue-100 hover:text-charcoal-blue-700 transition-colors"
+              >
+                <FileCode size={16} />
+              </button>
+            </div>
             {meta && (
               <p className="mt-0.5 text-xs font-medium text-charcoal-blue-400">
                 {meta.items_meta.length} items · {meta.stores_meta.length} stores · {meta.dcs_meta.length} DCs
@@ -998,5 +1022,99 @@ export default function SimulationResultsPage() {
         })()}
       </div>
     </div>
+
+    {/* YAML config modal — same overlay style as chart expand */}
+    {yamlModalOpen && (() => {
+      const fc = runFullConfig as any
+      // Build a clean display YAML from the stored SimulationRequest dict
+      const displayYaml = fc ? (() => {
+        const run: Record<string, unknown> = {
+          simulation_name: fc.simulation_name,
+          start_date: fc.start_date,
+          end_date: fc.end_date,
+          store_target_wos: fc.store_target_wos,
+          store_initial_wos: fc.store_initial_wos,
+          retailer_dc_target_wos: fc.retailer_dc_target_wos,
+          retailer_dc_initial_wos: fc.retailer_dc_initial_wos,
+          supplier_dc_initial_wos: fc.supplier_dc_initial_wos,
+          retailer_dc_to_store_lead_weeks: fc.retailer_dc_to_store_lead_weeks,
+          supplier_dc_to_retailer_dc_lead_weeks: fc.supplier_dc_to_retailer_dc_lead_weeks,
+          dc_otd_rate: fc.dc_otd_rate,
+          dc_in_full_rate: fc.dc_in_full_rate,
+          supplier_otd_rate: fc.supplier_otd_rate,
+          supplier_in_full_rate: fc.supplier_in_full_rate,
+        }
+        for (const f of [
+          'retailer_dc_initial_wos_by_dc', 'retailer_dc_target_wos_by_dc',
+          'store_initial_wos_by_store', 'store_target_wos_by_store',
+          'supplier_dc_initial_wos_by_supplier',
+          'retailer_dc_to_store_lead_weeks_by_dc',
+          'supplier_dc_to_retailer_dc_lead_weeks_by_supplier',
+          'dc_otd_rate_by_dc', 'dc_in_full_rate_by_dc',
+          'supplier_otd_rate_by_supplier', 'supplier_in_full_rate_by_supplier',
+        ]) {
+          const v = fc[f]
+          if (v && typeof v === 'object' && Object.keys(v).length > 0) run[f] = v
+        }
+        return yaml.dump({ run })
+      })() : ''
+
+      // Parse promo entries from stored promo_yaml string
+      const promoEntries: any[] = (() => {
+        try {
+          const raw = fc?.promo_yaml
+          if (!raw) return []
+          const parsed = yaml.load(raw) as any
+          return parsed?.promos ?? []
+        } catch { return [] }
+      })()
+
+      return (
+        <ChartModal
+          title="Run YAML Config"
+          subtitle={simName}
+          error=""
+          filters={
+            <button
+              onClick={() => navigator.clipboard.writeText(displayYaml)}
+              className="rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50"
+            >
+              Copy
+            </button>
+          }
+          onClose={() => setYamlModalOpen(false)}
+        >
+          <pre className="rounded-lg bg-charcoal-blue-50 p-4 font-mono text-xs text-charcoal-blue-900 whitespace-pre-wrap">
+            {displayYaml || 'No config available'}
+          </pre>
+          {promoEntries.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-charcoal-blue-500">Promotions</p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-charcoal-blue-100 text-left text-[10px] font-semibold text-charcoal-blue-500">
+                    <th className="pb-1 pr-4">Name</th>
+                    <th className="pb-1 pr-4">Start</th>
+                    <th className="pb-1 pr-4">End</th>
+                    <th className="pb-1">Multiplier</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promoEntries.map((p: any, i: number) => (
+                    <tr key={i} className="border-b border-charcoal-blue-50">
+                      <td className="py-1 pr-4 font-medium text-charcoal-blue-900">{p.promo_name}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.start_date}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.end_date}</td>
+                      <td className="py-1 text-charcoal-blue-600">{p.demand_multiplier ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ChartModal>
+      )
+    })()}
+    </>
   )
 }
