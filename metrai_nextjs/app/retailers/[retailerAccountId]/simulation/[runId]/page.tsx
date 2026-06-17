@@ -275,9 +275,10 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
   )
 }
 
-function ChartShell({ title, subtitle, filters, error, loading, chart }: {
+function ChartShell({ title, subtitle, filters, error, loading, chart, isZoomed, onZoomReset }: {
   title: string; subtitle: string; filters?: React.ReactNode
   error: string; loading: boolean; chart: (height: number) => React.ReactNode
+  isZoomed?: boolean; onZoomReset?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   return (
@@ -289,7 +290,12 @@ function ChartShell({ title, subtitle, filters, error, loading, chart }: {
             <h3 className="text-sm font-bold text-charcoal-blue-950">{title}</h3>
             <p className="text-[10px] text-charcoal-blue-400">{subtitle}</p>
           </div>
-          <button onClick={() => setExpanded(true)} className="flex-shrink-0 rounded-xl border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">⤢ Expand</button>
+          <div className="flex items-center gap-1.5">
+            {isZoomed && onZoomReset && (
+              <button onClick={onZoomReset} className="flex-shrink-0 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-1 text-[10px] font-semibold text-majorelle-blue-600 hover:bg-majorelle-blue-100">↙ Zoom out</button>
+            )}
+            <button onClick={() => setExpanded(true)} className="flex-shrink-0 rounded-xl border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">⤢ Expand</button>
+          </div>
         </div>
         {/* Filters below heading */}
         {filters && <div className="mb-4 flex flex-wrap items-center gap-2">{filters}</div>}
@@ -303,6 +309,11 @@ function ChartShell({ title, subtitle, filters, error, loading, chart }: {
       </div>
       {expanded && (
         <ChartModal title={title} subtitle={subtitle} filters={filters} error={error} onClose={() => setExpanded(false)}>
+          {isZoomed && onZoomReset && (
+            <div className="mb-3 flex justify-end">
+              <button onClick={onZoomReset} className="rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-1 text-[10px] font-semibold text-majorelle-blue-600 hover:bg-majorelle-blue-100">↙ Zoom out</button>
+            </div>
+          )}
           <div className="flex flex-col items-center justify-center my-2">
             {chart(450)}
           </div>
@@ -310,6 +321,69 @@ function ChartShell({ title, subtitle, filters, error, loading, chart }: {
       )}
     </>
   )
+}
+
+function useChartZoom<T extends { week: string }>(data: T[]) {
+  const [zoomRange, setZoomRange] = useState<{ left: number; right: number } | null>(null)
+  const dragRef = useRef<{ mode: 'select' | 'pan'; startIdx: number; startLeft: number; startRight: number } | null>(null)
+  const [selEnd, setSelEnd] = useState<number | null>(null)
+
+  const isZoomed = zoomRange !== null
+  const displayData = zoomRange ? data.slice(zoomRange.left, zoomRange.right + 1) : data
+
+  const onMouseDown = (e: any) => {
+    const idx = e?.activeTooltipIndex
+    if (idx == null) return
+    if (isZoomed && zoomRange) {
+      dragRef.current = { mode: 'pan', startIdx: idx, startLeft: zoomRange.left, startRight: zoomRange.right }
+    } else {
+      dragRef.current = { mode: 'select', startIdx: idx, startLeft: 0, startRight: 0 }
+      setSelEnd(idx)
+    }
+  }
+
+  const onMouseMove = (e: any) => {
+    const idx = e?.activeTooltipIndex
+    if (idx == null || !dragRef.current) return
+    if (dragRef.current.mode === 'select') {
+      setSelEnd(idx)
+    } else if (dragRef.current.mode === 'pan') {
+      const delta = dragRef.current.startIdx - idx
+      const width = dragRef.current.startRight - dragRef.current.startLeft
+      const newLeft = Math.max(0, Math.min(data.length - width - 1, dragRef.current.startLeft + delta))
+      setZoomRange({ left: newLeft, right: newLeft + width })
+    }
+  }
+
+  const onMouseUp = () => {
+    if (!dragRef.current) return
+    if (dragRef.current.mode === 'select') {
+      const a = Math.min(dragRef.current.startIdx, selEnd ?? dragRef.current.startIdx)
+      const b = Math.max(dragRef.current.startIdx, selEnd ?? dragRef.current.startIdx)
+      if (b - a >= 1) setZoomRange({ left: a, right: b })
+      setSelEnd(null)
+    }
+    dragRef.current = null
+  }
+
+  const resetZoom = () => { setZoomRange(null); setSelEnd(null); dragRef.current = null }
+
+  const selectionArea = (!isZoomed && dragRef.current?.mode === 'select' && selEnd != null && dragRef.current.startIdx !== selEnd) ? (
+    <>
+      <ReferenceArea
+        x1={data[0]?.week}
+        x2={data[Math.min(dragRef.current.startIdx, selEnd)]?.week}
+        fill="#5d626f" fillOpacity={0.18} stroke="none"
+      />
+      <ReferenceArea
+        x1={data[Math.max(dragRef.current.startIdx, selEnd)]?.week}
+        x2={data[data.length - 1]?.week}
+        fill="#5d626f" fillOpacity={0.18} stroke="none"
+      />
+    </>
+  ) : null
+
+  return { displayData, onMouseDown, onMouseMove, onMouseUp, resetZoom, isZoomed, selectionArea }
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -360,6 +434,11 @@ export default function SimulationResultsPage() {
   const [dcInvError, setDcInvError] = useState('')
   const [dcInvLoading, setDcInvLoading] = useState(false)
   const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
+
+  const zoom1 = useChartZoom(posData)
+  const zoom2 = useChartZoom(storeInvData)
+  const zoom3 = useChartZoom(shipData)
+  const zoom4 = useChartZoom(dcInvData)
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -825,16 +904,20 @@ export default function SimulationResultsPage() {
                 title="POS — Store Sales"
                 subtitle="Weekly demand, sales and lost sales across all stores"
                 error={posError} loading={posLoading}
+                isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
-                      {posData.filter(d => d.is_promo_week).map(d => (
+                    <ComposedChart data={zoom1.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}
+                      onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
+                      style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair' }}>
+                      {zoom1.displayData.filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} x1={d.week} x2={d.week}
                           fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
-                          fillOpacity={0.15} stroke="none"
+                          fillOpacity={0.12} stroke="none"
                         />
                       ))}
+                      {zoom1.selectionArea}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
@@ -860,9 +943,13 @@ export default function SimulationResultsPage() {
                 title="Store Inventory"
                 subtitle="Weekly on-hand, available and on-order inventory at stores"
                 error={storeInvError} loading={storeInvLoading}
+                isZoomed={zoom2.isZoomed} onZoomReset={zoom2.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={storeInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                    <ComposedChart data={zoom2.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}
+                      onMouseDown={zoom2.onMouseDown} onMouseMove={zoom2.onMouseMove} onMouseUp={zoom2.onMouseUp}
+                      style={{ cursor: zoom2.isZoomed ? 'grab' : 'crosshair' }}>
+                      {zoom2.selectionArea}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
@@ -881,16 +968,20 @@ export default function SimulationResultsPage() {
                 title="Supply Chain Shipments"
                 subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
                 error={shipError} loading={shipLoading}
+                isZoomed={zoom3.isZoomed} onZoomReset={zoom3.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
-                      {posData.filter(d => d.is_promo_week).map(d => (
+                    <ComposedChart data={zoom3.displayData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}
+                      onMouseDown={zoom3.onMouseDown} onMouseMove={zoom3.onMouseMove} onMouseUp={zoom3.onMouseUp}
+                      style={{ cursor: zoom3.isZoomed ? 'grab' : 'crosshair' }}>
+                      {zoom3.displayData.filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} yAxisId="left" x1={d.week} x2={d.week}
                           fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
-                          fillOpacity={0.15} stroke="none"
+                          fillOpacity={0.12} stroke="none"
                         />
                       ))}
+                      {zoom3.selectionArea}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
@@ -916,6 +1007,7 @@ export default function SimulationResultsPage() {
                 title="DC Inventory"
                 subtitle="Weekly on-hand inventory at Retailer DCs and Supplier DCs"
                 error={dcInvError} loading={dcInvLoading}
+                isZoomed={zoom4.isZoomed} onZoomReset={zoom4.resetZoom}
                 filters={
                   <ToggleSegment
                     value={dcViewMode}
@@ -925,7 +1017,10 @@ export default function SimulationResultsPage() {
                 }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+                    <ComposedChart data={zoom4.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}
+                      onMouseDown={zoom4.onMouseDown} onMouseMove={zoom4.onMouseMove} onMouseUp={zoom4.onMouseUp}
+                      style={{ cursor: zoom4.isZoomed ? 'grab' : 'crosshair' }}>
+                      {zoom4.selectionArea}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
@@ -1141,7 +1236,6 @@ export default function SimulationResultsPage() {
         }
         for (const f of [
           'retailer_dc_initial_wos_by_dc', 'retailer_dc_target_wos_by_dc',
-          'store_initial_wos_by_store', 'store_target_wos_by_store',
           'supplier_dc_initial_wos_by_supplier',
           'retailer_dc_to_store_lead_weeks_by_dc',
           'supplier_dc_to_retailer_dc_lead_weeks_by_supplier',
