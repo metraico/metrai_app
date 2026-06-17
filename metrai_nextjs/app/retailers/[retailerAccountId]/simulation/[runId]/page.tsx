@@ -12,7 +12,7 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getSimulationExtensions } from '@/lib/api/simulation'
+import { getRunConfig, getSimulationExtensions, getAnalyticsStatus } from '@/lib/api/simulation'
 import { ExtendForecastModal } from './extend-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
@@ -332,6 +332,9 @@ export default function SimulationResultsPage() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
+  const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED'>('PENDING')
+  const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
+  const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Chart 1 — POS (store sales)
   const [posData, setPosData] = useState<any[]>([])
@@ -524,6 +527,29 @@ export default function SimulationResultsPage() {
     checkStatus()
     return () => { cancelled = true; clearTimeout(timer) }
   }, [simulationId, loadSummary, cache])
+
+  // Auto-hide the READY banner after 5s
+  useEffect(() => {
+    if (analyticsStatus === 'READY') {
+      bannerDismissRef.current = setTimeout(() => setAnalyticsReadyVisible(false), 5_000)
+    }
+    return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
+  }, [analyticsStatus])
+
+  // Poll analytics-status endpoint until CH write is done
+  useEffect(() => {
+    if (pageState !== 'ready' || analyticsStatus !== 'PENDING') return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const { ready } = await getAnalyticsStatus(simulationId)
+        if (!cancelled) setAnalyticsStatus(ready ? 'READY' : 'PENDING')
+        if (!cancelled && !ready) setTimeout(poll, 3000)
+      } catch { /* silent — banner just stays */ }
+    }
+    const t = setTimeout(poll, 3000)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [pageState, analyticsStatus, simulationId])
 
   const allItemOptions  = [...new Map((meta?.items_meta ?? []).map((m: any) => [m.item_id, { value: m.item_id, label: m.item_description ? `${m.item_name} — ${m.item_description}` : m.item_name }])).values()]
   const allStoreOptions = (meta?.stores_meta ?? []).map((m: any) => ({ value: m.store_id, label: m.store_code }))
@@ -723,6 +749,26 @@ export default function SimulationResultsPage() {
             </button>
           </div>
         </div>
+
+        {/* Analytics write status banner */}
+        {analyticsStatus === 'PENDING' && (
+          <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
+            <div className="h-3.5 w-3.5 flex-shrink-0 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
+            <p className="text-xs font-semibold text-amber-800">Writing to analytics database — filtered drilldowns will be available shortly.</p>
+          </div>
+        )}
+        {analyticsStatus === 'READY' && analyticsReadyVisible && (
+          <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5">
+            <span className="text-emerald-500 text-sm">✓</span>
+            <p className="text-xs font-semibold text-emerald-800">Analytics database ready — all filters and drilldowns are available.</p>
+          </div>
+        )}
+        {analyticsStatus === 'FAILED' && (
+          <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5">
+            <AlertCircle size={14} className="flex-shrink-0 text-rose-500" />
+            <p className="text-xs font-semibold text-rose-800">Analytics write failed — filtered drilldowns may be unavailable.</p>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="mb-5 flex gap-2 border-b border-charcoal-blue-200">
