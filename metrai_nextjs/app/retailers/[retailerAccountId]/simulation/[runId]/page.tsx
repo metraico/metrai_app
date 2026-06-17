@@ -13,7 +13,7 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getSimulationExtensions, getAnalyticsStatus } from '@/lib/api/simulation'
+import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl } from '@/lib/api/simulation'
 import { ExtendForecastModal } from './extend-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
@@ -283,7 +283,7 @@ function ChartShell({ title, subtitle, filters, error, loading, chart, isZoomed,
   const [expanded, setExpanded] = useState(false)
   return (
     <>
-      <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm flex flex-col">
+      <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm flex flex-col focus-within:outline-none focus-within:ring-1 focus-within:ring-charcoal-blue-200">
         {/* Header with Expand button top-right */}
         <div className="mb-4 flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
@@ -297,14 +297,13 @@ function ChartShell({ title, subtitle, filters, error, loading, chart, isZoomed,
             <button onClick={() => setExpanded(true)} className="flex-shrink-0 rounded-xl border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">⤢ Expand</button>
           </div>
         </div>
-        {/* Filters below heading */}
-        {filters && <div className="mb-4 flex flex-wrap items-center gap-2">{filters}</div>}
+        
         {error && <ChartError message={error} />}
         {/* Chart — centered with minimal spacing */}
-        <div className="flex flex-col items-center justify-center my-1">
+        <div className="flex flex-col items-center justify-center my-1" style={{ userSelect: 'none', outline: 'none' }}>
           {loading
             ? <Loader2 size={22} className="animate-spin text-majorelle-blue-400" />
-            : chart(220)}
+            : chart(300)}
         </div>
       </div>
       {expanded && (
@@ -368,20 +367,26 @@ function useChartZoom<T extends { week: string }>(data: T[]) {
 
   const resetZoom = () => { setZoomRange(null); setSelEnd(null); dragRef.current = null }
 
-  const selectionArea = (!isZoomed && dragRef.current?.mode === 'select' && selEnd != null && dragRef.current.startIdx !== selEnd) ? (
-    <>
-      <ReferenceArea
-        x1={data[0]?.week}
-        x2={data[Math.min(dragRef.current.startIdx, selEnd)]?.week}
-        fill="#5d626f" fillOpacity={0.18} stroke="none"
-      />
-      <ReferenceArea
-        x1={data[Math.max(dragRef.current.startIdx, selEnd)]?.week}
-        x2={data[data.length - 1]?.week}
-        fill="#5d626f" fillOpacity={0.18} stroke="none"
-      />
-    </>
-  ) : null
+  const selectionArea = (yAxisId?: string) => {
+    if (isZoomed || dragRef.current?.mode !== 'select' || selEnd == null || dragRef.current.startIdx === selEnd) return null
+    const yProps = yAxisId ? { yAxisId } : {}
+    return (
+      <>
+        <ReferenceArea
+          x1={data[0]?.week}
+          x2={data[Math.min(dragRef.current.startIdx, selEnd)]?.week}
+          fill="#5d626f" fillOpacity={0.18} stroke="none"
+          {...yProps}
+        />
+        <ReferenceArea
+          x1={data[Math.max(dragRef.current.startIdx, selEnd)]?.week}
+          x2={data[data.length - 1]?.week}
+          fill="#5d626f" fillOpacity={0.18} stroke="none"
+          {...yProps}
+        />
+      </>
+    )
+  }
 
   return { displayData, onMouseDown, onMouseMove, onMouseUp, resetZoom, isZoomed, selectionArea }
 }
@@ -757,6 +762,22 @@ export default function SimulationResultsPage() {
 
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
 
+  const [exportLoading, setExportLoading] = useState(false)
+  const handleExport = async () => {
+    setExportLoading(true)
+    try {
+      const url = getSimulationExportUrl(simulationId)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = ''
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } finally {
+      setExportLoading(false)
+    }
+  }
+
   if (pageState === 'loading' || pageState === 'polling') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 py-32">
@@ -794,7 +815,7 @@ export default function SimulationResultsPage() {
               <button
                 onClick={() => setYamlModalOpen(true)}
                 title="View run YAML config"
-                className="rounded-full p-1 text-charcoal-blue-400 hover:bg-charcoal-blue-100 hover:text-charcoal-blue-700 transition-colors"
+                className="self-end rounded-full p-1 text-charcoal-blue-400 hover:bg-charcoal-blue-100 hover:text-charcoal-blue-700 transition-colors"
               >
                 <FileCode size={16} />
               </button>
@@ -849,6 +870,17 @@ export default function SimulationResultsPage() {
               <Download size={13} /> Export
             </button>
           </div>
+<<<<<<< HEAD
+=======
+          <button
+            onClick={handleExport}
+            disabled={exportLoading}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {exportLoading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {exportLoading ? 'Exporting…' : 'Export'}
+          </button>
+>>>>>>> 24008c6 (feat: add export functionality for simulation results and enhance focus styles)
         </div>
 
         {/* Analytics write status banner */}
@@ -907,9 +939,9 @@ export default function SimulationResultsPage() {
                 isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom1.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}
+                    <ComposedChart data={zoom1.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
                       onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
-                      style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair' }}>
+                      style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
                       {zoom1.displayData.filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} x1={d.week} x2={d.week}
@@ -917,11 +949,12 @@ export default function SimulationResultsPage() {
                           fillOpacity={0.12} stroke="none"
                         />
                       ))}
-                      {zoom1.selectionArea}
+                      {zoom1.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<ChartTooltip />} />
+<<<<<<< HEAD
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
                         {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
@@ -933,6 +966,12 @@ export default function SimulationResultsPage() {
                         {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
                       </Bar>
                       {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+=======
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
+                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
+                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
+>>>>>>> 24008c6 (feat: add export functionality for simulation results and enhance focus styles)
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -946,15 +985,15 @@ export default function SimulationResultsPage() {
                 isZoomed={zoom2.isZoomed} onZoomReset={zoom2.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom2.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}
+                    <ComposedChart data={zoom2.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
                       onMouseDown={zoom2.onMouseDown} onMouseMove={zoom2.onMouseMove} onMouseUp={zoom2.onMouseUp}
-                      style={{ cursor: zoom2.isZoomed ? 'grab' : 'crosshair' }}>
-                      {zoom2.selectionArea}
+                      style={{ cursor: zoom2.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
+                      {zoom2.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip formatter={(v) => Number(v).toLocaleString()} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
                       {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
@@ -971,9 +1010,9 @@ export default function SimulationResultsPage() {
                 isZoomed={zoom3.isZoomed} onZoomReset={zoom3.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom3.displayData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}
+                    <ComposedChart data={zoom3.displayData} margin={{ top: 5, right: 40, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
                       onMouseDown={zoom3.onMouseDown} onMouseMove={zoom3.onMouseMove} onMouseUp={zoom3.onMouseUp}
-                      style={{ cursor: zoom3.isZoomed ? 'grab' : 'crosshair' }}>
+                      style={{ cursor: zoom3.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
                       {zoom3.displayData.filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} yAxisId="left" x1={d.week} x2={d.week}
@@ -981,12 +1020,13 @@ export default function SimulationResultsPage() {
                           fillOpacity={0.12} stroke="none"
                         />
                       ))}
-                      {zoom3.selectionArea}
+                      {zoom3.selectionArea('left')}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
+<<<<<<< HEAD
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
                         {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
@@ -995,6 +1035,11 @@ export default function SimulationResultsPage() {
                         {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
                       </Bar>
                       {extensionStartWeek && <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+=======
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
+>>>>>>> 24008c6 (feat: add export functionality for simulation results and enhance focus styles)
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -1017,15 +1062,15 @@ export default function SimulationResultsPage() {
                 }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom4.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}
+                    <ComposedChart data={zoom4.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
                       onMouseDown={zoom4.onMouseDown} onMouseMove={zoom4.onMouseMove} onMouseUp={zoom4.onMouseUp}
-                      style={{ cursor: zoom4.isZoomed ? 'grab' : 'crosshair' }}>
-                      {zoom4.selectionArea}
+                      style={{ cursor: zoom4.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
+                      {zoom4.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<DCInvTooltip />} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
                       {dcViewMode === 'both' && (
                         <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
