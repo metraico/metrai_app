@@ -34,6 +34,10 @@ export const getSimulation = (simulationId: string) =>
 export const deleteSimulation = (simulationId: string) =>
   engineClient.delete<DeleteResponse>(`/simulation/${simulationId}`).then(r => r.data)
 
+// GET /analytics-status/{simulation_id}
+export const getAnalyticsStatus = (simulationId: string) =>
+  engineClient.get<{ ready: boolean }>(`/analytics-status/${simulationId}`).then(r => r.data)
+
 // GET /simulation/{simulation_id}/export — returns ZIP stream
 export const getSimulationExportUrl = (simulationId: string) =>
   `${engineClient.defaults.baseURL}/simulation/${simulationId}/export`
