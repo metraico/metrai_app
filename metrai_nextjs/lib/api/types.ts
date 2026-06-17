@@ -166,6 +166,51 @@ export interface SimulationRun {
   notes: string
   simulation_granularity: string
   scenario_type?: string  // 'no_scenario' when no scenario was applied
+  is_extended: boolean
+  extension_count: number
+}
+
+// GET /simulation/{id}/extensions
+export interface SimulationExtensionRecord {
+  id: string
+  simulation_id: string
+  extension_number: number
+  previous_end_week: string
+  new_end_week: string
+  scenario_type: string
+  scenario_name: string
+  promo_config: string
+  scenario_config: string
+  status: string
+  created_at: string
+  created_by: string | null
+}
+
+// POST /simulation/{id}/extend
+export interface ExtendSimulationPayload {
+  extension_end_date: string   // YYYY-MM-DD
+  simulation_name?: string
+  notes?: string
+  promo_yaml?: string
+  scenario_yaml?: string
+  seed?: number
+}
+
+// GET /simulation/{id}/ending-inventory
+export interface EndingInventoryRecord {
+  entity_id: string
+  entity_code: string
+  item_id: string
+  item_code: string
+  on_hand_quantity: number
+  on_order_quantity: number
+}
+export interface EndingInventoryResponse {
+  simulation_id: string
+  base_end_week: string
+  store_inventory: EndingInventoryRecord[]
+  dc_inventory: EndingInventoryRecord[]
+  supplier_dc_inventory: EndingInventoryRecord[]
 }
 
 // GET /run-config/{simulation_id} → RunConfigResponse
@@ -324,6 +369,32 @@ export interface SupplierDCInventoryRecord {
 export interface UpstreamInventoryResponse {
   dc_inventory: DCInventoryRecord[]
   supplier_dc_inventory: SupplierDCInventoryRecord[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Promo catalog  (engine: GET /promos, GET /promo-groups)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface PromoResponse {
+  promo_id: string
+  promo_name: string
+  promo_group_id: string | null
+  promo_group_name: string | null
+  event_type: string
+  start_date: string | null
+  end_date: string | null
+  demand_multiplier: number
+  post_promo_decay_days: number
+  post_promo_decay_shape: string
+  store_ids: string[]
+}
+
+export interface PromoGroupResponse {
+  promo_group_id: string
+  promo_group_name: string
+  category: string
+  brand: string
+  description: string
+  item_ids: string[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

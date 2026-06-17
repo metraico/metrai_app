@@ -1,5 +1,5 @@
 import { engineClient } from './client'
-import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse } from './types'
+import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord } from './types'
 
 // POST /simulate — synchronous, returns completed result inline
 export const runSimulation = (yamlContent: string, promoYamlContent = '', scenarioYamlContent = '', simulationId?: string) =>
@@ -45,3 +45,35 @@ export const deleteSimulation = (simulationId: string) =>
 // GET /simulation/{simulation_id}/export — returns ZIP stream
 export const getSimulationExportUrl = (simulationId: string) =>
   `${engineClient.defaults.baseURL}/simulation/${simulationId}/export`
+
+// GET /simulation/{simulation_id}/ending-inventory — used to seed Extend Forecast runs
+export const getEndingInventory = (simulationId: string) =>
+  engineClient.get<EndingInventoryResponse>(`/simulation/${simulationId}/ending-inventory`).then(r => r.data)
+
+// POST /demand/generate — async demand generation job
+export const generateDemand = (
+  retailerAccountId: string, startDate: string, endDate: string, seed: number
+) =>
+  engineClient.post<{ job_id: string; status: string }>('/demand/generate', {
+    retailer_account_id: retailerAccountId, start_date: startDate, end_date: endDate, seed,
+  }).then(r => r.data)
+
+// GET /demand/status/{job_id}
+export const getDemandStatus = (jobId: string) =>
+  engineClient.get<DemandJobResponse>(`/demand/status/${jobId}`).then(r => r.data)
+
+// GET /demand/weekly-totals — aggregated demand from ClickHouse cache for chart preview
+export const getDemandWeeklyTotals = (
+  retailerAccountId: string, startWeek: string, endWeek: string, seed: number
+) =>
+  engineClient.get<{ pos_week: string; demand_qty: number }[]>('/demand/weekly-totals', {
+    params: { retailer_account_id: retailerAccountId, start_week: startWeek, end_week: endWeek, seed },
+  }).then(r => r.data)
+
+// POST /simulation/{simulation_id}/extend — true continuation, writes to same simulation_id
+export const extendSimulation = (simulationId: string, payload: ExtendSimulationPayload) =>
+  engineClient.post<RunYamlResponse>(`/simulation/${simulationId}/extend`, payload).then(r => r.data)
+
+// GET /simulation/{simulation_id}/extensions — extension history
+export const getSimulationExtensions = (simulationId: string) =>
+  engineClient.get<SimulationExtensionRecord[]>(`/simulation/${simulationId}/extensions`).then(r => r.data)

@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useParams } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useParams, useRouter } from 'next/navigation'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, History, ChevronDown } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
@@ -12,10 +12,11 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig } from '@/lib/api/simulation'
+import { getRunConfig, getSimulationExtensions } from '@/lib/api/simulation'
+import { ExtendForecastModal } from './extend-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
-import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
+import type { AnalyticsMeta, SimulationSummary, SimulationExtensionRecord } from '@/lib/api/types'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
@@ -306,6 +307,7 @@ type PageState = 'loading' | 'polling' | 'ready' | 'error'
 
 export default function SimulationResultsPage() {
   const params = useParams()
+  const router = useRouter()
   const simulationId = params.runId as string
   const { cache } = useSimulationStore()
 
@@ -314,6 +316,9 @@ export default function SimulationResultsPage() {
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
+  const [showExtendModal, setShowExtendModal] = useState(false)
+  const [extensions, setExtensions] = useState<SimulationExtensionRecord[]>([])
+  const [showExtensionHistory, setShowExtensionHistory] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
@@ -385,6 +390,12 @@ export default function SimulationResultsPage() {
       setPageState('error')
     }
   }, [simulationId, cache, applySummary])
+
+  // ── Load extension history once simulation is ready ──────────────────────
+  useEffect(() => {
+    if (pageState !== 'ready') return
+    getSimulationExtensions(simulationId).then(setExtensions).catch(() => null)
+  }, [pageState, simulationId])
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
@@ -643,6 +654,7 @@ export default function SimulationResultsPage() {
   }
 
   return (
+    <>
     <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-6 py-6">
       <div className="w-full">
 
@@ -655,10 +667,51 @@ export default function SimulationResultsPage() {
                 {meta.items_meta.length} items · {meta.stores_meta.length} stores · {meta.dcs_meta.length} DCs
               </p>
             )}
+            {/* Extension history toggle */}
+            {extensions.length > 0 && (
+              <div className="mt-2">
+                <button
+                  onClick={() => setShowExtensionHistory(v => !v)}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-majorelle-blue-500 hover:text-majorelle-blue-700"
+                >
+                  <History size={12} />
+                  Extension History ({extensions.length})
+                  <ChevronDown size={12} className={`transition-transform duration-150 ${showExtensionHistory ? 'rotate-180' : ''}`} />
+                </button>
+                {showExtensionHistory && (
+                  <div className="mt-2 space-y-1.5">
+                    {extensions.map(ext => (
+                      <div key={ext.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 px-3 py-2 text-xs">
+                        <span className="font-bold text-charcoal-blue-400">#{ext.extension_number}</span>
+                        <span className="font-mono font-semibold text-charcoal-blue-700">{ext.previous_end_week} → {ext.new_end_week}</span>
+                        {ext.scenario_type !== 'no_scenario' && (
+                          <span className="rounded-full border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-0.5 text-[10px] font-bold text-majorelle-blue-600">
+                            {ext.scenario_name || ext.scenario_type}
+                          </span>
+                        )}
+                        <span className="ml-auto text-[10px] text-charcoal-blue-400">
+                          {new Date(ext.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600">
-            <Download size={13} /> Export
-          </button>
+          <div className="flex items-center gap-2">
+            {pageState === 'ready' && (
+              <button
+                onClick={() => setShowExtendModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-majorelle-blue-400 px-4 py-2 text-xs font-bold text-majorelle-blue-600 transition-all hover:bg-majorelle-blue-50"
+              >
+                <ChevronRight size={13} /> Extend Forecast
+              </button>
+            )}
+            <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600">
+              <Download size={13} /> Export
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -952,5 +1005,12 @@ export default function SimulationResultsPage() {
         })()}
       </div>
     </div>
+
+    <ExtendForecastModal
+      open={showExtendModal}
+      onClose={() => setShowExtendModal(false)}
+      baseSimulationId={simulationId}
+    />
+    </>
   )
 }
