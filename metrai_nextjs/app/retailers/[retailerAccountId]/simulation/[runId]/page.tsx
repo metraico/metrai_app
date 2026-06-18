@@ -2,8 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
-import * as yaml from 'js-yaml'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
@@ -13,7 +12,7 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl } from '@/lib/api/simulation'
+import { getRunConfig } from '@/lib/api/simulation'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
@@ -246,8 +245,8 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={onClose}>
-      <div className="flex w-full max-w-5xl max-h-[90vh] flex-col rounded-xl border border-charcoal-blue-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex-shrink-0 p-5 pb-3 flex flex-wrap items-start justify-between gap-2">
+      <div className="w-full max-w-5xl rounded-xl border border-charcoal-blue-200 bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
           <div>
             <h3 className="text-sm font-bold text-charcoal-blue-950">{title}</h3>
             <p className="text-[10px] text-charcoal-blue-400">{subtitle}</p>
@@ -257,53 +256,41 @@ function ChartModal({ title, subtitle, filters, error, children, onClose }: {
             <button onClick={onClose} className="ml-2 rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">✕ Close</button>
           </div>
         </div>
-        {error && <div className="flex-shrink-0 px-5"><ChartError message={error} /></div>}
-        <div className="flex-1 overflow-y-auto p-5 pt-0">
-          {children}
-        </div>
+        {error && <ChartError message={error} />}
+        {children}
       </div>
     </div>
   )
 }
 
-function ChartShell({ title, subtitle, filters, error, loading, chart, isZoomed, onZoomReset }: {
+function ChartShell({ title, subtitle, filters, error, loading, chart }: {
   title: string; subtitle: string; filters?: React.ReactNode
   error: string; loading: boolean; chart: (height: number) => React.ReactNode
-  isZoomed?: boolean; onZoomReset?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   return (
     <>
-      <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm flex flex-col focus-within:outline-none focus-within:ring-1 focus-within:ring-charcoal-blue-200">
+      <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm flex flex-col">
         {/* Header with Expand button top-right */}
         <div className="mb-4 flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
             <h3 className="text-sm font-bold text-charcoal-blue-950">{title}</h3>
             <p className="text-[10px] text-charcoal-blue-400">{subtitle}</p>
           </div>
-          <div className="flex items-center gap-1.5">
-            {isZoomed && onZoomReset && (
-              <button onClick={onZoomReset} className="flex-shrink-0 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-1 text-[10px] font-semibold text-majorelle-blue-600 hover:bg-majorelle-blue-100">↙ Zoom out</button>
-            )}
-            <button onClick={() => setExpanded(true)} className="flex-shrink-0 rounded-xl border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">⤢ Expand</button>
-          </div>
+          <button onClick={() => setExpanded(true)} className="flex-shrink-0 rounded-xl border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50">⤢ Expand</button>
         </div>
-        
+        {/* Filters below heading */}
+        {filters && <div className="mb-4 flex flex-wrap items-center gap-2">{filters}</div>}
         {error && <ChartError message={error} />}
         {/* Chart — centered with minimal spacing */}
-        <div className="flex flex-col items-center justify-center my-1" style={{ userSelect: 'none', outline: 'none' }}>
+        <div className="flex flex-col items-center justify-center my-1">
           {loading
             ? <Loader2 size={22} className="animate-spin text-majorelle-blue-400" />
-            : chart(300)}
+            : chart(220)}
         </div>
       </div>
       {expanded && (
         <ChartModal title={title} subtitle={subtitle} filters={filters} error={error} onClose={() => setExpanded(false)}>
-          {isZoomed && onZoomReset && (
-            <div className="mb-3 flex justify-end">
-              <button onClick={onZoomReset} className="rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-1 text-[10px] font-semibold text-majorelle-blue-600 hover:bg-majorelle-blue-100">↙ Zoom out</button>
-            </div>
-          )}
           <div className="flex flex-col items-center justify-center my-2">
             {chart(450)}
           </div>
@@ -311,75 +298,6 @@ function ChartShell({ title, subtitle, filters, error, loading, chart, isZoomed,
       )}
     </>
   )
-}
-
-function useChartZoom<T extends { week: string }>(data: T[]) {
-  const [zoomRange, setZoomRange] = useState<{ left: number; right: number } | null>(null)
-  const dragRef = useRef<{ mode: 'select' | 'pan'; startIdx: number; startLeft: number; startRight: number } | null>(null)
-  const [selEnd, setSelEnd] = useState<number | null>(null)
-
-  const isZoomed = zoomRange !== null
-  const displayData = zoomRange ? data.slice(zoomRange.left, zoomRange.right + 1) : data
-
-  const onMouseDown = (e: any) => {
-    const idx = e?.activeTooltipIndex
-    if (idx == null) return
-    if (isZoomed && zoomRange) {
-      dragRef.current = { mode: 'pan', startIdx: idx, startLeft: zoomRange.left, startRight: zoomRange.right }
-    } else {
-      dragRef.current = { mode: 'select', startIdx: idx, startLeft: 0, startRight: 0 }
-      setSelEnd(idx)
-    }
-  }
-
-  const onMouseMove = (e: any) => {
-    const idx = e?.activeTooltipIndex
-    if (idx == null || !dragRef.current) return
-    if (dragRef.current.mode === 'select') {
-      setSelEnd(idx)
-    } else if (dragRef.current.mode === 'pan') {
-      const delta = dragRef.current.startIdx - idx
-      const width = dragRef.current.startRight - dragRef.current.startLeft
-      const newLeft = Math.max(0, Math.min(data.length - width - 1, dragRef.current.startLeft + delta))
-      setZoomRange({ left: newLeft, right: newLeft + width })
-    }
-  }
-
-  const onMouseUp = () => {
-    if (!dragRef.current) return
-    if (dragRef.current.mode === 'select') {
-      const a = Math.min(dragRef.current.startIdx, selEnd ?? dragRef.current.startIdx)
-      const b = Math.max(dragRef.current.startIdx, selEnd ?? dragRef.current.startIdx)
-      if (b - a >= 1) setZoomRange({ left: a, right: b })
-      setSelEnd(null)
-    }
-    dragRef.current = null
-  }
-
-  const resetZoom = () => { setZoomRange(null); setSelEnd(null); dragRef.current = null }
-
-  const selectionArea = (yAxisId?: string) => {
-    if (isZoomed || dragRef.current?.mode !== 'select' || selEnd == null || dragRef.current.startIdx === selEnd) return null
-    const yProps = yAxisId ? { yAxisId } : {}
-    return (
-      <>
-        <ReferenceArea
-          x1={data[0]?.week}
-          x2={data[Math.min(dragRef.current.startIdx, selEnd)]?.week}
-          fill="#5d626f" fillOpacity={0.18} stroke="none"
-          {...yProps}
-        />
-        <ReferenceArea
-          x1={data[Math.max(dragRef.current.startIdx, selEnd)]?.week}
-          x2={data[data.length - 1]?.week}
-          fill="#5d626f" fillOpacity={0.18} stroke="none"
-          {...yProps}
-        />
-      </>
-    )
-  }
-
-  return { displayData, onMouseDown, onMouseMove, onMouseUp, resetZoom, isZoomed, selectionArea }
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -396,14 +314,9 @@ export default function SimulationResultsPage() {
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
-  const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
-  const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
-  const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
-  const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
-  const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Chart 1 — POS (store sales)
   const [posData, setPosData] = useState<any[]>([])
@@ -425,11 +338,6 @@ export default function SimulationResultsPage() {
   const [dcInvError, setDcInvError] = useState('')
   const [dcInvLoading, setDcInvLoading] = useState(false)
   const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
-
-  const zoom1 = useChartZoom(posData)
-  const zoom2 = useChartZoom(storeInvData)
-  const zoom3 = useChartZoom(shipData)
-  const zoom4 = useChartZoom(dcInvData)
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -572,12 +480,6 @@ export default function SimulationResultsPage() {
 
     if (cache?.simulationId === simulationId && cache.summary) {
       loadSummary()
-      getRunConfig(simulationId).then(cfg => {
-        if (!cancelled) {
-          setSimName(String((cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
-          setRunFullConfig(cfg.full_config)
-        }
-      }).catch(() => null)
       return
     }
 
@@ -585,10 +487,7 @@ export default function SimulationResultsPage() {
       try {
         const cfg = await getRunConfig(simulationId)
         const name = (cfg.full_config as any)?.run?.simulation_name ?? 'Simulation Results'
-        if (!cancelled) {
-          setSimName(String(name))
-          setRunFullConfig(cfg.full_config)
-        }
+        if (!cancelled) setSimName(String(name))
         if (cfg.status === 'COMPLETED') {
           if (!cancelled) await loadSummary()
         } else if (cfg.status === 'FAILED') {
@@ -604,29 +503,6 @@ export default function SimulationResultsPage() {
     checkStatus()
     return () => { cancelled = true; clearTimeout(timer) }
   }, [simulationId, loadSummary, cache])
-
-  // Auto-hide the READY banner after 5s
-  useEffect(() => {
-    if (analyticsStatus === 'READY') {
-      bannerDismissRef.current = setTimeout(() => setAnalyticsReadyVisible(false), 5_000)
-    }
-    return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
-  }, [analyticsStatus])
-
-  // Poll analytics-status endpoint until CH write is done
-  useEffect(() => {
-    if (pageState !== 'ready' || (analyticsStatus !== 'PENDING' && analyticsStatus !== null)) return
-    let cancelled = false
-    const poll = async () => {
-      try {
-        const { ready } = await getAnalyticsStatus(simulationId)
-        if (!cancelled) setAnalyticsStatus(ready ? 'READY' : 'PENDING')
-        if (!cancelled && !ready) setTimeout(poll, 3000)
-      } catch { /* silent — banner just stays */ }
-    }
-    const t = setTimeout(poll, 0)
-    return () => { cancelled = true; clearTimeout(t) }
-  }, [pageState, analyticsStatus, simulationId])
 
   const allItemOptions  = [...new Map((meta?.items_meta ?? []).map((m: any) => [m.item_id, { value: m.item_id, label: m.item_description ? `${m.item_name} — ${m.item_description}` : m.item_name }])).values()]
   const allStoreOptions = (meta?.stores_meta ?? []).map((m: any) => ({ value: m.store_id, label: m.store_code }))
@@ -742,22 +618,6 @@ export default function SimulationResultsPage() {
 
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
 
-  const [exportLoading, setExportLoading] = useState(false)
-  const handleExport = async () => {
-    setExportLoading(true)
-    try {
-      const url = getSimulationExportUrl(simulationId)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = ''
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-    } finally {
-      setExportLoading(false)
-    }
-  }
-
   if (pageState === 'loading' || pageState === 'polling') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 py-32">
@@ -783,58 +643,23 @@ export default function SimulationResultsPage() {
   }
 
   return (
-    <>
     <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-6 py-6">
       <div className="w-full">
 
         {/* Header */}
         <div className="mb-5 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
-              <button
-                onClick={() => setYamlModalOpen(true)}
-                title="View run YAML config"
-                className="self-end rounded-full p-1 text-charcoal-blue-400 hover:bg-charcoal-blue-100 hover:text-charcoal-blue-700 transition-colors"
-              >
-                <FileCode size={16} />
-              </button>
-            </div>
+            <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
             {meta && (
               <p className="mt-0.5 text-xs font-medium text-charcoal-blue-400">
                 {meta.items_meta.length} items · {meta.stores_meta.length} stores · {meta.dcs_meta.length} DCs
               </p>
             )}
           </div>
-          <button
-            onClick={handleExport}
-            disabled={exportLoading}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {exportLoading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            {exportLoading ? 'Exporting…' : 'Export'}
+          <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600">
+            <Download size={13} /> Export
           </button>
         </div>
-
-        {/* Analytics write status banner */}
-        {analyticsStatus === 'PENDING' && (
-          <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
-            <div className="h-3.5 w-3.5 flex-shrink-0 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
-            <p className="text-xs font-semibold text-amber-800">Writing to analytics database — filtered drilldowns will be available shortly.</p>
-          </div>
-        )}
-        {analyticsStatus === 'READY' && analyticsReadyVisible && (
-          <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5">
-            <span className="text-emerald-500 text-sm">✓</span>
-            <p className="text-xs font-semibold text-emerald-800">Analytics database ready — all filters and drilldowns are available.</p>
-          </div>
-        )}
-        {analyticsStatus === 'FAILED' && (
-          <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5">
-            <AlertCircle size={14} className="flex-shrink-0 text-rose-500" />
-            <p className="text-xs font-semibold text-rose-800">Analytics write failed — filtered drilldowns may be unavailable.</p>
-          </div>
-        )}
 
         {/* Tabs */}
         <div className="mb-5 flex gap-2 border-b border-charcoal-blue-200">
@@ -869,21 +694,17 @@ export default function SimulationResultsPage() {
                 title="POS — Store Sales"
                 subtitle="Weekly demand, sales and lost sales across all stores"
                 error={posError} loading={posLoading}
-                isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom1.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
-                      onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
-                      style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom1.displayData.filter(d => d.is_promo_week).map(d => (
+                    <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
+                      {posData.filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea key={d.week} x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
                       ))}
-                      {zoom1.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<ChartTooltip />} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
                       <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
                       <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
@@ -897,18 +718,14 @@ export default function SimulationResultsPage() {
                 title="Store Inventory"
                 subtitle="Weekly on-hand, available and on-order inventory at stores"
                 error={storeInvError} loading={storeInvLoading}
-                isZoomed={zoom2.isZoomed} onZoomReset={zoom2.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom2.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
-                      onMouseDown={zoom2.onMouseDown} onMouseMove={zoom2.onMouseMove} onMouseUp={zoom2.onMouseUp}
-                      style={{ cursor: zoom2.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom2.selectionArea()}
+                    <ComposedChart data={storeInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip formatter={(v) => Number(v).toLocaleString()} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
                     </ComposedChart>
@@ -921,22 +738,18 @@ export default function SimulationResultsPage() {
                 title="Supply Chain Shipments"
                 subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
                 error={shipError} loading={shipLoading}
-                isZoomed={zoom3.isZoomed} onZoomReset={zoom3.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom3.displayData} margin={{ top: 5, right: 40, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
-                      onMouseDown={zoom3.onMouseDown} onMouseMove={zoom3.onMouseMove} onMouseUp={zoom3.onMouseUp}
-                      style={{ cursor: zoom3.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom3.displayData.filter(d => d.is_promo_week).map(d => (
+                    <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
+                      {posData.filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea key={d.week} yAxisId="left" x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
                       ))}
-                      {zoom3.selectionArea('left')}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
                       <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
@@ -951,7 +764,6 @@ export default function SimulationResultsPage() {
                 title="DC Inventory"
                 subtitle="Weekly on-hand inventory at Retailer DCs and Supplier DCs"
                 error={dcInvError} loading={dcInvLoading}
-                isZoomed={zoom4.isZoomed} onZoomReset={zoom4.resetZoom}
                 filters={
                   <ToggleSegment
                     value={dcViewMode}
@@ -961,15 +773,12 @@ export default function SimulationResultsPage() {
                 }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom4.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
-                      onMouseDown={zoom4.onMouseDown} onMouseMove={zoom4.onMouseMove} onMouseUp={zoom4.onMouseUp}
-                      style={{ cursor: zoom4.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom4.selectionArea()}
+                    <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<DCInvTooltip />} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
                       {dcViewMode === 'both' && (
                         <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
@@ -1143,98 +952,5 @@ export default function SimulationResultsPage() {
         })()}
       </div>
     </div>
-
-    {/* YAML config modal — same overlay style as chart expand */}
-    {yamlModalOpen && (() => {
-      const fc = runFullConfig as any
-      // Build a clean display YAML from the stored SimulationRequest dict
-      const displayYaml = fc ? (() => {
-        const run: Record<string, unknown> = {
-          simulation_name: fc.simulation_name,
-          start_date: fc.start_date,
-          end_date: fc.end_date,
-          store_target_wos: fc.store_target_wos,
-          store_initial_wos: fc.store_initial_wos,
-          retailer_dc_target_wos: fc.retailer_dc_target_wos,
-          retailer_dc_initial_wos: fc.retailer_dc_initial_wos,
-          supplier_dc_initial_wos: fc.supplier_dc_initial_wos,
-          retailer_dc_to_store_lead_weeks: fc.retailer_dc_to_store_lead_weeks,
-          supplier_dc_to_retailer_dc_lead_weeks: fc.supplier_dc_to_retailer_dc_lead_weeks,
-          dc_otd_rate: fc.dc_otd_rate,
-          dc_in_full_rate: fc.dc_in_full_rate,
-          supplier_otd_rate: fc.supplier_otd_rate,
-          supplier_in_full_rate: fc.supplier_in_full_rate,
-        }
-        for (const f of [
-          'retailer_dc_initial_wos_by_dc', 'retailer_dc_target_wos_by_dc',
-          'supplier_dc_initial_wos_by_supplier',
-          'retailer_dc_to_store_lead_weeks_by_dc',
-          'supplier_dc_to_retailer_dc_lead_weeks_by_supplier',
-          'dc_otd_rate_by_dc', 'dc_in_full_rate_by_dc',
-          'supplier_otd_rate_by_supplier', 'supplier_in_full_rate_by_supplier',
-        ]) {
-          const v = fc[f]
-          if (v && typeof v === 'object' && Object.keys(v).length > 0) run[f] = v
-        }
-        return yaml.dump({ run })
-      })() : ''
-
-      // Parse promo entries from stored promo_yaml string
-      const promoEntries: any[] = (() => {
-        try {
-          const raw = fc?.promo_yaml
-          if (!raw) return []
-          const parsed = yaml.load(raw) as any
-          return parsed?.promos ?? []
-        } catch { return [] }
-      })()
-
-      return (
-        <ChartModal
-          title="Run YAML Config"
-          subtitle={simName}
-          error=""
-          filters={
-            <button
-              onClick={() => navigator.clipboard.writeText(displayYaml)}
-              className="rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50"
-            >
-              Copy
-            </button>
-          }
-          onClose={() => setYamlModalOpen(false)}
-        >
-          <pre className="rounded-lg bg-charcoal-blue-50 p-4 font-mono text-xs text-charcoal-blue-900 whitespace-pre-wrap">
-            {displayYaml || 'No config available'}
-          </pre>
-          {promoEntries.length > 0 && (
-            <div className="mt-4">
-              <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-charcoal-blue-500">Promotions</p>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-charcoal-blue-100 text-left text-[10px] font-semibold text-charcoal-blue-500">
-                    <th className="pb-1 pr-4">Name</th>
-                    <th className="pb-1 pr-4">Start</th>
-                    <th className="pb-1 pr-4">End</th>
-                    <th className="pb-1">Multiplier</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {promoEntries.map((p: any, i: number) => (
-                    <tr key={i} className="border-b border-charcoal-blue-50">
-                      <td className="py-1 pr-4 font-medium text-charcoal-blue-900">{p.promo_name}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.start_date}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.end_date}</td>
-                      <td className="py-1 text-charcoal-blue-600">{p.demand_multiplier ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </ChartModal>
-      )
-    })()}
-    </>
   )
 }
