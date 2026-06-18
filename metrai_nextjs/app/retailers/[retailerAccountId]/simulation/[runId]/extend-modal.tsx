@@ -18,12 +18,10 @@ import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { Check, AlertCircle, Code, TrendingUp, Tag, ArrowRight, ChevronLeft, ChevronRight, Plus, Pencil, Trash2, Search, X } from 'lucide-react'
-import { Tabs, TabsContent } from '@/components/ui/tabs'
+import { Check, AlertCircle, Code, Tag, ArrowRight, ChevronLeft, ChevronRight, Plus, Pencil, Trash2, Search, X } from 'lucide-react'
 import yaml from 'js-yaml'
 import type { SimulatePreviewResponse, RunConfig, EndingInventoryResponse, PromoResponse } from '@/lib/api/types'
-import { SCENARIOS, NO_SCENARIO, type ScenarioId } from '@/lib/scenarios'
-import { cn } from '@/lib/utils'
+import { SCENARIOS, type ScenarioId } from '@/lib/scenarios'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -130,7 +128,7 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   const router = useRouter()
   const { userId, retailerAccountId } = useAuthStore()
   const routeAccountId = params.retailerAccountId as string
-  const { setCache } = useSimulationStore()
+  const { clearCache } = useSimulationStore()
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [baseConfig, setBaseConfig] = useState<RunConfig | null>(null)
@@ -146,7 +144,6 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   // Step 1
   const [promoPreview, setPromoPreview] = useState<SimulatePreviewResponse | null>(null)
   const [promoPreviewLoading, setPromoPreviewLoading] = useState(false)
-  const [promoFilter, setPromoFilter] = useState<'active' | 'excluded' | 'all'>('active')
   const [scheduledPromos, setScheduledPromos] = useState<ScheduledPromo[]>([])
   const [catalogPromos, setCatalogPromos] = useState<PromoResponse[]>([])
   const [catalogLoading, setCatalogLoading] = useState(false)
@@ -208,11 +205,8 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
         const cfgFull = cfg.full_config as any
         setSimulationName(`${cfgFull?.simulation_name ?? 'Simulation'} (Extended)`)
         setNotes(cfgFull?.notes ?? '')
-        // Pre-select the base simulation's scenario so the extension inherits it
-        const baseScenario = cfgFull?.scenario_type as ScenarioId | undefined
-        if (baseScenario && baseScenario !== 'no_scenario') {
-          setSelectedScenario(baseScenario)
-        }
+        // Always use promo_forecast — the YAML editor in Step 3 is pre-populated from scheduled promos
+        setSelectedScenario('promo_forecast')
       })
       .catch(err => setLoadBaseError(err?.response?.data?.detail ?? err?.message ?? 'Failed to load base simulation'))
       .finally(() => setLoadingBase(false))
@@ -227,25 +221,35 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   }, [open])
 
   // ── Scenario YAML auto-generation ─────────────────────────────────────────
+  // Initialise adjustments from scheduledPromos (keyed by clientId, preserving existing values)
   useEffect(() => {
     if (selectedScenario !== 'promo_forecast') {
       setPromoAdjustments({})
       setScenarioYaml('')
       return
     }
-    const init: Record<string, number> = {}
-    promoPreview?.promos?.forEach(p => { init[p.promo_id] = 0 })
-    setPromoAdjustments(init)
-  }, [selectedScenario, promoPreview])
+    setPromoAdjustments(prev => {
+      const next: Record<string, number> = {}
+      scheduledPromos.filter(s => !s.disabled).forEach(s => {
+        next[s.clientId] = prev[s.clientId] ?? 0
+      })
+      return next
+    })
+  }, [selectedScenario, scheduledPromos])
 
+  // Build scenario YAML from scheduledPromos using promo_name (as the engine expects)
   useEffect(() => {
     if (selectedScenario !== 'promo_forecast') return
-    const overrides = Object.entries(promoAdjustments).map(
-      ([promo_id, performance_adjustment]) => ({ promo_id, performance_adjustment })
-    )
-    if (!overrides.length) { setScenarioYaml(''); return }
-    setScenarioYaml(yaml.dump({ scenario_type: 'promo_forecast', promos: overrides }))
-  }, [promoAdjustments, selectedScenario])
+    const activePromos = scheduledPromos.filter(s => !s.disabled)
+    if (!activePromos.length) { setScenarioYaml(''); return }
+    setScenarioYaml(yaml.dump({
+      scenario_type: 'promo_forecast',
+      promos: activePromos.map(s => ({
+        promo_name: s.promo_name,
+        performance_adjustment: promoAdjustments[s.clientId] ?? 0,
+      })),
+    }))
+  }, [promoAdjustments, selectedScenario, scheduledPromos])
 
   // ── Demand generation (triggered on entering step 2) ──────────────────────
   const startDemandGeneration = async () => {
@@ -395,8 +399,9 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
         promo_yaml: buildPromoYaml(scheduledPromos) || undefined,
         scenario_yaml: (hasScenario && scenarioYaml) ? scenarioYaml : undefined,
       })
-      // Same simulation_id — update cache then reload the current page
-      if (result.summary) setCache({ simulationId: baseSimulationId, simulationName, summary: result.summary })
+      // Clear stale cache so the results page fetches fresh data from ClickHouse
+      // (ClickHouse write is synchronous, all weeks are ready before this runs)
+      clearCache()
       onClose()
       router.refresh()
     } catch (err: unknown) {
@@ -513,69 +518,11 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
               {/* ── Step 1: Promotion Schedule ──────────────────────────── */}
               {currentStep === 1 && (
                 <div className="space-y-3">
-                  <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
-                    <div className="mb-3 flex items-center gap-2">
-                      <TrendingUp size={15} className="text-majorelle-blue-500" />
-                      <div>
-                        <h3 className="text-sm font-bold text-charcoal-blue-950">Promo Preview</h3>
-                        <p className="text-[10px] text-charcoal-blue-400">Promotions active during the extension period</p>
-                      </div>
+                  {promoPreviewLoading && (
+                    <div className="flex items-center justify-center py-6">
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
                     </div>
-                    {promoPreviewLoading && <div className="flex justify-center py-6"><div className="h-5 w-5 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" /></div>}
-                    {!promoPreviewLoading && promoPreview && (
-                      <>
-                        <div className="mb-3 grid grid-cols-3 gap-2">
-                          {([
-                            { value: 'active' as const,   count: promoPreview.active_promos,          label: 'Active' },
-                            { value: 'excluded' as const, count: promoPreview.excluded_promos.length, label: 'Excluded' },
-                            { value: 'all' as const,      count: promoPreview.total_promos,           label: 'Total' },
-                          ]).map(({ value, count, label }) => (
-                            <button key={value} onClick={() => setPromoFilter(value)}
-                              className={cn('rounded-lg p-2 text-center transition-colors',
-                                promoFilter === value ? 'bg-majorelle-blue-50 ring-1 ring-majorelle-blue-300' : 'bg-charcoal-blue-50 hover:bg-charcoal-blue-100')}>
-                              <p className={cn('text-lg font-black', promoFilter === value ? 'text-majorelle-blue-600' : 'text-charcoal-blue-950')}>{count}</p>
-                              <p className="text-[9px] font-semibold text-charcoal-blue-400">{label}</p>
-                            </button>
-                          ))}
-                        </div>
-                        <Tabs value={promoFilter} onValueChange={(v) => setPromoFilter(v as typeof promoFilter)}>
-                          {([
-                            { value: 'active',   promos: promoPreview.promos,          emptyLabel: 'No promos active in the extension period' },
-                            { value: 'excluded', promos: promoPreview.excluded_promos, emptyLabel: 'No promos excluded' },
-                            { value: 'all',      promos: [...promoPreview.promos, ...promoPreview.excluded_promos].sort((a, b) => a.start_date.localeCompare(b.start_date)), emptyLabel: 'No promos found' },
-                          ] as const).map(({ value, promos, emptyLabel }) => (
-                            <TabsContent key={value} value={value} className="mt-0">
-                              {promos.length === 0 ? (
-                                <div className="rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 p-4 text-center">
-                                  <Tag size={18} className="mx-auto mb-1.5 text-charcoal-blue-300" />
-                                  <p className="text-xs font-semibold text-charcoal-blue-950">{emptyLabel}</p>
-                                </div>
-                              ) : (
-                                <div className="max-h-40 overflow-y-auto overflow-hidden rounded-lg border border-charcoal-blue-200">
-                                  <table className="w-full text-xs">
-                                    <thead className="sticky top-0 bg-charcoal-blue-50">
-                                      <tr>{['Promo Name','Event Type','Dates','Uplift'].map(h => <th key={h} className="px-2 py-1.5 text-left text-[9px] font-bold uppercase tracking-wide text-charcoal-blue-400">{h}</th>)}</tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-charcoal-blue-100">
-                                      {promos.map(p => (
-                                        <tr key={p.promo_id} className="bg-white hover:bg-charcoal-blue-50">
-                                          <td className="px-2 py-1 font-semibold text-charcoal-blue-950">{p.promo_name}</td>
-                                          <td className="px-2 py-1"><span className="rounded bg-majorelle-blue-50 px-1 py-0.5 font-bold text-majorelle-blue-600">{p.event_type||'—'}</span></td>
-                                          <td className="px-2 py-1 whitespace-nowrap text-charcoal-blue-400">{p.start_date} → {p.end_date}</td>
-                                          <td className="px-2 py-1 text-center font-bold text-emerald-600">{p.demand_multiplier}×</td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              )}
-                            </TabsContent>
-                          ))}
-                        </Tabs>
-                      </>
-                    )}
-                    {!promoPreviewLoading && !promoPreview && <p className="text-[10px] text-amber-700">Could not load promo preview.</p>}
-                  </div>
+                  )}
 
                   {/* ── Scheduled Promotions ─────────────────────────── */}
                   <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
@@ -681,9 +628,11 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                       })}
                     </div>
 
-                    {/* Add Promotion panel */}
-                    {showAddPanel && (
-                      <div className="mt-3 rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50/40 p-3">
+                  </div>
+
+                  {/* ── Add from Catalog — separate section below scheduled list ── */}
+                  {showAddPanel && (
+                      <div className="rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50/40 p-3">
                         <div className="mb-2 flex items-center justify-between">
                           <p className="text-xs font-bold text-charcoal-blue-950">Add from Catalog</p>
                           <button onClick={() => { setShowAddPanel(false); setAddingPromo(null) }} className="text-charcoal-blue-400 hover:text-charcoal-blue-700"><X size={14} /></button>
@@ -818,7 +767,6 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                         })()}
                       </div>
                     )}
-                  </div>
                 </div>
               )}
 
@@ -896,70 +844,39 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                 </div>
               )}
 
-              {/* ── Step 3: Scenario Config ─────────────────────────────── */}
+              {/* ── Step 3: Promo Performance Adjustments ──────────────── */}
               {currentStep === 3 && (
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div>
-                    <h3 className="mb-1 text-sm font-bold text-charcoal-blue-950">Choose a Scenario</h3>
-                    <p className="text-[10px] text-charcoal-blue-400">Apply a what-if scenario to the extension, or run with baseline demand only.</p>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {[NO_SCENARIO, ...SCENARIOS].map(s => {
-                      const Icon = s.icon
-                      const active = selectedScenario === s.id
-                      const isNoScenario = s.id === 'no_scenario'
-                      return (
-                        <button key={s.id} onClick={() => setSelectedScenario(s.id as ScenarioId)}
-                          className={`rounded-xl border-2 p-4 text-left transition-all ${active ? 'border-majorelle-blue-500 bg-majorelle-blue-50' : 'border-charcoal-blue-200 bg-white hover:border-majorelle-blue-300'}`}>
-                          <div className="mb-2 flex items-center justify-between">
-                            <div className={`flex h-8 w-8 items-center justify-center rounded-xl ${active ? 'bg-majorelle-blue-500' : 'bg-majorelle-blue-50'}`}>
-                              <Icon size={15} className={active ? 'text-white' : 'text-majorelle-blue-500'} />
-                            </div>
-                            {active && <div className="flex h-5 w-5 items-center justify-center rounded-full bg-majorelle-blue-500"><Check size={11} className="text-white" /></div>}
-                          </div>
-                          <p className="text-xs font-bold text-charcoal-blue-950">{s.title}</p>
-                          <p className="mt-0.5 text-[10px] text-charcoal-blue-400">{s.question}</p>
-                          {!isNoScenario && s.id !== 'promo_forecast' && (
-                            <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-charcoal-blue-50 px-2 py-0.5 text-[9px] font-semibold text-charcoal-blue-400">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Coming soon
-                            </span>
-                          )}
-                        </button>
-                      )
-                    })}
+                    <h3 className="mb-1 text-sm font-bold text-charcoal-blue-950">Promo Performance Adjustments</h3>
+                    <p className="text-[10px] text-charcoal-blue-400">
+                      Set <code className="rounded bg-charcoal-blue-100 px-1">performance_adjustment</code> per promo (0–200%). 0 = no change · 50 = 50% better than forecast · 200 = double the expected uplift.
+                    </p>
                   </div>
 
-                  {selectedScenario === 'promo_forecast' && promoPreview?.promos?.length ? (
-                    <div className="space-y-2">
-                      <p className="text-xs font-bold text-charcoal-blue-950">Promo Performance Adjustments</p>
-                      {promoPreview.promos.map(p => {
-                        const adj = promoAdjustments[p.promo_id] ?? 0
-                        const effectiveMultiplier = (p.demand_multiplier * (1 + adj / 100)).toFixed(2)
-                        return (
-                          <div key={p.promo_id} className="rounded-xl border border-charcoal-blue-200 bg-white p-3 shadow-sm">
-                            <div className="mb-2 flex items-start justify-between gap-2">
-                              <div>
-                                <p className="text-xs font-bold text-charcoal-blue-950">{p.promo_name}</p>
-                                <p className="text-[10px] text-charcoal-blue-400">{p.start_date} → {p.end_date}</p>
-                              </div>
-                              <div className="flex items-center gap-2 text-[10px]">
-                                <span className="text-charcoal-blue-500">{p.demand_multiplier}× → <strong className={adj > 0 ? 'text-emerald-600' : adj < 0 ? 'text-rose-600' : 'text-charcoal-blue-800'}>{effectiveMultiplier}×</strong></span>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <input type="range" min={-100} max={200} step={5} value={adj}
-                                onChange={e => setPromoAdjustments(prev => ({ ...prev, [p.promo_id]: Number(e.target.value) }))}
-                                className="flex-1 accent-majorelle-blue-500" />
-                              <input type="number" min={-100} max={200} step={1} value={adj}
-                                onChange={e => setPromoAdjustments(prev => ({ ...prev, [p.promo_id]: Number(e.target.value) }))}
-                                className="w-14 rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 px-2 py-1 text-center text-xs font-bold text-charcoal-blue-900 focus:outline-none" />
-                              <span className="text-xs text-charcoal-blue-400">%</span>
-                            </div>
-                          </div>
-                        )
-                      })}
+                  {scheduledPromos.filter(s => !s.disabled).length === 0 ? (
+                    <div className="rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-5 text-center">
+                      <p className="text-xs font-semibold text-charcoal-blue-700">No active scheduled promotions.</p>
+                      <p className="mt-1 text-[10px] text-charcoal-blue-400">Go back to Step 1 and enable or add promotions to configure their performance.</p>
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
+                      <div className="mb-3 flex items-center gap-2">
+                        <Code size={15} className="text-majorelle-blue-500" />
+                        <div>
+                          <h3 className="text-sm font-bold text-charcoal-blue-950">Promo Performance Scenario</h3>
+                          <p className="text-[10px] text-charcoal-blue-400">Edit <code className="rounded bg-charcoal-blue-100 px-1">performance_adjustment</code> per promo (0–200%). 0 = no change · 50 = 50% better · −20 = underperforms.</p>
+                        </div>
+                      </div>
+                      <textarea
+                        value={scenarioYaml}
+                        onChange={e => { setScenarioYaml(e.target.value); setScenarioYamlError(null) }}
+                        rows={Math.max(10, scenarioYaml.split('\n').length + 2)}
+                        className="w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 px-3 py-2 font-mono text-xs text-charcoal-blue-950 focus:border-majorelle-blue-500 focus:outline-none focus:ring-1 focus:ring-majorelle-blue-500"
+                        spellCheck={false}
+                      />
+                    </div>
+                  )}
 
                   {scenarioYamlError && <p className="flex items-center gap-1 text-[10px] text-rose-600"><AlertCircle size={11}/> {scenarioYamlError}</p>}
                 </div>
@@ -1027,7 +944,7 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
               <button onClick={handleNext}
                 disabled={isRunning || (currentStep === 2 && demandStatus === 'generating')}
                 className="inline-flex items-center gap-1.5 rounded-full bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600 disabled:cursor-not-allowed disabled:bg-charcoal-blue-300">
-                Next <ChevronRight size={15} />
+                {currentStep === 1 ? <>Generate Demand <ChevronRight size={15} /></> : <>Next <ChevronRight size={15} /></>}
               </button>
             ) : (
               <button onClick={handleRun} disabled={isRunning}

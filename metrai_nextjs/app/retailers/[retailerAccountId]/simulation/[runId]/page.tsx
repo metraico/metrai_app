@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, History, ChevronDown } from 'lucide-react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea, Cell,
 } from 'recharts'
 import {
   getAnalyticsMeta,
@@ -17,6 +17,14 @@ import { ExtendForecastModal } from './extend-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import type { AnalyticsMeta, SimulationSummary, SimulationExtensionRecord } from '@/lib/api/types'
+
+// Convert a YYYY-MM-DD date string to an ISO week string "YYYY-Www"
+function toIsoWeek(dateStr: string): string {
+  const d = new Date(dateStr)
+  const jan4 = new Date(d.getFullYear(), 0, 4)
+  const weekNum = Math.ceil(((d.getTime() - jan4.getTime()) / 86400000 + (jan4.getDay() || 7)) / 7)
+  return `${d.getFullYear()}-W${String(weekNum).padStart(2, '0')}`
+}
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
@@ -318,6 +326,8 @@ export default function SimulationResultsPage() {
   const [simName, setSimName] = useState('Simulation Results')
   const [showExtendModal, setShowExtendModal] = useState(false)
   const [extensions, setExtensions] = useState<SimulationExtensionRecord[]>([])
+  // First week that belongs to the extension (null if no extensions)
+  const extensionStartWeek = extensions.length > 0 ? toIsoWeek(extensions[0].previous_end_week) : null
   const [showExtensionHistory, setShowExtensionHistory] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
@@ -751,16 +761,27 @@ export default function SimulationResultsPage() {
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={posData} margin={{ top: 5, right: 20, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
                       {posData.filter(d => d.is_promo_week).map(d => (
-                        <ReferenceArea key={d.week} x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
+                        <ReferenceArea
+                          key={d.week} x1={d.week} x2={d.week}
+                          fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                          fillOpacity={0.15} stroke="none"
+                        />
                       ))}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<ChartTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
-                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
-                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
+                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
+                        {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
+                      </Bar>
+                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
+                        {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
+                      </Bar>
+                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
+                        {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
+                      </Bar>
+                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -781,6 +802,7 @@ export default function SimulationResultsPage() {
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -795,7 +817,11 @@ export default function SimulationResultsPage() {
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={shipData} margin={{ top: 5, right: 40, left: 0, bottom: 60 }} barCategoryGap="4%" barGap={2}>
                       {posData.filter(d => d.is_promo_week).map(d => (
-                        <ReferenceArea key={d.week} yAxisId="left" x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
+                        <ReferenceArea
+                          key={d.week} yAxisId="left" x1={d.week} x2={d.week}
+                          fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                          fillOpacity={0.15} stroke="none"
+                        />
                       ))}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
@@ -803,8 +829,13 @@ export default function SimulationResultsPage() {
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
-                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
-                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
+                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
+                        {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
+                      </Bar>
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10}>
+                        {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
+                      </Bar>
+                      {extensionStartWeek && <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -836,6 +867,7 @@ export default function SimulationResultsPage() {
                       {dcViewMode === 'both' && (
                         <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
                       )}
+                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -954,9 +986,16 @@ export default function SimulationResultsPage() {
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
-                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
-                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
+                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
+                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
+                        </Bar>
+                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
+                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
+                        </Bar>
+                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
+                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
+                        </Bar>
+                        {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                       </ComposedChart>
                     )}
                   </ResponsiveContainer>
