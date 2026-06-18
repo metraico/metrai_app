@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
-import { getRunYamlTemplate, runSimulation } from '@/lib/api/simulation'
+import { getRunYamlTemplate, runSimulation, engineBaseUrl } from '@/lib/api/simulation'
 import { getSimulatePreview, getPromoYamlTemplate } from '@/lib/api/promos'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp, Tag } from 'lucide-react'
@@ -116,10 +116,12 @@ function YamlEditor({
 function FormField({
   label,
   info,
+  error,
   children,
 }: {
   label: string
   info?: string
+  error?: string
   children: React.ReactNode
 }) {
   return (
@@ -137,11 +139,13 @@ function FormField({
         )}
       </div>
       {children}
+      {error && <p className="text-[9px] font-semibold text-rose-500">{error}</p>}
     </div>
   )
 }
 
 const inputCls = 'w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50/60 px-2.5 py-1.5 text-xs font-medium text-charcoal-blue-900 placeholder:text-charcoal-blue-300 transition-all focus:border-majorelle-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-majorelle-blue-100'
+const inputErrCls = 'w-full rounded-lg border border-rose-400 bg-rose-50/40 px-2.5 py-1.5 text-xs font-medium text-charcoal-blue-900 placeholder:text-charcoal-blue-300 transition-all focus:border-rose-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-100'
 
 type RunStage =
   | { type: 'idle' }
@@ -163,6 +167,10 @@ export default function NewSimulationPage() {
   const [scenarioYaml, setScenarioYaml] = useState(PROMO_SCENARIO_TEMPLATE)
   const [stage, setStage] = useState<RunStage>({ type: 'idle' })
   const [templateLoading, setTemplateLoading] = useState(true)
+  const [entityYamlSyncing, setEntityYamlSyncing] = useState(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [simProgress, setSimProgress] = useState<{ week: number; total: number; label: string } | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const [promoPreview, setPromoPreview] = useState<SimulatePreviewResponse | null>(null)
   const [promoPreviewLoading, setPromoPreviewLoading] = useState(false)
@@ -173,8 +181,38 @@ export default function NewSimulationPage() {
   const setField = <K extends keyof RunFormValues>(key: K, value: RunFormValues[K]) =>
     setFormValues(prev => ({ ...prev, [key]: value }))
 
+  const [rawValues, setRawValues] = useState<Partial<Record<keyof RunFormValues, string>>>({})
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof RunFormValues, string>>>({})
+
+  const numericInputProps = (key: keyof RunFormValues, min: number, max: number, step: number) => {
+    const raw = rawValues[key] ?? String(formValues[key])
+    const hasError = !!fieldErrors[key]
+    return {
+      type: 'text' as const,
+      inputMode: 'decimal' as const,
+      value: raw,
+      className: hasError ? inputErrCls : inputCls,
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        const str = e.target.value
+        setRawValues(prev => ({ ...prev, [key]: str }))
+        const n = parseFloat(str)
+        if (!isNaN(n) && str.trim() !== '') {
+          setField(key, n as any)
+          if (n < min || n > max) {
+            setFieldErrors(prev => ({ ...prev, [key]: `Must be ${min} – ${max}` }))
+          } else {
+            setFieldErrors(prev => ({ ...prev, [key]: undefined }))
+          }
+        } else {
+          setFieldErrors(prev => ({ ...prev, [key]: undefined }))
+        }
+      },
+    }
+  }
+
+  // Initial load: fetch template to set metadata + scalar formValues (entity YAML handled by debounced effect)
   useEffect(() => {
-    getRunYamlTemplate(routeAccountId)
+    getRunYamlTemplate({ retailerAccountId: routeAccountId })
       .then(({ yaml: tpl }) => {
         try {
           const parsed = yaml.load(tpl) as { run?: Record<string, unknown> }
@@ -198,11 +236,6 @@ export default function NewSimulationPage() {
             dc_in_full_rate: Number(run.dc_in_full_rate ?? DEFAULT_FORM.dc_in_full_rate),
             disable_promo_decay: Boolean(run.disable_promo_decay ?? DEFAULT_FORM.disable_promo_decay),
           })
-          const entityObj: Record<string, unknown> = {}
-          if (run.dcs) entityObj.dcs = run.dcs
-          if (run.suppliers) entityObj.suppliers = run.suppliers
-          if (run.stores) entityObj.stores = run.stores
-          if (Object.keys(entityObj).length > 0) setEntityYaml(yaml.dump(entityObj))
         } catch {
           // template parse failed — keep defaults
         }
@@ -210,6 +243,47 @@ export default function NewSimulationPage() {
       .catch((err) => setStage({ type: 'error', message: `Failed to load template: ${err?.message ?? err}` }))
       .finally(() => setTemplateLoading(false))
   }, [])
+
+  // Auto-update entity YAML whenever scalars change (500ms debounce)
+  useEffect(() => {
+    if (templateLoading) return
+    const timer = setTimeout(async () => {
+      setEntityYamlSyncing(true)
+      try {
+        const { yaml: tpl } = await getRunYamlTemplate({
+          retailerAccountId: routeAccountId,
+          store_target_wos: formValues.store_target_wos,
+          store_initial_wos: formValues.store_initial_wos,
+          retailer_dc_target_wos: formValues.retailer_dc_target_wos,
+          retailer_dc_initial_wos: formValues.retailer_dc_initial_wos,
+          supplier_dc_initial_wos: formValues.supplier_dc_initial_wos,
+          retailer_dc_to_store_lead_weeks: formValues.retailer_dc_to_store_lead_weeks,
+          supplier_dc_to_retailer_dc_lead_weeks: formValues.supplier_dc_to_retailer_dc_lead_weeks,
+          dc_otd_rate: formValues.dc_otd_rate,
+          dc_in_full_rate: formValues.dc_in_full_rate,
+          supplier_otd_rate: formValues.supplier_otd_rate,
+          supplier_in_full_rate: formValues.supplier_in_full_rate,
+        })
+        const parsed = yaml.load(tpl) as { run?: Record<string, unknown> }
+        const run = parsed?.run ?? {}
+        const entityObj: Record<string, unknown> = {}
+        if (run.dcs) entityObj.dcs = run.dcs
+        if (run.suppliers) entityObj.suppliers = run.suppliers
+        if (run.stores) entityObj.stores = run.stores
+        setEntityYaml(Object.keys(entityObj).length > 0 ? yaml.dump(entityObj) : '')
+      } catch { /* keep existing entity YAML on error */ }
+      finally { setEntityYamlSyncing(false) }
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [
+    templateLoading,
+    formValues.store_target_wos, formValues.store_initial_wos,
+    formValues.retailer_dc_target_wos, formValues.retailer_dc_initial_wos,
+    formValues.supplier_dc_initial_wos,
+    formValues.retailer_dc_to_store_lead_weeks, formValues.supplier_dc_to_retailer_dc_lead_weeks,
+    formValues.dc_otd_rate, formValues.dc_in_full_rate,
+    formValues.supplier_otd_rate, formValues.supplier_in_full_rate,
+  ])
 
   const hasScenario = selectedScenario !== 'no_scenario'
   const isRunning = stage.type === 'generating_demand' || stage.type === 'running_simulation'
@@ -223,12 +297,12 @@ export default function NewSimulationPage() {
     seed: formValues.seed,
   })
 
-  const buildFullYaml = (): string => {
+  const buildFullYaml = (values: RunFormValues = formValues): string => {
     const accountId = routeAccountId || retailerAccountId
     const runBlock: Record<string, unknown> = {
       retailer_account_id: accountId,
       ...(userId ? { user_id: userId } : {}),
-      ...formValues,
+      ...values,
     }
     try {
       const entity = yaml.load(entityYaml) as Record<string, unknown>
@@ -281,17 +355,46 @@ export default function NewSimulationPage() {
       return
     }
 
-    const finalYaml = buildFullYaml()
+    // Flush any rawValues that are still pending (e.g. field was edited but form not re-rendered)
+    const flushedValues = { ...formValues }
+    for (const [k, raw] of Object.entries(rawValues)) {
+      const n = parseFloat(raw as string)
+      if (!isNaN(n)) (flushedValues as any)[k] = n
+    }
+
+    const finalYaml = buildFullYaml(flushedValues)
     const combinedYaml = hasScenario ? `${finalYaml.trimEnd()}\n\n${scenarioYaml}` : finalYaml
 
     try {
       setStage({ type: 'running_simulation', message: 'Running simulation…' })
-      const result = await runSimulation(combinedYaml, promoYaml)
+      setElapsedSeconds(0)
+      setSimProgress(null)
+      timerRef.current = setInterval(() => setElapsedSeconds(s => s + 1), 1000)
+
+      // Generate sim ID upfront so we can open the SSE stream before the POST resolves
+      const simId = crypto.randomUUID()
+      const es = new EventSource(`${engineBaseUrl}/simulate-progress/${simId}`)
+      es.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data)
+          if (d.done) { es.close(); return }
+          if (d.total > 0) setSimProgress({ week: d.week, total: d.total, label: d.label ?? '' })
+        } catch { /* ignore malformed */ }
+      }
+      es.onerror = () => es.close()
+
+      const result = await runSimulation(combinedYaml, promoYaml, simId)
+      es.close()
+      setSimProgress(null)
+
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
+
       const { simulation_id, summary } = result
       const simName = formValues.simulation_name || 'Simulation Results'
       if (summary) setCache({ simulationId: simulation_id, simulationName: simName, summary })
       router.push(`/retailers/${routeAccountId}/simulation/${simulation_id}`)
     } catch (err: unknown) {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
       const msg = err instanceof Error ? err.message : 'An error occurred.'
       setStage({ type: 'error', message: msg })
     }
@@ -374,25 +477,17 @@ export default function NewSimulationPage() {
                         <span className="text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Supplier DC</span>
                       </div>
                       <div className="grid grid-cols-4 gap-2">
-                        <FormField label="Initial WOS" info="Opening weeks of supply for all Supplier DCs. Range: 1 – 12">
-                          <input type="number" value={formValues.supplier_dc_initial_wos}
-                            onChange={e => setField('supplier_dc_initial_wos', Number(e.target.value))}
-                            className={inputCls} min={1} max={12} step={1} />
+                        <FormField label="Initial WOS" info="Opening weeks of supply for all Supplier DCs. Range: 1 – 12" error={fieldErrors.supplier_dc_initial_wos}>
+                          <input {...numericInputProps('supplier_dc_initial_wos', 1, 12, 1)} />
                         </FormField>
-                        <FormField label="Lead → Retail DC" info="Transit time in weeks from Supplier DC to Retailer DC. Used to schedule inbound PO receipts.">
-                          <input type="number" value={formValues.supplier_dc_to_retailer_dc_lead_weeks}
-                            onChange={e => setField('supplier_dc_to_retailer_dc_lead_weeks', Number(e.target.value))}
-                            className={inputCls} min={1} max={12} step={1} />
+                        <FormField label="Lead → Retail DC" info="Transit time in weeks from Supplier DC to Retailer DC. Range: 1 – 12" error={fieldErrors.supplier_dc_to_retailer_dc_lead_weeks}>
+                          <input {...numericInputProps('supplier_dc_to_retailer_dc_lead_weeks', 1, 12, 1)} />
                         </FormField>
-                        <FormField label="OTD Rate" info="On-Time Delivery rate — probability a supplier shipment arrives by the expected delivery date. Range: 0.0 – 1.0">
-                          <input type="number" value={formValues.supplier_otd_rate}
-                            onChange={e => setField('supplier_otd_rate', Number(e.target.value))}
-                            className={inputCls} min={0} max={1} step={0.01} />
+                        <FormField label="OTD Rate" info="On-Time Delivery rate — probability a supplier shipment arrives by the expected delivery date. Range: 0.0 – 1.0" error={fieldErrors.supplier_otd_rate}>
+                          <input {...numericInputProps('supplier_otd_rate', 0, 1, 0.01)} />
                         </FormField>
-                        <FormField label="In-Full Rate" info="In-Full rate — probability the supplier delivers the complete ordered quantity. Range: 0.5 – 1.0">
-                          <input type="number" value={formValues.supplier_in_full_rate}
-                            onChange={e => setField('supplier_in_full_rate', Number(e.target.value))}
-                            className={inputCls} min={0.5} max={1} step={0.01} />
+                        <FormField label="In-Full Rate" info="In-Full rate — probability the supplier delivers the complete ordered quantity. Range: 0.5 – 1.0" error={fieldErrors.supplier_in_full_rate}>
+                          <input {...numericInputProps('supplier_in_full_rate', 0.5, 1, 0.01)} />
                         </FormField>
                       </div>
                     </div>
@@ -406,30 +501,20 @@ export default function NewSimulationPage() {
                         <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Retail DC</span>
                       </div>
                       <div className="grid grid-cols-4 gap-2">
-                        <FormField label="Target WOS" info="Target weeks of supply for all Retailer DCs. Range: 1 – 12">
-                          <input type="number" value={formValues.retailer_dc_target_wos}
-                            onChange={e => setField('retailer_dc_target_wos', Number(e.target.value))}
-                            className={inputCls} min={1} max={12} step={1} />
+                        <FormField label="Target WOS" info="Target weeks of supply for all Retailer DCs. Range: 1 – 12" error={fieldErrors.retailer_dc_target_wos}>
+                          <input {...numericInputProps('retailer_dc_target_wos', 1, 12, 1)} />
                         </FormField>
-                        <FormField label="Initial WOS" info="Opening weeks of supply for all Retail DCs at simulation start. Range: 1 – 12">
-                          <input type="number" value={formValues.retailer_dc_initial_wos}
-                            onChange={e => setField('retailer_dc_initial_wos', Number(e.target.value))}
-                            className={inputCls} min={1} max={12} step={1} />
+                        <FormField label="Initial WOS" info="Opening weeks of supply for all Retail DCs at simulation start. Range: 1 – 12" error={fieldErrors.retailer_dc_initial_wos}>
+                          <input {...numericInputProps('retailer_dc_initial_wos', 1, 12, 1)} />
                         </FormField>
-                        <FormField label="Lead → Store" info="Transit time in weeks from Retailer DC to store. Used to schedule store replenishment receipts.">
-                          <input type="number" value={formValues.retailer_dc_to_store_lead_weeks}
-                            onChange={e => setField('retailer_dc_to_store_lead_weeks', Number(e.target.value))}
-                            className={inputCls} min={1} max={12} step={1} />
+                        <FormField label="Lead → Store" info="Transit time in weeks from Retailer DC to store. Range: 1 – 12" error={fieldErrors.retailer_dc_to_store_lead_weeks}>
+                          <input {...numericInputProps('retailer_dc_to_store_lead_weeks', 1, 12, 1)} />
                         </FormField>
-                        <FormField label="OTD Rate" info="On-Time Delivery rate — probability a DC shipment arrives at the store by the expected date. Range: 0.0 – 1.0">
-                          <input type="number" value={formValues.dc_otd_rate}
-                            onChange={e => setField('dc_otd_rate', Number(e.target.value))}
-                            className={inputCls} min={0} max={1} step={0.01} />
+                        <FormField label="OTD Rate" info="On-Time Delivery rate — probability a DC shipment arrives at the store by the expected date. Range: 0.0 – 1.0" error={fieldErrors.dc_otd_rate}>
+                          <input {...numericInputProps('dc_otd_rate', 0, 1, 0.01)} />
                         </FormField>
-                        <FormField label="In-Full Rate" info="In-Full rate — probability a DC delivers the complete ordered quantity to stores. Range: 0.7 – 1.0">
-                          <input type="number" value={formValues.dc_in_full_rate}
-                            onChange={e => setField('dc_in_full_rate', Number(e.target.value))}
-                            className={inputCls} min={0.7} max={1} step={0.01} />
+                        <FormField label="In-Full Rate" info="In-Full rate — probability a DC delivers the complete ordered quantity to stores. Range: 0.7 – 1.0" error={fieldErrors.dc_in_full_rate}>
+                          <input {...numericInputProps('dc_in_full_rate', 0.7, 1, 0.01)} />
                         </FormField>
                       </div>
                     </div>
@@ -443,15 +528,11 @@ export default function NewSimulationPage() {
                         <span className="text-[10px] font-bold uppercase tracking-widest text-amber-600">Store</span>
                       </div>
                       <div className="grid grid-cols-4 gap-2">
-                        <FormField label="Target WOS" info="Store replenishment target in weeks of supply. Stores order when inventory falls below this level. Range: 1 – 8">
-                          <input type="number" value={formValues.store_target_wos}
-                            onChange={e => setField('store_target_wos', Number(e.target.value))}
-                            className={inputCls} min={1} max={8} step={1} />
+                        <FormField label="Target WOS" info="Store replenishment target in weeks of supply. Stores order when inventory falls below this level. Range: 1 – 8" error={fieldErrors.store_target_wos}>
+                          <input {...numericInputProps('store_target_wos', 1, 8, 1)} />
                         </FormField>
-                        <FormField label="Initial WOS" info="Opening weeks of supply for all stores at simulation start. Range: 1 – 8">
-                          <input type="number" value={formValues.store_initial_wos}
-                            onChange={e => setField('store_initial_wos', Number(e.target.value))}
-                            className={inputCls} min={1} max={8} step={1} />
+                        <FormField label="Initial WOS" info="Opening weeks of supply for all stores at simulation start. Range: 1 – 8" error={fieldErrors.store_initial_wos}>
+                          <input {...numericInputProps('store_initial_wos', 1, 8, 1)} />
                         </FormField>
                       </div>
                     </div>
@@ -464,14 +545,22 @@ export default function NewSimulationPage() {
                       <span className="text-[10px] font-bold uppercase tracking-widest text-charcoal-blue-500">Entity Overrides</span>
                       <span className="ml-auto text-[9px] text-charcoal-blue-400">dcs · suppliers · stores</span>
                     </div>
-                    <textarea
-                      value={entityYaml}
-                      onChange={e => setEntityYaml(e.target.value)}
-                      className="w-full bg-white px-4 py-3 font-mono text-xs text-charcoal-blue-950 focus:outline-none"
-                      rows={12}
-                      spellCheck={false}
-                      placeholder="# dcs:\n#   DC_EAST:\n#     otd_rate: 0.95"
-                    />
+                    <div className="relative">
+                      <textarea
+                        value={entityYaml}
+                        onChange={e => setEntityYaml(e.target.value)}
+                        disabled={entityYamlSyncing}
+                        className="w-full bg-white px-4 py-3 font-mono text-xs text-charcoal-blue-950 focus:outline-none disabled:opacity-50"
+                        rows={12}
+                        spellCheck={false}
+                        placeholder="# dcs:\n#   DC_EAST:\n#     otd_rate: 0.95"
+                      />
+                      {entityYamlSyncing && (
+                        <div className="absolute inset-0 flex items-center justify-center rounded-b-xl bg-white/70">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )
@@ -709,9 +798,21 @@ export default function NewSimulationPage() {
               </div>
             )}
             {stage.type === 'running_simulation' && (
-              <div className="mb-4 flex items-center gap-2 rounded-lg border border-majorelle-blue-200 bg-majorelle-blue-50 p-3">
-                <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
-                <p className="text-xs font-semibold text-majorelle-blue-950">{stage.message}</p>
+              <div className="mb-4 flex items-center justify-between gap-2 rounded-lg border border-majorelle-blue-200 bg-majorelle-blue-50 p-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-4 w-4 flex-shrink-0 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
+                  <div>
+                    <p className="text-xs font-semibold text-majorelle-blue-950">{stage.message}</p>
+                    {simProgress && simProgress.total > 0 && (
+                      <p className="text-[10px] text-majorelle-blue-600">
+                        Week {simProgress.week} / {simProgress.total}{simProgress.label ? ` (${simProgress.label})` : ''}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <span className="font-mono text-xs font-bold text-majorelle-blue-600">
+                  {Math.floor(elapsedSeconds / 60).toString().padStart(2, '0')}:{(elapsedSeconds % 60).toString().padStart(2, '0')}
+                </span>
               </div>
             )}
             {stage.type === 'idle' && (
@@ -749,7 +850,12 @@ export default function NewSimulationPage() {
               </button>
             : <button onClick={handleRun} disabled={isRunning}
                 className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-charcoal-blue-300">
-                {isRunning ? 'Running…' : 'Run Simulation'}
+                {isRunning ? (
+                  <>
+                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    <span>Running…</span>
+                  </>
+                ) : 'Run Simulation'}
               </button>
           }
         </div>

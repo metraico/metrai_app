@@ -150,6 +150,7 @@ export interface SimulatePreviewResponse {
 export interface RunYamlResponse {
   simulation_id: string
   status: string
+  simulation_elapsed_seconds: number
   summary?: SimulationSummary
 }
 
