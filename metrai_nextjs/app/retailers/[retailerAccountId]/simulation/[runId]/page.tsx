@@ -866,12 +866,6 @@ export default function SimulationResultsPage() {
                 <ChevronRight size={13} /> Extend Forecast
               </button>
             )}
-            <button className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600">
-              <Download size={13} /> Export
-            </button>
-          </div>
-<<<<<<< HEAD
-=======
           <button
             onClick={handleExport}
             disabled={exportLoading}
@@ -880,7 +874,7 @@ export default function SimulationResultsPage() {
             {exportLoading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
             {exportLoading ? 'Exporting…' : 'Export'}
           </button>
->>>>>>> 24008c6 (feat: add export functionality for simulation results and enhance focus styles)
+          </div>
         </div>
 
         {/* Analytics write status banner */}
@@ -954,8 +948,7 @@ export default function SimulationResultsPage() {
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<ChartTooltip />} />
-<<<<<<< HEAD
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
                         {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
                       </Bar>
@@ -966,12 +959,6 @@ export default function SimulationResultsPage() {
                         {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
                       </Bar>
                       {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
-=======
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
-                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
-                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
->>>>>>> 24008c6 (feat: add export functionality for simulation results and enhance focus styles)
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -1026,8 +1013,7 @@ export default function SimulationResultsPage() {
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
-<<<<<<< HEAD
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '12px' }} />
+                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
                         {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
                       </Bar>
@@ -1035,11 +1021,6 @@ export default function SimulationResultsPage() {
                         {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
                       </Bar>
                       {extensionStartWeek && <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
-=======
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
-                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
->>>>>>> 24008c6 (feat: add export functionality for simulation results and enhance focus styles)
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
