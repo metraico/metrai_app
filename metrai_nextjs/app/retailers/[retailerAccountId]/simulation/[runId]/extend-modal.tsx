@@ -4,12 +4,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
 import {
-  getRunConfig, getEndingInventory,
+  getRunConfig,
   generateDemand, getDemandStatus, getDemandWeeklyTotals,
-  extendSimulation,
+  extendSimulation, saveExtensionPromos, generateExtensionDemand,
 } from '@/lib/api/simulation'
 import { getSimulatePreview, getPromos } from '@/lib/api/promos'
-import { getSummaryStoreSales } from '@/lib/api/analytics'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import {
   Dialog, DialogContent, DialogTitle,
@@ -20,7 +19,7 @@ import {
 } from 'recharts'
 import { Check, AlertCircle, Code, Tag, ArrowRight, ChevronLeft, ChevronRight, Plus, Pencil, Trash2, Search, X } from 'lucide-react'
 import yaml from 'js-yaml'
-import type { SimulatePreviewResponse, RunConfig, EndingInventoryResponse, PromoResponse } from '@/lib/api/types'
+import type { SimulatePreviewResponse, RunConfig, PromoResponse } from '@/lib/api/types'
 import { SCENARIOS, type ScenarioId } from '@/lib/scenarios'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
@@ -131,8 +130,8 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   const { clearCache } = useSimulationStore()
 
   // ── State ──────────────────────────────────────────────────────────────────
+  const [sessionId] = useState<string>(() => crypto.randomUUID())
   const [baseConfig, setBaseConfig] = useState<RunConfig | null>(null)
-  const [endingInventory, setEndingInventory] = useState<EndingInventoryResponse | null>(null)
   const [loadingBase, setLoadingBase] = useState(false)
   const [loadBaseError, setLoadBaseError] = useState('')
 
@@ -175,7 +174,15 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   const baseName: string = baseFull?.simulation_name ?? 'Base Simulation'
   const baseEndDate: string = baseFull?.end_date ?? ''
   const baseSeed: number = baseFull?.seed ?? 42
-  const baseEndWeek = endingInventory?.base_end_week ?? ''
+  const baseEndWeek = baseEndDate ? toIsoWeek(baseEndDate) : ''
+  // Minimum valid extension end date: must be strictly after the base simulation's end date
+  const minExtensionDate = baseEndDate
+    ? (() => {
+        const d = new Date(baseEndDate)
+        d.setDate(d.getDate() + 1)
+        return d.toISOString().slice(0, 10)
+      })()
+    : undefined
   const hasScenario = selectedScenario !== 'no_scenario'
   const scenarioDef = SCENARIOS.find(s => s.id === selectedScenario)
 
@@ -195,15 +202,17 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
     setGroupFilter('all')
     setAddingPromo(null)
     setEditingClientId(null)
-    Promise.all([
-      getRunConfig(baseSimulationId),
-      getEndingInventory(baseSimulationId),
-    ])
-      .then(([cfg, inv]) => {
+    getRunConfig(baseSimulationId)
+      .then(cfg => {
         setBaseConfig(cfg)
-        setEndingInventory(inv)
         const cfgFull = cfg.full_config as any
-        setSimulationName(`${cfgFull?.simulation_name ?? 'Simulation'} (Extended)`)
+        setSimulationName(cfgFull?.simulation_name ?? 'Simulation')
+        // Pre-fill extension date to day after base end so calendar opens at the right month
+        if (cfgFull?.end_date) {
+          const d = new Date(cfgFull.end_date)
+          d.setDate(d.getDate() + 1)
+          setExtensionEndDate(d.toISOString().slice(0, 10))
+        }
         setNotes(cfgFull?.notes ?? '')
         // Always use promo_forecast — the YAML editor in Step 3 is pre-populated from scheduled promos
         setSelectedScenario('promo_forecast')
@@ -255,13 +264,35 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   const startDemandGeneration = async () => {
     if (!baseEndDate || !extensionEndDate) return
     setDemandStatus('generating')
+    const accountId = routeAccountId || retailerAccountId || ''
     try {
-      const { job_id } = await generateDemand(
-        routeAccountId || retailerAccountId || '',
-        baseEndDate,
-        extensionEndDate,
-        baseSeed,
+      // 1. Save scheduled promos to DB for this session
+      await saveExtensionPromos(
+        baseSimulationId,
+        sessionId,
+        accountId,
+        scheduledPromos.map(sp => ({
+          promo_id: sp.promo_id || undefined,
+          promo_name: sp.promo_name,
+          promo_group_name: sp.promo_group_name,
+          event_type: sp.event_type,
+          start_date: sp.start_date,
+          end_date: sp.end_date,
+          demand_multiplier: sp.demand_multiplier,
+          is_disabled: sp.disabled,
+        })),
       )
+
+      // 2. Trigger demand generation using stored promo schedules
+      const { job_id } = await generateExtensionDemand({
+        session_id: sessionId,
+        simulation_id: baseSimulationId,
+        retailer_account_id: accountId,
+        start_date: baseEndDate,
+        end_date: extensionEndDate,
+        seed: baseSeed,
+      })
+
       const poll = async () => {
         try {
           const status = await getDemandStatus(job_id)
@@ -289,21 +320,26 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
 
   const loadDemandChart = async (extStartWeek: string, extEndWeek: string) => {
     const accountId = routeAccountId || retailerAccountId || ''
-    const [baseSummary, extDemand] = await Promise.all([
-      getSummaryStoreSales(baseSimulationId).catch(() => null),
+    // Base sim demand: read last 8 weeks from weekly_demand table (same source as extension)
+    const baseSimStartWeek = toIsoWeek(baseFull?.start_date ?? '')
+    const baseSimEndWeek   = toIsoWeek(baseEndDate)
+
+    const [baseDemand, extDemand] = await Promise.all([
+      baseSimStartWeek
+        ? getDemandWeeklyTotals(accountId, baseSimStartWeek, baseSimEndWeek, baseSeed).catch(() => [])
+        : Promise.resolve([]),
       getDemandWeeklyTotals(accountId, extStartWeek, extEndWeek, baseSeed).catch(() => []),
     ])
 
     const rows: { week: string; base?: number; ext?: number }[] = []
 
-    // Last 8 weeks of base sim POS
-    const basePOS = (baseSummary as any)?.weekly_pos ?? []
-    const lastBase = basePOS.slice(-8)
+    // Last 8 weeks of base sim demand (from weekly_demand table)
+    const lastBase = baseDemand.slice(-8)
     for (const r of lastBase) {
-      rows.push({ week: r.pos_week, base: Number(r.demand_qty) })
+      rows.push({ week: r.pos_week, base: r.demand_qty })
     }
 
-    // Extension demand weeks
+    // All extension demand weeks (from weekly_demand table)
     for (const r of extDemand) {
       rows.push({ week: r.pos_week, ext: r.demand_qty })
     }
@@ -316,6 +352,10 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
     if (currentStep === 0) {
       if (!extensionEndDate) {
         setStage({ type: 'error', message: 'Please set an extension end date.' })
+        return
+      }
+      if (baseEndDate && extensionEndDate <= baseEndDate) {
+        setStage({ type: 'error', message: `Extension end date must be after the base simulation's end date (${baseEndDate}).` })
         return
       }
       setStage({ type: 'idle' })
@@ -396,14 +436,17 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
         extension_end_date: extensionEndDate,
         simulation_name: simulationName || undefined,
         notes: notes || undefined,
-        promo_yaml: buildPromoYaml(scheduledPromos) || undefined,
+        session_id: sessionId,
         scenario_yaml: (hasScenario && scenarioYaml) ? scenarioYaml : undefined,
       })
-      // Clear stale cache so the results page fetches fresh data from ClickHouse
-      // (ClickHouse write is synchronous, all weeks are ready before this runs)
+      // Clear stale cache and hard-navigate to the same URL.
+      // router.refresh() keeps client state alive (extensions stays []), so the
+      // extension color highlights never appear without a manual refresh.
+      // router.push() remounts the component, resetting all state so extensions
+      // are fetched fresh and Cell colors apply immediately.
       clearCache()
       onClose()
-      router.refresh()
+      router.push(`/retailers/${routeAccountId}/simulation/${baseSimulationId}`)
     } catch (err: unknown) {
       const detail = (err as any)?.response?.data?.detail
       setStage({ type: 'error', message: detail ?? (err instanceof Error ? err.message : 'An error occurred.') })
@@ -417,23 +460,23 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
     <Dialog open={open} onOpenChange={(o) => { if (!o && !isRunning) onClose() }}>
       <DialogContent className="max-w-3xl w-full max-h-[90vh] overflow-y-auto p-0 gap-0">
         {/* Header */}
-        <div className="sticky top-0 z-10 border-b border-charcoal-blue-100 bg-white px-6 pt-6 pb-4 rounded-t-xl">
+        <div className="sticky top-0 z-10 border-b border-charcoal-blue-100 bg-white px-6 pt-5 pb-3 rounded-t-xl">
           <DialogTitle className="text-xl font-black tracking-tight text-charcoal-blue-950">Extend Forecast</DialogTitle>
           <p className="mt-0.5 text-xs text-charcoal-blue-400">Continue this simulation forward in time</p>
           {baseConfig && (
-            <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-charcoal-blue-200 bg-charcoal-blue-50 px-3 py-1">
+            <div className="mt-1.5 inline-flex items-center gap-2 rounded-full border border-charcoal-blue-200 bg-charcoal-blue-50 px-3 py-1">
               <span className="text-[9px] font-bold uppercase tracking-widest text-charcoal-blue-400">Base</span>
               <span className="text-xs font-bold text-charcoal-blue-700">{baseName}</span>
               {baseEndWeek && <><span className="text-charcoal-blue-300">·</span><span className="font-mono text-[10px] text-charcoal-blue-500">ends {baseEndWeek}</span></>}
             </div>
           )}
-          <div className="mt-4">
+          <div className="mt-3">
             <StepIndicator currentStep={currentStep} totalSteps={TOTAL_STEPS} />
           </div>
         </div>
 
         {/* Body */}
-        <div className="px-6 py-5 bg-white ">
+        <div className="px-6 py-4 bg-white">
 
           {/* Loading base */}
           {loadingBase && (
@@ -470,9 +513,7 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                         </div>
                         <div>
                           <p className="text-[9px] font-semibold uppercase text-charcoal-blue-400">Ending Inventory</p>
-                          {endingInventory
-                            ? <p className="font-bold text-emerald-600">✓ Loaded ({endingInventory.store_inventory.length} store rows)</p>
-                            : <p className="font-bold text-amber-600">Loading…</p>}
+                          <p className="font-bold text-emerald-600">✓ Loaded from server</p>
                         </div>
                       </div>
                     </div>
@@ -484,20 +525,37 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                         <span className="h-3 w-0.5 rounded-full bg-majorelle-blue-500" />
                         <span className="text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Extension Details</span>
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <FormField label="Extension End Date" info="Simulation will run from the base end date through this date.">
-                          <input type="date" value={extensionEndDate} min={baseEndDate || undefined}
-                            onChange={e => setExtensionEndDate(e.target.value)} className={inputCls} />
-                        </FormField>
-                        <FormField label="Name">
-                          <input type="text" value={simulationName} onChange={e => setSimulationName(e.target.value)}
-                            className={inputCls} placeholder="Extended Simulation" />
-                        </FormField>
-                        <FormField label="Notes">
-                          <input type="text" value={notes} onChange={e => setNotes(e.target.value)}
-                            className={inputCls} placeholder="Optional" />
-                        </FormField>
-                      </div>
+                      <div className="grid grid-cols-[1fr_1.5fr_1.5fr] gap-3 items-start">
+  <FormField label="Extension End Date">
+    <input
+      type="date"
+      value={extensionEndDate}
+      min={minExtensionDate}
+      onChange={e => setExtensionEndDate(e.target.value)}
+      className={inputCls}
+    />
+  </FormField>
+
+  <FormField label="Name">
+    <input
+      type="text"
+      value={simulationName}
+      onChange={e => setSimulationName(e.target.value)}
+      className={inputCls}
+      placeholder="Simulation name"
+    />
+  </FormField>
+
+  <FormField label="Notes">
+    <input
+      type="text"
+      value={notes}
+      onChange={e => setNotes(e.target.value)}
+      className={inputCls}
+      placeholder="Optional"
+    />
+  </FormField>
+</div>
                     </div>
                     {baseEndDate && extensionEndDate && (
                       <div className="mx-4 mb-4 flex items-center gap-2 rounded-lg border border-majorelle-blue-100 bg-majorelle-blue-50 px-3 py-2">
@@ -601,10 +659,14 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                                 <p className="mb-2 text-[11px] font-bold text-charcoal-blue-700">{sp.promo_name}</p>
                                 <div className="grid grid-cols-3 gap-2 mb-2">
                                   <FormField label="Start Date">
-                                    <input type="date" value={editForm.start_date} onChange={e => setEditForm(f => ({ ...f, start_date: e.target.value }))} className={inputCls} />
+                                    <input type="date" value={editForm.start_date}
+                                      min={minExtensionDate} max={extensionEndDate || undefined}
+                                      onChange={e => setEditForm(f => ({ ...f, start_date: e.target.value }))} className={inputCls} />
                                   </FormField>
                                   <FormField label="End Date">
-                                    <input type="date" value={editForm.end_date} onChange={e => setEditForm(f => ({ ...f, end_date: e.target.value }))} className={inputCls} />
+                                    <input type="date" value={editForm.end_date}
+                                      min={editForm.start_date || minExtensionDate} max={extensionEndDate || undefined}
+                                      onChange={e => setEditForm(f => ({ ...f, end_date: e.target.value }))} className={inputCls} />
                                   </FormField>
                                   <FormField label="Multiplier">
                                     <input type="number" value={editForm.demand_multiplier} min={0.1} max={10} step={0.1}
@@ -721,10 +783,14 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                                       <div className="mt-2 border-t border-charcoal-blue-100 pt-2">
                                         <div className="grid grid-cols-3 gap-2 mb-2">
                                           <FormField label="Start Date">
-                                            <input type="date" value={addForm.start_date} onChange={e => setAddForm(f => ({ ...f, start_date: e.target.value }))} className={inputCls} />
+                                            <input type="date" value={addForm.start_date}
+                                              min={minExtensionDate} max={extensionEndDate || undefined}
+                                              onChange={e => setAddForm(f => ({ ...f, start_date: e.target.value }))} className={inputCls} />
                                           </FormField>
                                           <FormField label="End Date">
-                                            <input type="date" value={addForm.end_date} onChange={e => setAddForm(f => ({ ...f, end_date: e.target.value }))} className={inputCls} />
+                                            <input type="date" value={addForm.end_date}
+                                              min={addForm.start_date || minExtensionDate} max={extensionEndDate || undefined}
+                                              onChange={e => setAddForm(f => ({ ...f, end_date: e.target.value }))} className={inputCls} />
                                           </FormField>
                                           <FormField label="Multiplier">
                                             <input type="number" value={addForm.demand_multiplier} min={0.1} max={10} step={0.1}
@@ -890,7 +956,7 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
                     {[
                       { label: 'Base Simulation', value: `${baseName} · ends ${baseEndWeek}` },
                       { label: 'Extension', value: `${simulationName} · ${baseEndDate} → ${extensionEndDate}` },
-                      { label: 'Inventory Seed', value: `Seeded from ${baseName} ending inventory (${endingInventory?.store_inventory.length ?? 0} store rows)`, color: 'text-emerald-600' },
+                      { label: 'Inventory Seed', value: `Seeded from ${baseName} — fetched server-side (stores, retailer DCs, supplier DCs)`, color: 'text-emerald-600' },
                       { label: 'Demand', value: demandRows != null ? `${demandRows.toLocaleString()} demand rows generated` : 'Generated', color: 'text-emerald-600' },
                       { label: 'Promos', value: scheduledPromos.length > 0 ? `${scheduledPromos.filter(s => !s.disabled).length} scheduled · ${scheduledPromos.filter(s => s.disabled).length} disabled` : 'No overrides — using promos as stored' },
                       { label: 'Scenario', value: selectedScenario === 'no_scenario' ? 'None — baseline demand' : (scenarioDef?.title ?? selectedScenario) },
@@ -934,7 +1000,7 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
 
         {/* Footer nav */}
         {!loadingBase && !loadBaseError && (
-          <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-charcoal-blue-100 bg-white px-6 py-4 rounded-b-xl">
+          <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-charcoal-blue-100 bg-white px-6 py-3 rounded-b-xl">
             <button onClick={currentStep === 0 ? onClose : handlePrev} disabled={isRunning}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold transition-all ${isRunning ? 'cursor-not-allowed bg-charcoal-blue-100 text-charcoal-blue-400' : 'border border-charcoal-blue-200 bg-white text-charcoal-blue-950 hover:bg-charcoal-blue-50'}`}>
               <ChevronLeft size={15} /> {currentStep === 0 ? 'Cancel' : 'Previous'}

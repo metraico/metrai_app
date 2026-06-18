@@ -194,6 +194,34 @@ export interface ExtendSimulationPayload {
   promo_yaml?: string
   scenario_yaml?: string
   seed?: number
+  session_id?: string
+}
+
+// POST /simulation/{id}/extension-promos
+export interface ExtensionPromoInput {
+  promo_id?: string
+  promo_name: string
+  promo_group_name: string
+  event_type: string
+  start_date: string   // YYYY-MM-DD
+  end_date: string     // YYYY-MM-DD
+  demand_multiplier: number
+  is_disabled: boolean
+}
+
+export interface SaveExtensionPromosResponse {
+  session_id: string
+  saved: number
+}
+
+// POST /demand/generate/extend
+export interface GenerateExtensionDemandRequest {
+  session_id: string
+  simulation_id: string
+  retailer_account_id: string
+  start_date: string   // YYYY-MM-DD
+  end_date: string     // YYYY-MM-DD
+  seed: number
 }
 
 // GET /simulation/{id}/ending-inventory

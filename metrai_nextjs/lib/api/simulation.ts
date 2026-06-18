@@ -1,5 +1,5 @@
 import { engineClient } from './client'
-import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord } from './types'
+import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord, ExtensionPromoInput, SaveExtensionPromosResponse, GenerateExtensionDemandRequest } from './types'
 
 // POST /simulate — synchronous, returns completed result inline
 export const runSimulation = (yamlContent: string, promoYamlContent = '', scenarioYamlContent = '', simulationId?: string) =>
@@ -77,3 +77,20 @@ export const extendSimulation = (simulationId: string, payload: ExtendSimulation
 // GET /simulation/{simulation_id}/extensions — extension history
 export const getSimulationExtensions = (simulationId: string) =>
   engineClient.get<SimulationExtensionRecord[]>(`/simulation/${simulationId}/extensions`).then(r => r.data)
+
+// POST /simulation/{id}/extension-promos — persist user-scheduled promos for a session
+export const saveExtensionPromos = (
+  simulationId: string,
+  sessionId: string,
+  retailerAccountId: string,
+  promos: ExtensionPromoInput[],
+) =>
+  engineClient.post<SaveExtensionPromosResponse>(`/simulation/${simulationId}/extension-promos`, {
+    session_id: sessionId,
+    retailer_account_id: retailerAccountId,
+    promos,
+  }).then(r => r.data)
+
+// POST /demand/generate/extend — generate demand for extension period using stored promo schedules
+export const generateExtensionDemand = (req: GenerateExtensionDemandRequest) =>
+  engineClient.post<{ job_id: string; status: string }>('/demand/generate/extend', req).then(r => r.data)
