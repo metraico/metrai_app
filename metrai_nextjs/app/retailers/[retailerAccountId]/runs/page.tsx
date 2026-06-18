@@ -147,10 +147,7 @@ export default function RunsPage() {
                   )}
                 </div>
 
-                <h3 className="mb-1 pr-5 text-sm font-black text-charcoal-blue-950">{run.simulation_name}</h3>
-                {run.notes && (
-                  <p className="mb-2 pr-5 text-[10px] text-charcoal-blue-400 line-clamp-1">{run.notes}</p>
-                )}
+                <h3 className="mb-2 pr-5 text-sm font-black text-charcoal-blue-950">{run.simulation_name}</h3>
 
                 <div className="mb-3 border-b border-charcoal-blue-100 pb-3 space-y-0.5">
                   <p className="text-xs text-charcoal-blue-400">
