@@ -135,11 +135,16 @@ export default function RunsPage() {
                   <Trash2 size={13} />
                 </button>
 
-                <div className="mb-3">
+                <div className="mb-3 flex items-center gap-1.5 flex-wrap">
                   <span className={`inline-block rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${STATUS_STYLES[run.simulation_status] ?? 'bg-charcoal-blue-100 text-charcoal-blue-600'}`}>
                     {STATUS_ICONS[run.simulation_status]}
                     {STATUS_LABELS[run.simulation_status] ?? run.simulation_status}
                   </span>
+                  {run.is_extended && (
+                    <span className="inline-block rounded-full border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-0.5 text-[9px] font-bold text-majorelle-blue-600">
+                      Extended ×{run.extension_count}
+                    </span>
+                  )}
                 </div>
 
                 <h3 className="mb-2 pr-5 text-sm font-black text-charcoal-blue-950">{run.simulation_name}</h3>
