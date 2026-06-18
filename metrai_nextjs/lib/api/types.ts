@@ -249,6 +249,10 @@ export interface RunConfig {
   status: 'RUNNING' | 'COMPLETED' | 'FAILED'
   simulation_granularity: string
   full_config: Record<string, unknown> | null
+  end_week: string | null
+  start_week: string | null
+  is_extended: boolean
+  extension_count: number
 }
 
 // GET /simulation/{simulation_id} — full ClickHouse output (untyped, large)

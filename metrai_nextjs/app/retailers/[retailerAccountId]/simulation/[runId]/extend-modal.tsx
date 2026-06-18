@@ -172,7 +172,8 @@ export function ExtendForecastModal({ open, onClose, baseSimulationId }: Props) 
   // ── Derived ────────────────────────────────────────────────────────────────
   const baseFull = (baseConfig?.full_config as any) ?? {}
   const baseName: string = baseFull?.simulation_name ?? 'Base Simulation'
-  const baseEndDate: string = baseFull?.end_date ?? ''
+  // Prefer end_week from simulation_config (updated after each extension) over full_config.end_date (original only)
+  const baseEndDate: string = (baseConfig?.end_week ?? baseFull?.end_date ?? '') as string
   const baseSeed: number = baseFull?.seed ?? 42
   const baseEndWeek = baseEndDate ? toIsoWeek(baseEndDate) : ''
   // Minimum valid extension end date: must be strictly after the base simulation's end date
