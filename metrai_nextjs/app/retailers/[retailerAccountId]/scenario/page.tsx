@@ -10,6 +10,9 @@ import { ChevronLeft, TrendingUp, AlertTriangle, CheckCircle, AlertCircle, Loade
 import yaml from 'js-yaml'
 
 const PF_TEMPLATE = `# SCENARIO: Promo Forecast Behavior
+# performance_adjustment: signed %. 50 = promo performs 50% better than forecast.
+# -50 = promo performs 50% worse. 0 = no change.
+# Replace promo_id with the UUID from your retailer's promo list.
 run:
   simulation_name: "2024 - Promo Over-Performance"
   start_date: "2024-01-01"
@@ -20,12 +23,10 @@ run:
   supplier_dc_initial_wos: 4
 
 scenario:
-  type: promo_forecast
+  scenario_type: promo_forecast
   promos:
-    - name: "PEPSI_12PK_B2G2_SUPER_BOWL_2024"
-      start_date: "2024-02-05"
-      end_date: "2024-02-11"
-      factor: 1.5
+    - promo_id: "ENTER_PROMO_UUID_HERE"
+      performance_adjustment: 50
 `
 
 const HLS_TEMPLATE = `# SCENARIO: Hidden Lost Sales
@@ -39,7 +40,7 @@ run:
   supplier_dc_initial_wos: 4
 
 scenario:
-  type: hidden_lost_sales
+  scenario_type: hidden_lost_sales
   disruptions:
     - dc: DC_EAST
       items: all
@@ -65,7 +66,7 @@ run:
   supplier_dc_initial_wos: 4
 
 scenario:
-  type: competitive_void
+  scenario_type: competitive_void
   voids:
     - competitor: COMPETITOR_A
       stores: all
@@ -85,7 +86,7 @@ run:
   supplier_dc_initial_wos: 4
 
 scenario:
-  type: late_promo_change
+  scenario_type: late_promo_change
   changes:
     - promo_name: "SPRING_PROMO_2024"
       original_start: "2024-04-01"
@@ -215,8 +216,16 @@ function ScenarioEditor({ tile, onBack }: { tile: (typeof TILES)[number]; onBack
   const handleValidate = async () => {
     setValidating(true); setValidation(null); setValidateError(null)
     try {
-      const runParams = parseRunBlock(yamlText)
-      const result = await validateScenario({ scenario_yaml: yamlText, start_date: runParams?.start_date, end_date: runParams?.end_date })
+      const parsed = yaml.load(yamlText) as any
+      const runBlock = parsed?.run
+      const scenarioBlock = parsed?.scenario
+      if (!scenarioBlock) throw new Error('No scenario: block found in YAML.')
+      const result = await validateScenario({
+        scenario_yaml: yaml.dump(scenarioBlock),
+        retailer_account_id: accountId ?? '',
+        start_date: String(runBlock?.start_date ?? ''),
+        end_date: String(runBlock?.end_date ?? ''),
+      })
       setValidation(result as ValidationResult)
     } catch (err: unknown) {
       setValidateError((err as any)?.response?.data?.detail || (err instanceof Error ? err.message : 'Validation failed.'))

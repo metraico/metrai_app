@@ -40,7 +40,7 @@ export default function RunsPage() {
   const fetchRuns = () => {
     if (!retailerAccountId || !userId) return
     setLoading(true)
-    getRuns(retailerAccountId, userId)
+    getRuns(retailerAccountId, userId, scenarioId)
       .then(setRuns)
       .catch(err => setError(err?.response?.data?.detail ?? 'Failed to load runs'))
       .finally(() => setLoading(false))
@@ -59,7 +59,10 @@ export default function RunsPage() {
     finally { setDeleting(null) }
   }
 
-  const handleNew = () => router.push(`/retailers/${retailerAccountId}/simulation/new`)
+  const handleNew = () => {
+    const dest = `/retailers/${retailerAccountId}/simulation/new`
+    router.push(scenarioId && scenarioId !== 'no_scenario' ? `${dest}?scenario=${scenarioId}` : dest)
+  }
   const Icon = scenario.icon
 
   return (
@@ -82,11 +85,6 @@ export default function RunsPage() {
             <div>
               <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{scenario.title}</h1>
               <p className="mt-0.5 text-xs font-medium text-charcoal-blue-400">{scenario.question}</p>
-              {scenarioId !== 'no_scenario' && (
-                <p className="mt-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-medium text-amber-700 inline-block">
-                  Scenario filtering coming soon — showing all runs for now
-                </p>
-              )}
             </div>
           </div>
           <button onClick={handleNew}

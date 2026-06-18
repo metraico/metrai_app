@@ -19,9 +19,15 @@ export const pollSimulationUntilDone = (result: RunYamlResponse) =>
 export const getRunConfig = (simulationId: string) =>
   engineClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
 
-// GET /runs?retailer_account_id=&user_id=
-export const getRuns = (retailerAccountId: string, userId: string) =>
-  engineClient.get<SimulationRun[]>('/runs', { params: { retailer_account_id: retailerAccountId, user_id: userId } }).then(r => r.data)
+// GET /runs?retailer_account_id=&user_id=&scenario_type=
+export const getRuns = (retailerAccountId: string, userId: string, scenarioType?: string) =>
+  engineClient.get<SimulationRun[]>('/runs', {
+    params: {
+      retailer_account_id: retailerAccountId,
+      user_id: userId,
+      ...(scenarioType ? { scenario_type: scenarioType } : {}),
+    }
+  }).then(r => r.data)
 
 // GET /run-yaml-template
 export interface YamlTemplateParams {
