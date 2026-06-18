@@ -21,6 +21,7 @@ import { Check, AlertCircle, Code, Tag, ArrowRight, ChevronLeft, ChevronRight, P
 import yaml from 'js-yaml'
 import type { SimulatePreviewResponse, RunConfig, PromoResponse } from '@/lib/api/types'
 import { SCENARIOS, type ScenarioId } from '@/lib/scenarios'
+import { toIsoWeek } from '@/lib/utils'
 
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 
@@ -64,15 +65,7 @@ function FormField({ label, info, children }: { label: string; info?: string; ch
 
 const inputCls = 'w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50/60 px-2.5 py-1.5 text-xs font-medium text-charcoal-blue-900 placeholder:text-charcoal-blue-300 transition-all focus:border-majorelle-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-majorelle-blue-100'
 
-// ISO week helper: "2024-12-31" → "2024-W53"
-function toIsoWeek(dateStr: string): string {
-  const d = new Date(dateStr)
-  const jan4 = new Date(d.getFullYear(), 0, 4)
-  const weekNum = Math.ceil(
-    ((d.getTime() - jan4.getTime()) / 86400000 + (jan4.getDay() || 7)) / 7
-  )
-  return `${d.getFullYear()}-W${String(weekNum).padStart(2, '0')}`
-}
+
 
 
 interface ScheduledPromo {

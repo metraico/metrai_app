@@ -13,19 +13,14 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl } from '@/lib/api/simulation'
+import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals } from '@/lib/api/simulation'
 import { ExtendForecastModal } from './extend-modal'
+import { RollingForecastModal } from './rolling-forecast-modal'
+import { RunChunkModal } from './run-chunk-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
-import type { AnalyticsMeta, SimulationSummary, SimulationExtensionRecord } from '@/lib/api/types'
-
-// Convert a YYYY-MM-DD date string to an ISO week string "YYYY-Www"
-function toIsoWeek(dateStr: string): string {
-  const d = new Date(dateStr)
-  const jan4 = new Date(d.getFullYear(), 0, 4)
-  const weekNum = Math.ceil(((d.getTime() - jan4.getTime()) / 86400000 + (jan4.getDay() || 7)) / 7)
-  return `${d.getFullYear()}-W${String(weekNum).padStart(2, '0')}`
-}
+import type { AnalyticsMeta, SimulationSummary, SimulationExtensionRecord, RollingForecastSession } from '@/lib/api/types'
+import { toIsoWeek } from '@/lib/utils'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
@@ -407,10 +402,16 @@ export default function SimulationResultsPage() {
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
   const [showExtendModal, setShowExtendModal] = useState(false)
+  const [showRollingModal, setShowRollingModal] = useState(false)
+  const [showRunChunkModal, setShowRunChunkModal] = useState(false)
+  const [rollingSession, setRollingSession] = useState<RollingForecastSession | null>(null)
+  const [rollingForecastData, setRollingForecastData] = useState<{ week: string; forecast_qty: number }[]>([])
+  const [rollingPromos, setRollingPromos] = useState<{ promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]>([])
   const [extensions, setExtensions] = useState<SimulationExtensionRecord[]>([])
   const extensionStartWeek = extensions.length > 0 ? toIsoWeek(extensions[0].previous_end_week) : null
   const [showExtensionHistory, setShowExtensionHistory] = useState(false)
   const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
+  const [runEndWeek, setRunEndWeek] = useState<string>('')
   const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
@@ -498,6 +499,44 @@ export default function SimulationResultsPage() {
     getSimulationExtensions(simulationId).then(setExtensions).catch(() => null)
   }, [pageState, simulationId])
 
+  // ── Load rolling forecast session and unrun forecast demand ───────────────
+  const baseSeed: number = (runFullConfig as any)?.random_seed ?? 42
+
+  const refreshRollingForecast = useCallback(async () => {
+    if (!runEndWeek) return
+    try {
+      const session = await getRollingSession(simulationId)
+      setRollingSession(session)
+      if (session.status === 'active') {
+        const startWeek = session.current_completed_week
+          ? toIsoWeek(session.current_completed_week)
+          : toIsoWeek(runEndWeek)
+        const endWeek = toIsoWeek(session.total_end_date)
+        const seed = (runFullConfig as any)?.random_seed ?? 42
+        const filters = {
+          item_id: globalItem || undefined,
+          store_id: globalStore || undefined,
+          category: globalCategory || undefined,
+          subcategory: globalSubcategory || undefined,
+          brand: globalBrand || undefined,
+        }
+        getDemandWeeklyTotals(session.retailer_account_id, startWeek, endWeek, seed, filters)
+          .then(rows => setRollingForecastData(rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))))
+          .catch(() => null)
+      } else {
+        setRollingForecastData([])
+      }
+    } catch {
+      // 404 = no active session, that's fine
+    }
+  }, [simulationId, runEndWeek, runFullConfig,
+      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
+
+  useEffect(() => {
+    if (pageState !== 'ready' || !runEndWeek) return
+    refreshRollingForecast()
+  }, [pageState, refreshRollingForecast, runEndWeek])
+
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
   const fetchPOSFiltered = useCallback(async (itemId: string, storeId: string, category: string, subcategory: string, brand: string) => {
@@ -581,6 +620,8 @@ export default function SimulationResultsPage() {
     else         { resetToSummary('pos'); resetToSummary('inv') }
     if (anyShip) { fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand); fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand) }
     else         { resetToSummary('ship'); resetToSummary('dc') }
+    // Re-fetch rolling forecast demand with the updated filters so it matches the same scope
+    if (rollingSession?.status === 'active') refreshRollingForecast()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
@@ -596,6 +637,7 @@ export default function SimulationResultsPage() {
         if (!cancelled) {
           setSimName(String((cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
           setRunFullConfig(cfg.full_config)
+          if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
       }).catch(() => null)
       return
@@ -608,6 +650,7 @@ export default function SimulationResultsPage() {
         if (!cancelled) {
           setSimName(String(name))
           setRunFullConfig(cfg.full_config)
+          if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
         if (cfg.status === 'COMPLETED') {
           if (!cancelled) await loadSummary()
@@ -866,6 +909,30 @@ export default function SimulationResultsPage() {
                 <ChevronRight size={13} /> Extend Forecast
               </button>
             )}
+            {pageState === 'ready' && !rollingSession && (
+              <button
+                onClick={() => setShowRollingModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
+              >
+                <ChevronRight size={13} /> Rolling Forecast
+              </button>
+            )}
+            {pageState === 'ready' && rollingSession?.status === 'active' && (
+              <button
+                onClick={() => setShowRollingModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
+              >
+                <ChevronRight size={13} /> Edit Setup
+              </button>
+            )}
+            {pageState === 'ready' && rollingSession?.status === 'active' && rollingForecastData.length > 0 && (
+              <button
+                onClick={() => setShowRunChunkModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600"
+              >
+                <ChevronRight size={13} /> Run Weeks
+              </button>
+            )}
           <button
             onClick={handleExport}
             disabled={exportLoading}
@@ -926,43 +993,62 @@ export default function SimulationResultsPage() {
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
               {/* Chart 1 — POS Store Sales */}
-              <ChartShell
-                title="POS — Store Sales"
-                subtitle="Weekly demand, sales and lost sales across all stores"
-                error={posError} loading={posLoading}
-                isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
-                chart={(h) => (
-                  <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom1.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
-                      onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
-                      style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom1.displayData.filter(d => d.is_promo_week).map(d => (
-                        <ReferenceArea
-                          key={d.week} x1={d.week} x2={d.week}
-                          fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
-                          fillOpacity={0.12} stroke="none"
-                        />
-                      ))}
-                      {zoom1.selectionArea()}
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                      <Tooltip content={<ChartTooltip />} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
-                        {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
-                      </Bar>
-                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
-                        {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
-                      </Bar>
-                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
-                        {posData.map((_, i) => <Cell key={i} fill={extensionStartWeek && posData[i].week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
-                      </Bar>
-                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                )}
-              />
+              {(() => {
+                // Merge simulated posData with rolling forecast data for unrun weeks
+                const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+                const rollingForecastStartWeek = rollingSession?.current_completed_week
+                  ? toIsoWeek(rollingSession.current_completed_week)
+                  : null
+                const mergedPosData = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
+                const forecastOnlyWeeks = rollingForecastData
+                  .filter(r => !posData.some(d => d.week === r.week))
+                  .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
+                const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks].sort((a, b) => a.week.localeCompare(b.week))
+
+                return (
+                  <ChartShell
+                    title="POS — Store Sales"
+                    subtitle="Weekly demand, sales and lost sales across all stores"
+                    error={posError} loading={posLoading}
+                    isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
+                    chart={(h) => (
+                      <ResponsiveContainer width="100%" height={h}>
+                        <ComposedChart data={zoom1.isZoomed ? zoom1.displayData : combinedPosData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
+                          onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
+                          style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
+                          {combinedPosData.filter(d => d.is_promo_week).map(d => (
+                            <ReferenceArea
+                              key={d.week} x1={d.week} x2={d.week}
+                              fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                              fillOpacity={0.12} stroke="none"
+                            />
+                          ))}
+                          {zoom1.selectionArea()}
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis dataKey="week" {...xAxisProps} />
+                          <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                          <Tooltip content={<ChartTooltip />} />
+                          <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                          <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
+                            {combinedPosData.map((_, i) => <Cell key={i} fill={extensionStartWeek && combinedPosData[i].week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
+                          </Bar>
+                          <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
+                            {combinedPosData.map((_, i) => <Cell key={i} fill={extensionStartWeek && combinedPosData[i].week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
+                          </Bar>
+                          <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
+                            {combinedPosData.map((_, i) => <Cell key={i} fill={extensionStartWeek && combinedPosData[i].week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
+                          </Bar>
+                          {rollingForecastData.length > 0 && (
+                            <Bar dataKey="forecast_qty" fill="#8b5cf6" fillOpacity={0.35} name="Rolling Forecast" barSize={10} />
+                          )}
+                          {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+                          {rollingForecastStartWeek && <ReferenceLine x={rollingForecastStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" label={{ value: 'Rolling Forecast', position: 'insideTopRight', fontSize: 9, fill: '#8b5cf6' }} />}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    )}
+                  />
+                )
+              })()}
 
               {/* Chart 2 — Store Inventory */}
               <ChartShell
@@ -1239,6 +1325,42 @@ export default function SimulationResultsPage() {
       onClose={() => setShowExtendModal(false)}
       baseSimulationId={simulationId}
     />
+
+    <RollingForecastModal
+      open={showRollingModal}
+      onClose={() => setShowRollingModal(false)}
+      baseSimulationId={simulationId}
+      retailerAccountId={params.retailerAccountId as string}
+      baseSeed={baseSeed}
+      baseEndDate={runEndWeek}
+      existingSession={rollingSession}
+      onSessionUpdated={(s) => {
+        setRollingSession(s)
+        if (!s || s.status !== 'active') setRollingForecastData([])
+      }}
+      onDemandReady={(promos) => { setRollingPromos(promos); refreshRollingForecast() }}
+    />
+
+    {rollingSession && (
+      <RunChunkModal
+        open={showRunChunkModal}
+        onClose={() => setShowRunChunkModal(false)}
+        session={rollingSession}
+        baseEndDate={runEndWeek}
+        scheduledPromos={rollingPromos}
+        onChunkComplete={(result) => {
+          const updatedSession: RollingForecastSession = {
+            ...rollingSession,
+            current_completed_week: result.rolling_session?.current_completed_week ?? rollingSession.current_completed_week,
+            status: result.rolling_session?.session_status as any ?? 'active',
+          }
+          setRollingSession(updatedSession)
+          refreshRollingForecast()
+          // Reload simulation data so main charts update with the new chunk's POS
+          loadSummary()
+        }}
+      />
+    )}
 
     {/* YAML config modal */}
     {yamlModalOpen && (() => {

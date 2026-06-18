@@ -1,5 +1,5 @@
 import { engineClient } from './client'
-import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord, ExtensionPromoInput, SaveExtensionPromosResponse, GenerateExtensionDemandRequest } from './types'
+import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord, ExtensionPromoInput, SaveExtensionPromosResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
 
 export const engineBaseUrl: string = (process.env.NEXT_PUBLIC_ENGINE_URL as string) || 'http://localhost:8001'
 
@@ -87,10 +87,26 @@ export const getDemandStatus = (jobId: string) =>
 
 // GET /demand/weekly-totals — aggregated demand from ClickHouse cache for chart preview
 export const getDemandWeeklyTotals = (
-  retailerAccountId: string, startWeek: string, endWeek: string, seed: number
+  retailerAccountId: string,
+  startWeek: string,
+  endWeek: string,
+  seed: number,
+  filters?: {
+    item_id?: string
+    store_id?: string
+    category?: string
+    subcategory?: string
+    brand?: string
+  },
 ) =>
   engineClient.get<{ pos_week: string; demand_qty: number }[]>('/demand/weekly-totals', {
-    params: { retailer_account_id: retailerAccountId, start_week: startWeek, end_week: endWeek, seed },
+    params: {
+      retailer_account_id: retailerAccountId,
+      start_week: startWeek,
+      end_week: endWeek,
+      seed,
+      ...filters,
+    },
   }).then(r => r.data)
 
 // POST /simulation/{simulation_id}/extend — true continuation, writes to same simulation_id
@@ -117,3 +133,37 @@ export const saveExtensionPromos = (
 // POST /demand/generate/extend — generate demand for extension period using stored promo schedules
 export const generateExtensionDemand = (req: GenerateExtensionDemandRequest) =>
   engineClient.post<{ job_id: string; status: string }>('/demand/generate/extend', req).then(r => r.data)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rolling Forecast API
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /simulation/{id}/rolling-session
+export const createRollingSession = (
+  simulationId: string,
+  retailerAccountId: string,
+  totalEndDate: string,
+) =>
+  engineClient.post<RollingForecastSession>(`/simulation/${simulationId}/rolling-session`, {
+    retailer_account_id: retailerAccountId,
+    total_end_date: totalEndDate,
+  }).then(r => r.data)
+
+// GET /simulation/{id}/rolling-session
+export const getRollingSession = (simulationId: string) =>
+  engineClient.get<RollingForecastSession>(`/simulation/${simulationId}/rolling-session`).then(r => r.data)
+
+// POST /rolling-session/{id}/run-chunk
+export const runRollingChunk = (sessionId: string, req: RunChunkRequest) =>
+  engineClient.post<RunChunkResponse>(`/rolling-session/${sessionId}/run-chunk`, req).then(r => r.data)
+
+// POST /rolling-session/{id}/recalculate-demand
+export const recalculateRollingDemand = (sessionId: string, req: RecalculateDemandRequest) =>
+  engineClient.post<{ job_id: string; status: string; promos_updated: number }>(
+    `/rolling-session/${sessionId}/recalculate-demand`,
+    req,
+  ).then(r => r.data)
+
+// DELETE /rolling-session/{id}
+export const abandonRollingSession = (sessionId: string) =>
+  engineClient.delete<{ abandoned: string }>(`/rolling-session/${sessionId}`).then(r => r.data)

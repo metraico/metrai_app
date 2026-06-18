@@ -198,6 +198,68 @@ export interface ExtendSimulationPayload {
   session_id?: string
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rolling Forecast
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PerformanceInput {
+  promo_group_name: string
+  pct: number  // +50 = overperformed 50%, -30 = underperformed 30%
+}
+
+export interface RollingForecastChunk {
+  id: string
+  rolling_session_id: string
+  simulation_id: string
+  chunk_number: number
+  start_week: string   // YYYY-MM-DD
+  end_week: string     // YYYY-MM-DD
+  status: 'pending' | 'running' | 'completed'
+  performance_inputs: Record<string, number>
+  extension_id: string | null
+  created_at: string
+}
+
+export interface RollingForecastSession {
+  id: string
+  simulation_id: string
+  retailer_account_id: string
+  session_id: string
+  status: 'active' | 'completed' | 'abandoned'
+  total_end_date: string        // YYYY-MM-DD
+  current_completed_week: string | null
+  created_at: string
+  created_by: string | null
+  chunks: RollingForecastChunk[]
+}
+
+export interface RunChunkRequest {
+  chunk_end_date: string        // YYYY-MM-DD
+  performance_inputs?: PerformanceInput[]
+}
+
+export interface RunChunkResponse extends RunYamlResponse {
+  promo_calendar: {
+    promo_id: string
+    promo_name: string
+    promo_group_name?: string
+    event_type: string
+    start_date: string
+    end_date: string
+    demand_multiplier: number
+  }[]
+  rolling_session: {
+    session_id: string
+    chunk_number: number
+    current_completed_week: string
+    session_status: string
+  }
+}
+
+export interface RecalculateDemandRequest {
+  performance_inputs: PerformanceInput[]
+}
+
 // POST /simulation/{id}/extension-promos
 export interface ExtensionPromoInput {
   promo_id?: string
