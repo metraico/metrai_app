@@ -138,15 +138,19 @@ export const generateExtensionDemand = (req: GenerateExtensionDemandRequest) =>
 // Rolling Forecast API
 // ─────────────────────────────────────────────────────────────────────────────
 
+const DEFAULT_CHUNK_TYPE_SEQUENCE = ['SIM', 'FORECAST', 'SIM', 'FORECAST', 'SIM']
+
 // POST /simulation/{id}/rolling-session
 export const createRollingSession = (
   simulationId: string,
   retailerAccountId: string,
   totalEndDate: string,
+  chunkTypeSequence: string[] = DEFAULT_CHUNK_TYPE_SEQUENCE,
 ) =>
   engineClient.post<RollingForecastSession>(`/simulation/${simulationId}/rolling-session`, {
     retailer_account_id: retailerAccountId,
     total_end_date: totalEndDate,
+    chunk_type_sequence: chunkTypeSequence,
   }).then(r => r.data)
 
 // GET /simulation/{id}/rolling-session

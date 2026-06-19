@@ -235,7 +235,6 @@ export interface RollingForecastSession {
 }
 
 export interface RunChunkRequest {
-  chunk_end_date: string        // YYYY-MM-DD
   performance_inputs?: PerformanceInput[]
 }
 

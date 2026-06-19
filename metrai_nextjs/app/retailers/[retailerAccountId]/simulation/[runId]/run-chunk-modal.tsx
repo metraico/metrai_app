@@ -6,11 +6,18 @@ import { Loader2, AlertCircle } from 'lucide-react'
 import { runRollingChunk, getSessionPromoSchedules } from '@/lib/api/simulation'
 import type { RollingForecastSession, RunChunkResponse } from '@/lib/api/types'
 
-const inputCls = 'w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50/60 px-2.5 py-1.5 text-xs font-medium text-charcoal-blue-900 placeholder:text-charcoal-blue-300 transition-all focus:border-majorelle-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-majorelle-blue-100'
+const CHUNK_WEEKS = 4
 
-function weeksBetween(start: string, end: string): number {
-  const s = new Date(start), e = new Date(end)
-  return Math.max(1, Math.round((e.getTime() - s.getTime()) / (7 * 24 * 3600 * 1000)))
+/** Add `weeks` weeks to a YYYY-MM-DD date string. */
+function addWeeks(dateStr: string, weeks: number): string {
+  const d = new Date(dateStr + 'T12:00:00')
+  d.setDate(d.getDate() + weeks * 7)
+  return d.toISOString().slice(0, 10)
+}
+
+/** Clamp a date to not exceed a ceiling. */
+function clampDate(dateStr: string, ceiling: string): string {
+  return dateStr > ceiling ? ceiling : dateStr
 }
 
 export interface RunChunkModalProps {
@@ -27,11 +34,13 @@ export function RunChunkModal({
   const currentStart = session.current_completed_week || baseEndDate
   const totalEnd = session.total_end_date
 
-  const [chunkEndDate, setChunkEndDate] = useState('')
+  // Fixed 4-week chunk end, clamped so it doesn't exceed the session total end date
+  const chunkEndDate = clampDate(addWeeks(currentStart, CHUNK_WEEKS), totalEnd)
+
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
 
-  // Promos active in the selected chunk window — fetched dynamically, one row per scheduled entry
+  // Promos active in this fixed chunk window — fetched once on open
   const [activePromos, setActivePromos] = useState<{
     id: string
     promo_group_name: string
@@ -44,9 +53,9 @@ export function RunChunkModal({
   // Performance % keyed by row id (not group name) so same group on different weeks is independent
   const [perfPct, setPerfPct] = useState<Record<string, number>>({})
 
-  // Fetch active promo schedule entries whenever the chunk end date changes
+  // Fetch active promo schedule entries for this chunk window
   useEffect(() => {
-    if (!chunkEndDate || !currentStart) {
+    if (!open || !currentStart || !chunkEndDate) {
       setActivePromos([])
       return
     }
@@ -55,20 +64,14 @@ export function RunChunkModal({
       .then(setActivePromos)
       .catch(() => setActivePromos([]))
       .finally(() => setLoadingPromos(false))
-  }, [chunkEndDate, session.session_id, currentStart])
+  }, [open, session.session_id, currentStart, chunkEndDate])
 
-  // Reset performance inputs (keyed by id) when promo list changes
+  // Reset performance inputs when promo list changes
   useEffect(() => {
     setPerfPct(Object.fromEntries(activePromos.map(p => [p.id, 0])))
   }, [activePromos])
 
-  const weeksToRun = chunkEndDate ? weeksBetween(currentStart, chunkEndDate) : 0
-
   async function handleRun() {
-    if (!chunkEndDate) { setError('Select a run-until date.'); return }
-    if (new Date(chunkEndDate) <= new Date(currentStart)) {
-      setError('End date must be after the current completed week.'); return
-    }
     setError('')
     setRunning(true)
     try {
@@ -77,7 +80,6 @@ export function RunChunkModal({
         .map(p => ({ promo_group_name: p.promo_group_name, pct: perfPct[p.id], schedule_id: p.id }))
 
       const result = await runRollingChunk(session.session_id, {
-        chunk_end_date: chunkEndDate,
         performance_inputs: perfInputs,
       })
       onChunkComplete(result)
@@ -95,7 +97,7 @@ export function RunChunkModal({
         <div className="border-b border-charcoal-blue-100 px-6 py-4 pr-12">
           <DialogTitle className="text-sm font-bold text-charcoal-blue-900">Run Simulation Chunk</DialogTitle>
           <p className="text-[10px] text-charcoal-blue-400 mt-0.5">
-            Choose how far to run, then enter how your promos actually performed.
+            Review the next 4-week chunk, then enter how your promos actually performed.
           </p>
         </div>
 
@@ -106,47 +108,31 @@ export function RunChunkModal({
             </div>
           )}
 
-          {/* Run until date */}
-          <div className="flex flex-col gap-1">
-            <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">
-              Run Until
-            </label>
-            <input
-              type="date"
-              value={chunkEndDate}
-              min={currentStart}
-              max={totalEnd}
-              onChange={e => setChunkEndDate(e.target.value)}
-              className={inputCls}
-            />
-            {weeksToRun > 0 && (
-              <p className="text-[10px] text-charcoal-blue-400">
-                Runs <span className="font-bold text-charcoal-blue-700">{weeksToRun} week{weeksToRun !== 1 ? 's' : ''}</span>
-                {' '}from {currentStart} → {chunkEndDate}
-              </p>
-            )}
+          {/* Fixed chunk window — read-only label */}
+          <div className="rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50 px-4 py-3">
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-1">
+              Next Chunk
+            </p>
+            <p className="text-xs font-bold text-charcoal-blue-800">
+              {currentStart} → {chunkEndDate}
+              <span className="ml-2 font-normal text-charcoal-blue-500">({CHUNK_WEEKS} weeks)</span>
+            </p>
           </div>
 
-          {/* Promo performance inputs — shown only after a date is entered */}
-          {!chunkEndDate && (
-            <p className="text-center text-[10px] text-charcoal-blue-400 py-2">
-              Select a date above to see active promo groups
-            </p>
-          )}
-
-          {chunkEndDate && loadingPromos && (
+          {/* Promo performance inputs */}
+          {loadingPromos && (
             <div className="flex items-center justify-center gap-2 py-3 text-[10px] text-charcoal-blue-400">
               <Loader2 size={12} className="animate-spin" /> Loading active promos…
             </div>
           )}
 
-          {chunkEndDate && !loadingPromos && activePromos.length === 0 && (
+          {!loadingPromos && activePromos.length === 0 && (
             <p className="text-center text-[10px] text-charcoal-blue-400 py-2 rounded-xl border border-dashed border-charcoal-blue-200">
               No promo groups scheduled in this period — you can still run the chunk
             </p>
           )}
 
-          {chunkEndDate && !loadingPromos && activePromos.length > 0 && (
+          {!loadingPromos && activePromos.length > 0 && (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2 text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 px-1">
                 <span>Promo Group</span>
@@ -190,12 +176,12 @@ export function RunChunkModal({
             </button>
             <button
               onClick={handleRun}
-              disabled={running || !chunkEndDate}
+              disabled={running}
               className="flex-1 rounded-xl bg-majorelle-blue-500 py-2.5 text-xs font-bold text-white hover:bg-majorelle-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {running
                 ? <><Loader2 size={13} className="animate-spin" /> Running…</>
-                : `Run ${weeksToRun > 0 ? `${weeksToRun} Week${weeksToRun !== 1 ? 's' : ''}` : 'Chunk'}`}
+                : `Run ${CHUNK_WEEKS} Weeks`}
             </button>
           </div>
         </div>

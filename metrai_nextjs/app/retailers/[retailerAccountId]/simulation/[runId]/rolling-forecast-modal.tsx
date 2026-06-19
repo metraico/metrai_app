@@ -255,18 +255,15 @@ export function RollingForecastModal({
 
   // ── Step: Run chunk ───────────────────────────────────────────────────────
   async function handleRunChunk() {
-    if (!chunkEndDate) { setError('Please select how many weeks to run.'); return }
     if (!session) { setError('No active session.'); return }
     const currentStart = session.current_completed_week || baseEndDate
-    if (new Date(chunkEndDate) <= new Date(currentStart)) {
+    if (chunkEndDate && new Date(chunkEndDate) <= new Date(currentStart)) {
       setError('Chunk end date must be after the current completed week.'); return
     }
     setError('')
     setModalState('chunk_running')
     try {
-      const result = await runRollingChunk(session.session_id, {
-        chunk_end_date: chunkEndDate,
-      })
+      const result = await runRollingChunk(session.session_id, {})
       setLastChunkResult(result)
 
       // Extract promo groups that had promos in this chunk
@@ -569,29 +566,35 @@ export function RollingForecastModal({
                   )}
                 </div>
 
-                {/* Chunk date picker */}
-                <FormField label="Run until" info="Pick the end date for this chunk. You can run the rest later.">
-                  <input
-                    type="date"
-                    value={chunkEndDate}
-                    min={currentStart}
-                    max={totalEnd}
-                    onChange={e => setChunkEndDate(e.target.value)}
-                    className={inputCls}
-                  />
-                  {chunkEndDate && (
-                    <p className="text-[10px] text-charcoal-blue-400 mt-1">
-                      This will run <span className="font-bold text-amber-600">{weeksToRun} week{weeksToRun !== 1 ? 's' : ''}</span> of simulation.
-                    </p>
-                  )}
-                </FormField>
+                {/* Next chunk window — read-only label (fixed 4 weeks) */}
+                {(() => {
+                  const nextChunkEnd = currentStart
+                    ? (() => {
+                        const d = new Date(currentStart + 'T12:00:00')
+                        d.setDate(d.getDate() + 4 * 7)
+                        const raw = d.toISOString().slice(0, 10)
+                        return raw > totalEnd ? totalEnd : raw
+                      })()
+                    : ''
+                  return (
+                    <div className="rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50 px-4 py-3">
+                      <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-1">
+                        Next Chunk
+                      </p>
+                      <p className="text-xs font-bold text-charcoal-blue-800">
+                        {currentStart} → {nextChunkEnd}
+                        <span className="ml-2 font-normal text-charcoal-blue-500">(4 weeks)</span>
+                      </p>
+                    </div>
+                  )
+                })()}
 
                 <button
                   onClick={handleRunChunk}
-                  disabled={!chunkEndDate || demandStatus === 'generating'}
+                  disabled={demandStatus === 'generating'}
                   className="w-full rounded-xl bg-amber-500 py-2.5 text-xs font-bold text-white transition-all hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Run {weeksToRun > 0 ? `${weeksToRun} Week${weeksToRun !== 1 ? 's' : ''}` : 'Chunk'}
+                  Run 4 Weeks
                 </button>
               </div>
             )}

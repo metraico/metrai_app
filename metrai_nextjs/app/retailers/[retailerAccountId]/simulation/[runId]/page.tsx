@@ -512,9 +512,16 @@ export default function SimulationResultsPage() {
     try {
       const session = await getRollingSession(simulationId)
       setRollingSession(session)
-      // If chunks have run, the cache is stale — re-fetch posData from backend
+      // If chunks have run, the cache is stale — re-fetch posData from backend with current filters
       if (session.chunks && session.chunks.length > 0) {
-        getSummaryStoreSales(simulationId)
+        const activeFilters = {
+          item_id: globalItem || undefined,
+          store_id: globalStore || undefined,
+          category: globalCategory || undefined,
+          subcategory: globalSubcategory || undefined,
+          brand: globalBrand || undefined,
+        }
+        getSummaryStoreSales(simulationId, activeFilters)
           .then(s => setPosData(aggPOS(s.weekly_pos ?? [])))
           .catch(() => null)
       }
@@ -625,10 +632,43 @@ export default function SimulationResultsPage() {
   useEffect(() => {
     if (!filterMountedRef.current) { filterMountedRef.current = true; return }
     if (pageState !== 'ready') return
+    const posFilters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
+    const shipFilters = {
+      item_id: globalItem || undefined,
+      supplier_dc_id: globalSdc || undefined,
+      retailer_dc_id: globalRdc || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
     const anyPos  = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
     const anyShip = !!(globalItem || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
-    if (anyPos)  { fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand); fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand) }
-    else         { resetToSummary('pos'); resetToSummary('inv') }
+    if (anyPos) {
+      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      // Re-fetch KPI summary with filters so KPI cards reflect the filtered scope
+      Promise.all([
+        getSummaryStoreSales(simulationId, posFilters),
+        getSummarySupplyChainSales(simulationId, shipFilters),
+      ]).then(([ss, sc]) => {
+        setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
+      }).catch(() => null)
+    } else {
+      resetToSummary('pos'); resetToSummary('inv')
+      // Reset KPIs to unfiltered summary
+      Promise.all([
+        getSummaryStoreSales(simulationId),
+        getSummarySupplyChainSales(simulationId),
+      ]).then(([ss, sc]) => {
+        setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
+      }).catch(() => null)
+    }
     if (anyShip) { fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand); fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand) }
     else         { resetToSummary('ship'); resetToSummary('dc') }
     // Re-fetch rolling forecast demand with the updated filters so it matches the same scope
