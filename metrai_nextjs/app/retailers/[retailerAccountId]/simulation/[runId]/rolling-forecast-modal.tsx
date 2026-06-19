@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '@/lib/store/authStore'
 import {
   saveExtensionPromos, generateExtensionDemand, getDemandStatus, getDemandWeeklyTotals,
-  createRollingSession, runRollingChunk, recalculateRollingDemand,
+  createRollingSession, runRollingChunk, recalculateRollingDemand, getSessionPromoSchedules,
 } from '@/lib/api/simulation'
 import { getPromoGroups } from '@/lib/api/promos'
 import {
@@ -93,13 +93,7 @@ export function RollingForecastModal({
   useEffect(() => { setSession(existingSession) }, [existingSession])
 
   // ── Modal state machine ───────────────────────────────────────────────────
-  const [modalState, setModalState] = useState<ModalState>(() =>
-    existingSession?.status === 'active' && existingSession.current_completed_week
-      ? 'performance_input'
-      : existingSession?.status === 'active'
-        ? 'demand_preview'
-        : 'setup'
-  )
+  const [modalState, setModalState] = useState<ModalState>('setup')
   const [error, setError] = useState('')
 
   // ── Setup state ───────────────────────────────────────────────────────────
@@ -134,13 +128,27 @@ export function RollingForecastModal({
     getPromoGroups(retailerAccountId).then(setPromoGroupCatalog).catch(() => null)
   }, [open, retailerAccountId])
 
-  // ── If resuming an existing session, load its demand chart ───────────────
+  // ── When opened in edit mode, pre-load existing promo schedule ───────────
   useEffect(() => {
     if (!open || !existingSession) return
-    if (existingSession.status === 'active' && !existingSession.current_completed_week) {
-      loadDemandChart(existingSession)
-    }
-  }, [open, existingSession])
+    setModalState('setup')
+    setTotalEndDate(existingSession.total_end_date)
+    getSessionPromoSchedules(existingSession.session_id).then(rows => {
+      setScheduledPromos(rows.map((r, i) => ({
+        clientId: `existing-${i}`,
+        promo_id: r.id,
+        promo_name: r.promo_group_name,
+        promo_group_name: r.promo_group_name,
+        event_type: '',
+        store_count: 0,
+        item_count: 0,
+        start_date: r.start_date,
+        end_date: r.end_date,
+        demand_multiplier: r.demand_multiplier,
+        disabled: false,
+      })))
+    }).catch(() => null)
+  }, [open, existingSession?.session_id])
 
   // ── Cleanup poll on unmount ───────────────────────────────────────────────
   useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current) }, [])
@@ -196,13 +204,16 @@ export function RollingForecastModal({
         )
       }
 
-      // Generate demand
+      // Generate demand — start from day after last completed chunk (or base end date for first run)
+      const demandStartDate = sess.current_completed_week
+        ? new Date(new Date(sess.current_completed_week + 'T12:00:00').getTime() + 24 * 3600 * 1000).toISOString().slice(0, 10)
+        : baseEndDate
       setDemandStatus('generating')
       const job = await generateExtensionDemand({
         session_id: sess.session_id,
         simulation_id: baseSimulationId,
         retailer_account_id: retailerAccountId,
-        start_date: baseEndDate,
+        start_date: demandStartDate,
         end_date: totalEndDate,
         seed: baseSeed,
       })
@@ -526,7 +537,7 @@ export function RollingForecastModal({
                     ? <><Loader2 size={13} className="animate-spin" /> Generating demand…</>
                     : savingSetup
                       ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-                      : <>Generate Demand <ChevronRight size={13} /></>}
+                      : existingSession ? <>Regenerate Demand <ChevronRight size={13} /></> : <>Generate Demand <ChevronRight size={13} /></>}
                 </button>
               </div>
             )}

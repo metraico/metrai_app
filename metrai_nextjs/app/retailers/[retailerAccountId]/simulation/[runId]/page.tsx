@@ -25,9 +25,9 @@ import { toIsoWeek } from '@/lib/utils'
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
 function aggPOS(pos: any[]) {
-  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string }>()
+  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string; runType: string }>()
   for (const r of pos) {
-    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '' }
+    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '', runType: 'base' }
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
@@ -35,6 +35,10 @@ function aggPOS(pos: any[]) {
       revenue: c.revenue + Number(r.sales_amount),
       isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
       promoName: c.promoName || (r.promo_name ?? ''),
+      // keep the most specific run_type seen for this week (rolling_chunk > extension > base)
+      runType: r.run_type === 'rolling_chunk' ? 'rolling_chunk'
+             : r.run_type === 'extension' && c.runType !== 'rolling_chunk' ? 'extension'
+             : c.runType,
     })
   }
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, v]) => ({
@@ -45,6 +49,7 @@ function aggPOS(pos: any[]) {
     sales_amount: v.revenue,
     is_promo_week: v.isPromo ? 1 : 0,
     promo_name: v.promoName,
+    run_type: v.runType,
   }))
 }
 
@@ -507,9 +512,15 @@ export default function SimulationResultsPage() {
     try {
       const session = await getRollingSession(simulationId)
       setRollingSession(session)
+      // If chunks have run, the cache is stale — re-fetch posData from backend
+      if (session.chunks && session.chunks.length > 0) {
+        getSummaryStoreSales(simulationId)
+          .then(s => setPosData(aggPOS(s.weekly_pos ?? [])))
+          .catch(() => null)
+      }
       if (session.status === 'active') {
         const startWeek = session.current_completed_week
-          ? toIsoWeek(session.current_completed_week)
+          ? toIsoWeek(new Date(new Date(session.current_completed_week + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
           : toIsoWeek(runEndWeek)
         const endWeek = toIsoWeek(session.total_end_date)
         const seed = (runFullConfig as any)?.random_seed ?? 42
@@ -999,6 +1010,12 @@ export default function SimulationResultsPage() {
                 const rollingForecastStartWeek = rollingSession?.current_completed_week
                   ? toIsoWeek(rollingSession.current_completed_week)
                   : null
+                // Base sim end / rolling window start
+                const rollingBaseStartWeek = rollingSession ? toIsoWeek(runEndWeek) : null
+                // One shaded band per completed chunk
+                const chunkAreas = (rollingSession?.chunks ?? [])
+                  .filter(c => c.status === 'completed')
+                  .map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
                 const mergedPosData = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
                 const forecastOnlyWeeks = rollingForecastData
                   .filter(r => !posData.some(d => d.week === r.week))
@@ -1030,19 +1047,34 @@ export default function SimulationResultsPage() {
                           <Tooltip content={<ChartTooltip />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
-                            {combinedPosData.map((_, i) => <Cell key={i} fill={extensionStartWeek && combinedPosData[i].week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
+                            {combinedPosData.map((d, i) => {
+                              const rt = d.run_type
+                              const fill = rt === 'rolling_chunk' ? '#f97316' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
+                              return <Cell key={i} fill={fill} />
+                            })}
                           </Bar>
                           <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
-                            {combinedPosData.map((_, i) => <Cell key={i} fill={extensionStartWeek && combinedPosData[i].week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
+                            {combinedPosData.map((d, i) => {
+                              const rt = d.run_type
+                              const fill = rt === 'rolling_chunk' ? '#fb923c' : rt === 'extension' ? '#6ee7b7' : '#10b981'
+                              return <Cell key={i} fill={fill} />
+                            })}
                           </Bar>
                           <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
-                            {combinedPosData.map((_, i) => <Cell key={i} fill={extensionStartWeek && combinedPosData[i].week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
+                            {combinedPosData.map((d, i) => {
+                              const rt = d.run_type
+                              const fill = rt === 'rolling_chunk' ? '#fdba74' : rt === 'extension' ? '#fca5a5' : '#ef4444'
+                              return <Cell key={i} fill={fill} />
+                            })}
                           </Bar>
                           {rollingForecastData.length > 0 && (
-                            <Bar dataKey="forecast_qty" fill="#8b5cf6" fillOpacity={0.35} name="Rolling Forecast" barSize={10} />
+                            <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Rolling Forecast" barSize={10} />
                           )}
                           {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
-                          {rollingForecastStartWeek && <ReferenceLine x={rollingForecastStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" label={{ value: 'Rolling Forecast', position: 'insideTopRight', fontSize: 9, fill: '#8b5cf6' }} />}
+                          {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+                          {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
+                            <ReferenceLine x={rollingForecastStartWeek} stroke="#f97316" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideTopRight', fontSize: 9, fill: '#f97316' }} />
+                          )}
                         </ComposedChart>
                       </ResponsiveContainer>
                     )}

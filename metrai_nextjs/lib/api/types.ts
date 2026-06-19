@@ -406,6 +406,7 @@ export interface POSRecord {
   stockout_qty: string
   sales_amount: string
   is_promo_demand: string
+  run_type?: string  // 'base' | 'extension' | 'rolling_chunk'
 }
 export interface StoreInventoryRecord {
   store_id: string
