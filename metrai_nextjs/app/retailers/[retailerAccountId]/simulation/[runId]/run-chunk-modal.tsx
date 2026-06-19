@@ -1,9 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Loader2, AlertCircle } from 'lucide-react'
-import { runRollingChunk } from '@/lib/api/simulation'
+import { runRollingChunk, getSessionPromoSchedules } from '@/lib/api/simulation'
 import type { RollingForecastSession, RunChunkResponse } from '@/lib/api/types'
 
 const inputCls = 'w-full rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50/60 px-2.5 py-1.5 text-xs font-medium text-charcoal-blue-900 placeholder:text-charcoal-blue-300 transition-all focus:border-majorelle-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-majorelle-blue-100'
@@ -13,25 +13,16 @@ function weeksBetween(start: string, end: string): number {
   return Math.max(1, Math.round((e.getTime() - s.getTime()) / (7 * 24 * 3600 * 1000)))
 }
 
-interface PromoRow {
-  promo_group_name: string
-  promo_name: string
-  start_date: string
-  end_date: string
-  demand_multiplier: number
-}
-
 export interface RunChunkModalProps {
   open: boolean
   onClose: () => void
   session: RollingForecastSession
-  baseEndDate: string          // base sim end date — used as min for first chunk
-  scheduledPromos: PromoRow[]  // promos in the upcoming window
+  baseEndDate: string
   onChunkComplete: (result: RunChunkResponse) => void
 }
 
 export function RunChunkModal({
-  open, onClose, session, baseEndDate, scheduledPromos, onChunkComplete,
+  open, onClose, session, baseEndDate, onChunkComplete,
 }: RunChunkModalProps) {
   const currentStart = session.current_completed_week || baseEndDate
   const totalEnd = session.total_end_date
@@ -40,28 +31,50 @@ export function RunChunkModal({
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
 
-  // Per promo-group: multiplier override + performance %
-  const uniqueGroups = [...new Map(scheduledPromos.map(p => [p.promo_group_name, p])).values()]
-  const [multipliers, setMultipliers] = useState<Record<string, number>>(
-    Object.fromEntries(uniqueGroups.map(p => [p.promo_group_name, p.demand_multiplier]))
-  )
-  const [perfPct, setPerfPct] = useState<Record<string, number>>(
-    Object.fromEntries(uniqueGroups.map(p => [p.promo_group_name, 0]))
-  )
+  // Promos active in the selected chunk window — fetched dynamically, one row per scheduled entry
+  const [activePromos, setActivePromos] = useState<{
+    id: string
+    promo_group_name: string
+    start_date: string
+    end_date: string
+    demand_multiplier: number
+  }[]>([])
+  const [loadingPromos, setLoadingPromos] = useState(false)
+
+  // Performance % keyed by row id (not group name) so same group on different weeks is independent
+  const [perfPct, setPerfPct] = useState<Record<string, number>>({})
+
+  // Fetch active promo schedule entries whenever the chunk end date changes
+  useEffect(() => {
+    if (!chunkEndDate || !currentStart) {
+      setActivePromos([])
+      return
+    }
+    setLoadingPromos(true)
+    getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate)
+      .then(setActivePromos)
+      .catch(() => setActivePromos([]))
+      .finally(() => setLoadingPromos(false))
+  }, [chunkEndDate, session.session_id, currentStart])
+
+  // Reset performance inputs (keyed by id) when promo list changes
+  useEffect(() => {
+    setPerfPct(Object.fromEntries(activePromos.map(p => [p.id, 0])))
+  }, [activePromos])
 
   const weeksToRun = chunkEndDate ? weeksBetween(currentStart, chunkEndDate) : 0
 
   async function handleRun() {
-    if (!chunkEndDate) { setError('Select how many weeks to run.'); return }
+    if (!chunkEndDate) { setError('Select a run-until date.'); return }
     if (new Date(chunkEndDate) <= new Date(currentStart)) {
       setError('End date must be after the current completed week.'); return
     }
     setError('')
     setRunning(true)
     try {
-      const perfInputs = Object.entries(perfPct)
-        .filter(([, pct]) => pct !== 0)
-        .map(([promo_group_name, pct]) => ({ promo_group_name, pct }))
+      const perfInputs = activePromos
+        .filter(p => (perfPct[p.id] ?? 0) !== 0)
+        .map(p => ({ promo_group_name: p.promo_group_name, pct: perfPct[p.id], schedule_id: p.id }))
 
       const result = await runRollingChunk(session.session_id, {
         chunk_end_date: chunkEndDate,
@@ -82,7 +95,7 @@ export function RunChunkModal({
         <div className="border-b border-charcoal-blue-100 px-6 py-4 pr-12">
           <DialogTitle className="text-sm font-bold text-charcoal-blue-900">Run Simulation Chunk</DialogTitle>
           <p className="text-[10px] text-charcoal-blue-400 mt-0.5">
-            Set promo multipliers, performance, and how many weeks to run.
+            Choose how far to run, then enter how your promos actually performed.
           </p>
         </div>
 
@@ -114,32 +127,46 @@ export function RunChunkModal({
             )}
           </div>
 
-          {/* Promo multipliers + performance */}
-          {uniqueGroups.length > 0 && (
+          {/* Promo performance inputs — shown only after a date is entered */}
+          {!chunkEndDate && (
+            <p className="text-center text-[10px] text-charcoal-blue-400 py-2">
+              Select a date above to see active promo groups
+            </p>
+          )}
+
+          {chunkEndDate && loadingPromos && (
+            <div className="flex items-center justify-center gap-2 py-3 text-[10px] text-charcoal-blue-400">
+              <Loader2 size={12} className="animate-spin" /> Loading active promos…
+            </div>
+          )}
+
+          {chunkEndDate && !loadingPromos && activePromos.length === 0 && (
+            <p className="text-center text-[10px] text-charcoal-blue-400 py-2 rounded-xl border border-dashed border-charcoal-blue-200">
+              No promo groups scheduled in this period — you can still run the chunk
+            </p>
+          )}
+
+          {chunkEndDate && !loadingPromos && activePromos.length > 0 && (
             <div className="space-y-2">
-              <div className="grid grid-cols-3 gap-2 text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 px-1">
+              <div className="grid grid-cols-2 gap-2 text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 px-1">
                 <span>Promo Group</span>
-                <span className="text-center">Multiplier</span>
                 <span className="text-center">Performance %</span>
               </div>
-              {uniqueGroups.map(p => (
-                <div key={p.promo_group_name} className="grid grid-cols-3 items-center gap-2 rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50/50 px-3 py-2">
-                  <span className="text-[10px] font-semibold text-charcoal-blue-800 truncate" title={p.promo_group_name}>
-                    {p.promo_group_name}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0.1"
-                    value={multipliers[p.promo_group_name] ?? 1}
-                    onChange={e => setMultipliers(prev => ({ ...prev, [p.promo_group_name]: Number(e.target.value) }))}
-                    className="rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs text-center font-semibold focus:border-majorelle-blue-400 focus:outline-none bg-white"
-                  />
+              {activePromos.map((p, i) => (
+                <div key={p.id || `${p.promo_group_name}-${i}`} className="grid grid-cols-2 items-center gap-2 rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50/50 px-3 py-2">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-semibold text-charcoal-blue-800 truncate block" title={p.promo_group_name}>
+                      {p.promo_group_name}
+                    </span>
+                    <span className="text-[9px] text-charcoal-blue-400">
+                      {p.start_date} → {p.end_date} · {p.demand_multiplier}×
+                    </span>
+                  </div>
                   <div className="flex items-center gap-1">
                     <input
                       type="number"
-                      value={perfPct[p.promo_group_name] ?? 0}
-                      onChange={e => setPerfPct(prev => ({ ...prev, [p.promo_group_name]: Number(e.target.value) }))}
+                      value={perfPct[p.id] || ''}
+                      onChange={e => setPerfPct(prev => ({ ...prev, [p.id]: Number(e.target.value) }))}
                       className="w-full rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs text-center font-semibold focus:border-majorelle-blue-400 focus:outline-none bg-white"
                       placeholder="0"
                     />
@@ -148,7 +175,7 @@ export function RunChunkModal({
                 </div>
               ))}
               <p className="text-[10px] text-charcoal-blue-400 px-1">
-                Multiplier = demand lift for this promo. Performance % adjusts future chunks (+50 = overperformed, -30 = underperformed).
+                +50 = overperformed 50%, -30 = underperformed 30%, 0 = as expected
               </p>
             </div>
           )}

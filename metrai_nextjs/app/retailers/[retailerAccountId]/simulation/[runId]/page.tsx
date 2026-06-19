@@ -1347,7 +1347,6 @@ export default function SimulationResultsPage() {
         onClose={() => setShowRunChunkModal(false)}
         session={rollingSession}
         baseEndDate={runEndWeek}
-        scheduledPromos={rollingPromos}
         onChunkComplete={(result) => {
           const updatedSession: RollingForecastSession = {
             ...rollingSession,

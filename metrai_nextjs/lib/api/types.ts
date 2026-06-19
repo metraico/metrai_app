@@ -205,6 +205,7 @@ export interface ExtendSimulationPayload {
 export interface PerformanceInput {
   promo_group_name: string
   pct: number  // +50 = overperformed 50%, -30 = underperformed 30%
+  schedule_id?: string  // extension_promo_schedules.id for per-row precision
 }
 
 export interface RollingForecastChunk {

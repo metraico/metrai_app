@@ -167,3 +167,20 @@ export const recalculateRollingDemand = (sessionId: string, req: RecalculateDema
 // DELETE /rolling-session/{id}
 export const abandonRollingSession = (sessionId: string) =>
   engineClient.delete<{ abandoned: string }>(`/rolling-session/${sessionId}`).then(r => r.data)
+
+// GET /rolling-session/{id}/promo-schedules — promo groups active in a date range
+export const getSessionPromoSchedules = (
+  sessionId: string,
+  startDate?: string,
+  endDate?: string,
+) =>
+  engineClient.get<{
+    id: string
+    promo_group_name: string
+    start_date: string
+    end_date: string
+    demand_multiplier: number
+  }[]>(
+    `/rolling-session/${sessionId}/promo-schedules`,
+    { params: { start_date: startDate, end_date: endDate } },
+  ).then(r => r.data)
