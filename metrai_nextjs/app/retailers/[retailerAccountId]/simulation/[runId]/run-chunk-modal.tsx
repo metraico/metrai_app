@@ -167,7 +167,7 @@ export function RunChunkModal({
                       type="number"
                       value={perfPct[p.id] || ''}
                       onChange={e => setPerfPct(prev => ({ ...prev, [p.id]: Number(e.target.value) }))}
-                      className="w-full rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs text-center font-semibold focus:border-majorelle-blue-400 focus:outline-none bg-white"
+                      className="w-full rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs text-center font-semibold text-black focus:border-majorelle-blue-400 focus:outline-none bg-white"
                       placeholder="0"
                     />
                     <span className="text-[10px] text-charcoal-blue-400 flex-shrink-0">%</span>
