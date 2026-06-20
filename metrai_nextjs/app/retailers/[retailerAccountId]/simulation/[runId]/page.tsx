@@ -25,9 +25,9 @@ import { toIsoWeek } from '@/lib/utils'
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
 function aggPOS(pos: any[]) {
-  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string; runType: string }>()
+  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string; promoGroupName: string; runType: string }>()
   for (const r of pos) {
-    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '', runType: 'base' }
+    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '', promoGroupName: '', runType: 'base' }
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
@@ -35,6 +35,7 @@ function aggPOS(pos: any[]) {
       revenue: c.revenue + Number(r.sales_amount),
       isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
       promoName: c.promoName || (r.promo_name ?? ''),
+      promoGroupName: c.promoGroupName || (r.promo_group_name ?? ''),
       // keep the most specific run_type seen for this week (rolling_chunk > extension > base)
       runType: r.run_type === 'rolling_chunk' ? 'rolling_chunk'
              : r.run_type === 'extension' && c.runType !== 'rolling_chunk' ? 'extension'
@@ -49,6 +50,7 @@ function aggPOS(pos: any[]) {
     sales_amount: v.revenue,
     is_promo_week: v.isPromo ? 1 : 0,
     promo_name: v.promoName,
+    promo_group_name: v.promoGroupName,
     run_type: v.runType,
   }))
 }
@@ -132,17 +134,20 @@ function computeKPIs(pos: any[], shipments: any[]) {
 
 function ChartTooltip({ active, payload, label, promoWeekMap }: {
   active?: boolean; payload?: any[]; label?: string
-  promoWeekMap?: Record<string, string>
+  promoWeekMap?: Record<string, { name: string; groupName: string }>
 }) {
   if (!active || !payload?.length) return null
-  const promoName = payload[0]?.payload?.promo_name || promoWeekMap?.[label ?? ''] || ''
-  const isPromo = payload[0]?.payload?.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
+  const data = payload[0]?.payload ?? {}
+  const promoGroupName = data.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
+  const promoName = data.promo_name || promoWeekMap?.[label ?? '']?.name || ''
+  const promoLabel = promoGroupName || promoName || 'Promo week'
+  const isPromo = data.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[140px]">
       {isPromo && (
         <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
           <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
-          <span className="font-semibold text-violet-700 truncate">{promoName || 'Promo week'}</span>
+          <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
         </div>
       )}
       <p className="mb-1 font-semibold text-charcoal-blue-700">{label}</p>
@@ -649,28 +654,25 @@ export default function SimulationResultsPage() {
     }
     const anyPos  = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
     const anyShip = !!(globalItem || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
+    const anyFilter = anyPos || anyShip
     if (anyPos) {
       fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
       fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      // Re-fetch KPI summary with filters so KPI cards reflect the filtered scope
-      Promise.all([
-        getSummaryStoreSales(simulationId, posFilters),
-        getSummarySupplyChainSales(simulationId, shipFilters),
-      ]).then(([ss, sc]) => {
-        setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
-      }).catch(() => null)
     } else {
       resetToSummary('pos'); resetToSummary('inv')
-      // Reset KPIs to unfiltered summary
-      Promise.all([
-        getSummaryStoreSales(simulationId),
-        getSummarySupplyChainSales(simulationId),
-      ]).then(([ss, sc]) => {
-        setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
-      }).catch(() => null)
     }
     if (anyShip) { fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand); fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand) }
     else         { resetToSummary('ship'); resetToSummary('dc') }
+    // Re-fetch KPI summary using all active filters so KPI cards always reflect the filtered scope.
+    // posFilters covers item/store/category/subcategory/brand (drives Total Sales, Revenue, Stockout Rate).
+    // shipFilters covers item/SDC/RDC/category/subcategory/brand (drives Avg Fill Rate).
+    // When no filters are active both calls fetch the full unfiltered summary.
+    Promise.all([
+      getSummaryStoreSales(simulationId, anyFilter ? posFilters : undefined),
+      getSummarySupplyChainSales(simulationId, anyFilter ? shipFilters : undefined),
+    ]).then(([ss, sc]) => {
+      setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
+    }).catch(() => null)
     // Re-fetch rolling forecast demand with the updated filters so it matches the same scope
     if (rollingSession?.status === 'active') refreshRollingForecast()
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1084,7 +1086,7 @@ export default function SimulationResultsPage() {
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis dataKey="week" {...xAxisProps} />
                           <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                          <Tooltip content={<ChartTooltip />} />
+                          <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
                             {combinedPosData.map((d, i) => {
@@ -1170,7 +1172,7 @@ export default function SimulationResultsPage() {
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
-                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
+                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
                         {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
