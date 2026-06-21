@@ -476,11 +476,20 @@ export default function SimulationResultsPage() {
 
   const loadSummary = useCallback(async () => {
     if (cache?.simulationId === simulationId && cache.summary) {
-      setSimName(cache.simulationName)
-      applySummary(cache.summary)
-      getAnalyticsMeta(simulationId).then(setMeta).catch(() => null)
-      setPageState('ready')
-      return
+      // Check if the cache is stale: if the summary only contains base/null run_type rows,
+      // rolling_chunk and extension weeks are absent. Bust the cache so fresh data is fetched.
+      const cachedPos = cache.summary.weekly_pos ?? []
+      const hasRollingOrExtensionRows = cachedPos.some((r: any) => r.run_type === 'rolling_chunk' || r.run_type === 'extension')
+      if (hasRollingOrExtensionRows) {
+        // Cache has up-to-date rolling/extension data — use it directly
+        setSimName(cache.simulationName)
+        applySummary(cache.summary)
+        getAnalyticsMeta(simulationId).then(setMeta).catch(() => null)
+        setPageState('ready')
+        return
+      }
+      // Cache only has base rows (no rolling_chunk/extension) — fall through to fresh fetch
+      // to pick up any rolling chunks or extensions that have since completed.
     }
     try {
       const [metaData, storeSales, storeInv, supplyChain, upstream] = await Promise.all([
@@ -615,7 +624,9 @@ export default function SimulationResultsPage() {
   }, [simulationId])
 
   const resetToSummary = useCallback((chart: 'pos' | 'inv' | 'ship' | 'dc') => {
-    if (cache?.simulationId === simulationId && cache.summary) {
+    const cachedPos = cache?.summary?.weekly_pos ?? []
+    const cacheHasRollingRows = cachedPos.some((r: any) => r.run_type === 'rolling_chunk' || r.run_type === 'extension')
+    if (cache?.simulationId === simulationId && cache.summary && cacheHasRollingRows) {
       const s = cache.summary
       if (chart === 'pos')  setPosData(aggPOS(s.weekly_pos ?? []))
       if (chart === 'inv')  setStoreInvData(aggStoreInv(s.store_inventory ?? []))
@@ -1049,8 +1060,11 @@ export default function SimulationResultsPage() {
               {(() => {
                 // Merge simulated posData with rolling forecast data for unrun weeks
                 const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+                // current_completed_week is the last day of the last completed chunk (YYYY-MM-DD).
+                // Adding 7 days gives the first day of the next (unrun) week — consistent with how
+                // the active-session startWeek is computed at lines 534-536.
                 const rollingForecastStartWeek = rollingSession?.current_completed_week
-                  ? toIsoWeek(rollingSession.current_completed_week)
+                  ? toIsoWeek(new Date(new Date(rollingSession.current_completed_week + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
                   : null
                 // Base sim end / rolling window start
                 const rollingBaseStartWeek = rollingSession ? toIsoWeek(runEndWeek) : null
@@ -1091,31 +1105,31 @@ export default function SimulationResultsPage() {
                           <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
                             {combinedPosData.map((d, i) => {
                               const rt = d.run_type
-                              const fill = rt === 'rolling_chunk' ? '#f97316' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
+                              const fill = rt === 'rolling_chunk' ? '#a78bfa' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
                               return <Cell key={i} fill={fill} />
                             })}
                           </Bar>
                           <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
                             {combinedPosData.map((d, i) => {
                               const rt = d.run_type
-                              const fill = rt === 'rolling_chunk' ? '#fb923c' : rt === 'extension' ? '#6ee7b7' : '#10b981'
+                              const fill = rt === 'rolling_chunk' ? '#34d399' : rt === 'extension' ? '#6ee7b7' : '#10b981'
                               return <Cell key={i} fill={fill} />
                             })}
                           </Bar>
                           <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
                             {combinedPosData.map((d, i) => {
                               const rt = d.run_type
-                              const fill = rt === 'rolling_chunk' ? '#fdba74' : rt === 'extension' ? '#fca5a5' : '#ef4444'
+                              const fill = rt === 'rolling_chunk' ? '#f87171' : rt === 'extension' ? '#fca5a5' : '#ef4444'
                               return <Cell key={i} fill={fill} />
                             })}
                           </Bar>
                           {rollingForecastData.length > 0 && (
-                            <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Rolling Forecast" barSize={10} />
+                            <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Future Demand" barSize={10} />
                           )}
                           {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                           {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
                           {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-                            <ReferenceLine x={rollingForecastStartWeek} stroke="#f97316" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideTopRight', fontSize: 9, fill: '#f97316' }} />
+                            <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideTopRight', fontSize: 9, fill: '#7c3aed' }} />
                           )}
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -1428,9 +1442,10 @@ export default function SimulationResultsPage() {
             status: result.rolling_session?.session_status as any ?? 'active',
           }
           setRollingSession(updatedSession)
+          // refreshRollingForecast internally re-fetches getSummaryStoreSales (posData) when chunks exist.
+          // Do NOT also call loadSummary() here — the concurrent fetch would race and may overwrite
+          // rolling_chunk-typed rows with stale base-only data, causing chunk weeks to vanish from charts.
           refreshRollingForecast()
-          // Reload simulation data so main charts update with the new chunk's POS
-          loadSummary()
         }}
       />
     )}
