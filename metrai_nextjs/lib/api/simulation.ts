@@ -1,6 +1,45 @@
 import { engineClient } from './client'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, ExtendSimulationPayload, SimulationExtensionRecord, ExtensionPromoInput, SaveExtensionPromosResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// YAML body helpers — shared by rolling-forecast-modal and run-chunk-modal
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CHUNK_WEEKS = 4
+
+/**
+ * Build the YAML textarea content for the run-chunk modal.
+ * The comment header shows the chunk window. Each active promo becomes one
+ * `performance` entry with schedule_id and pct: 0.
+ */
+export function buildRunChunkYaml(
+  promos: { id: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
+  chunkStart: string,
+  chunkEnd: string,
+  sessionId?: string,
+): string {
+  const sessionLine = sessionId ? `# Session: ${sessionId}\n` : ''
+  const header = [
+    `# Chunk window: ${chunkStart} → ${chunkEnd}  (SIM, ${CHUNK_WEEKS} weeks)`,
+    sessionLine.trimEnd(),
+    `# Edit pct for each promo: +50 = overperformed 50%, -30 = underperformed 30%, 0 = on plan`,
+    '',
+  ].filter(l => l !== undefined).join('\n')
+
+  if (promos.length === 0) {
+    return header + 'performance: []\n'
+  }
+
+  const entries = promos.map(p =>
+    [
+      `  - schedule_id: "${p.id}"`,
+      `    pct: 0        # ${p.promo_group_name}  ${p.start_date} → ${p.end_date}`,
+    ].join('\n')
+  ).join('\n\n')
+
+  return header + 'performance:\n' + entries + '\n'
+}
+
 export const engineBaseUrl: string = (process.env.NEXT_PUBLIC_ENGINE_URL as string) || 'http://localhost:8001'
 
 // POST /simulate — synchronous, returns completed result inline
@@ -140,7 +179,7 @@ export const generateExtensionDemand = (req: GenerateExtensionDemandRequest) =>
 
 const DEFAULT_CHUNK_TYPE_SEQUENCE = ['SIM', 'FORECAST', 'SIM', 'FORECAST', 'SIM']
 
-// POST /simulation/{id}/rolling-session
+// POST /simulation/{id}/rolling-session  (JSON path — kept for backward compat)
 export const createRollingSession = (
   simulationId: string,
   retailerAccountId: string,
@@ -152,6 +191,52 @@ export const createRollingSession = (
     total_end_date: totalEndDate,
     chunk_type_sequence: chunkTypeSequence,
   }).then(r => r.data)
+
+// POST /simulation/{id}/rolling-session  (YAML path — used by the new YAML modal)
+export const createRollingSessionYaml = async (
+  simulationId: string,
+  yamlBody: string,
+): Promise<RollingForecastSession> => {
+  const baseURL = (engineClient.defaults.baseURL as string) || 'http://localhost:8001'
+  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
+  const resp = await fetch(`${baseURL}/simulation/${simulationId}/rolling-session`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/yaml',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: yamlBody,
+  })
+  if (!resp.ok) {
+    let msg = `Server error ${resp.status}`
+    try { const b = await resp.json(); msg = b?.detail ?? b?.message ?? msg } catch {}
+    throw new Error(msg)
+  }
+  return resp.json()
+}
+
+// POST /rolling-session/{id}/run-chunk  (YAML path — used by run-chunk-modal)
+export const runRollingChunkYaml = async (
+  sessionId: string,
+  yamlBody: string,
+): Promise<RunChunkResponse> => {
+  const baseURL = (engineClient.defaults.baseURL as string) || 'http://localhost:8001'
+  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
+  const resp = await fetch(`${baseURL}/rolling-session/${sessionId}/run-chunk`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/yaml',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: yamlBody,
+  })
+  if (!resp.ok) {
+    let msg = `Server error ${resp.status}`
+    try { const b = await resp.json(); msg = b?.detail ?? b?.message ?? msg } catch {}
+    throw new Error(msg)
+  }
+  return resp.json()
+}
 
 // GET /simulation/{id}/rolling-session
 export const getRollingSession = (simulationId: string) =>

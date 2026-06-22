@@ -2,11 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { Loader2, AlertCircle } from 'lucide-react'
-import { runRollingChunk, getSessionPromoSchedules } from '@/lib/api/simulation'
-import type { RollingForecastSession, RunChunkResponse } from '@/lib/api/types'
+import { Loader2, AlertCircle, Plus } from 'lucide-react'
+import { getSessionPromoSchedules, runRollingChunkYaml, buildRunChunkYaml } from '@/lib/api/simulation'
+import { getPromoGroups } from '@/lib/api/promos'
+import type { RollingForecastSession, RunChunkResponse, PromoGroupResponse } from '@/lib/api/types'
+import yaml from 'js-yaml'
 
-const CHUNK_WEEKS = 4
+const SIM_CHUNK_WEEKS = 4
+const FORECAST_CHUNK_WEEKS = 12
+const DEFAULT_SEQUENCE = ['SIM', 'FORECAST', 'SIM', 'FORECAST', 'SIM']
 
 /** Add `weeks` weeks to a YYYY-MM-DD date string. */
 function addWeeks(dateStr: string, weeks: number): string {
@@ -34,54 +38,101 @@ export function RunChunkModal({
   const currentStart = session.current_completed_week || baseEndDate
   const totalEnd = session.total_end_date
 
-  // Fixed 4-week chunk end, clamped so it doesn't exceed the session total end date
-  const chunkEndDate = clampDate(addWeeks(currentStart, CHUNK_WEEKS), totalEnd)
+  // Determine next chunk_type from the session sequence (1-based chunk_number).
+  const sequence = session.chunk_type_sequence && session.chunk_type_sequence.length > 0
+    ? session.chunk_type_sequence
+    : DEFAULT_SEQUENCE
+  const nextChunkNumber = (session.chunks?.length ?? 0) + 1
+  const nextChunkType = (sequence[nextChunkNumber - 1] ?? 'SIM') as 'SIM' | 'FORECAST'
+  const isForecast = nextChunkType === 'FORECAST'
+  const chunkWeeks = isForecast ? FORECAST_CHUNK_WEEKS : SIM_CHUNK_WEEKS
+
+  // Fixed chunk end, clamped so it doesn't exceed the session total end date
+  const chunkEndDate = clampDate(addWeeks(currentStart, chunkWeeks), totalEnd)
 
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
-
-  // Promos active in this fixed chunk window — fetched once on open
-  const [activePromos, setActivePromos] = useState<{
-    id: string
-    promo_group_name: string
-    start_date: string
-    end_date: string
-    demand_multiplier: number
-  }[]>([])
+  const [yamlText, setYamlText] = useState('')
   const [loadingPromos, setLoadingPromos] = useState(false)
 
-  // Performance % keyed by row id (not group name) so same group on different weeks is independent
-  const [perfPct, setPerfPct] = useState<Record<string, number>>({})
+  // Promo groups for the "Add promo" picker
+  const [promoGroups, setPromoGroups] = useState<PromoGroupResponse[]>([])
+  const [showPicker, setShowPicker] = useState(false)
 
-  // Fetch active promo schedule entries for this chunk window
+  // Fetch active promo schedule entries for this chunk window and promo groups on open.
+  // For FORECAST chunks no promo performance is needed — submit an empty performance list.
   useEffect(() => {
     if (!open || !currentStart || !chunkEndDate) {
-      setActivePromos([])
+      setYamlText('')
       return
     }
-    setLoadingPromos(true)
-    getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate)
-      .then(setActivePromos)
-      .catch(() => setActivePromos([]))
-      .finally(() => setLoadingPromos(false))
-  }, [open, session.session_id, currentStart, chunkEndDate])
+    setError('')
+    setShowPicker(false)
 
-  // Reset performance inputs when promo list changes
-  useEffect(() => {
-    setPerfPct(Object.fromEntries(activePromos.map(p => [p.id, 0])))
-  }, [activePromos])
+    if (isForecast) {
+      setLoadingPromos(false)
+      setYamlText('performance: []\n')
+      return
+    }
+
+    setLoadingPromos(true)
+    Promise.all([
+      getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate),
+      getPromoGroups(session.retailer_account_id),
+    ])
+      .then(([schedules, groups]) => {
+        setPromoGroups(groups)
+        setYamlText(buildRunChunkYaml(schedules, currentStart, chunkEndDate, session.session_id))
+      })
+      .catch(() => {
+        setYamlText(buildRunChunkYaml([], currentStart, chunkEndDate, session.session_id))
+      })
+      .finally(() => setLoadingPromos(false))
+  }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate, isForecast])
+
+  /** Names already present in the YAML textarea (to filter picker). */
+  function namesInYaml(): Set<string> {
+    const found = new Set<string>()
+    const lines = yamlText.split('\n')
+    for (const line of lines) {
+      const m = line.match(/promo_group_name:\s*["']?([^"'\n]+)["']?/)
+      if (m) found.add(m[1].trim())
+    }
+    return found
+  }
+
+  function appendPromoBlock(groupName: string) {
+    const block = [
+      '',
+      `  - schedule_id: ""`,
+      `    promo_group_name: ${groupName}`,
+      `    pct: 0`,
+    ].join('\n')
+
+    // If the textarea ends with the empty-list form, replace it with a proper sequence
+    let base = yamlText
+    if (base.trim().endsWith('performance: []')) {
+      base = base.replace('performance: []', 'performance:')
+    }
+    // Remove trailing newline then append
+    setYamlText(base.replace(/\n+$/, '') + '\n' + block + '\n')
+    setShowPicker(false)
+  }
 
   async function handleRun() {
     setError('')
+
+    // Client-side YAML parse check
+    try {
+      yaml.load(yamlText)
+    } catch (e: any) {
+      setError('Invalid YAML: ' + (e?.message ?? 'parse error'))
+      return
+    }
+
     setRunning(true)
     try {
-      const perfInputs = activePromos
-        .filter(p => (perfPct[p.id] ?? 0) !== 0)
-        .map(p => ({ promo_group_name: p.promo_group_name, pct: perfPct[p.id], schedule_id: p.id }))
-
-      const result = await runRollingChunk(session.session_id, {
-        performance_inputs: perfInputs,
-      })
+      const result = await runRollingChunkYaml(session.session_id, yamlText)
       onChunkComplete(result)
       onClose()
     } catch (e: any) {
@@ -91,77 +142,101 @@ export function RunChunkModal({
     }
   }
 
+  const unavailableNames = namesInYaml()
+  const pickerGroups = promoGroups.filter(g => !unavailableNames.has(g.promo_group_name))
+
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="max-w-md rounded-2xl p-0 shadow-2xl bg-white">
+      <DialogContent className="max-w-lg rounded-2xl p-0 shadow-2xl bg-white">
         <div className="border-b border-charcoal-blue-100 px-6 py-4 pr-12">
-          <DialogTitle className="text-sm font-bold text-charcoal-blue-900">Run Simulation Chunk</DialogTitle>
+          <DialogTitle className="text-sm font-bold text-charcoal-blue-900">
+            {isForecast ? 'Run FORECAST Chunk' : 'Run Simulation Chunk'}
+          </DialogTitle>
           <p className="text-[10px] text-charcoal-blue-400 mt-0.5">
-            Review the next 4-week chunk, then enter how your promos actually performed.
+            {isForecast
+              ? `Next chunk: FORECAST (${chunkWeeks} weeks, ${currentStart} → ${chunkEndDate}). This chunk runs automatically with no promo performance input. Click 'Run FORECAST' to dispatch.`
+              : `Review the next ${chunkWeeks}-week chunk, then enter how your promos actually performed.`}
           </p>
         </div>
 
-        <div className="px-6 py-5 space-y-5">
+        <div className="px-6 py-5 space-y-4">
           {error && (
-            <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
-              <AlertCircle size={13} /> {error}
+            <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              <AlertCircle size={13} className="mt-0.5 flex-shrink-0" />
+              <span className="whitespace-pre-wrap break-words">{error}</span>
             </div>
           )}
 
           {/* Fixed chunk window — read-only label */}
           <div className="rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50 px-4 py-3">
             <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-1">
-              Next Chunk
+              Next Chunk {isForecast ? '— FORECAST' : '— SIM'}
             </p>
             <p className="text-xs font-bold text-charcoal-blue-800">
               {currentStart} → {chunkEndDate}
-              <span className="ml-2 font-normal text-charcoal-blue-500">({CHUNK_WEEKS} weeks)</span>
+              <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} weeks)</span>
             </p>
           </div>
 
-          {/* Promo performance inputs */}
-          {loadingPromos && (
-            <div className="flex items-center justify-center gap-2 py-3 text-[10px] text-charcoal-blue-400">
-              <Loader2 size={12} className="animate-spin" /> Loading active promos…
+          {/* FORECAST: read-only notice, no editor */}
+          {isForecast ? (
+            <div className="rounded-xl border border-majorelle-blue-100 bg-majorelle-blue-50/40 px-4 py-3 text-[11px] text-charcoal-blue-700 leading-relaxed">
+              FORECAST chunks run automatically with no promo performance input.
+              The engine will project demand using the carry-forward multipliers
+              from previous SIM chunks. Click <strong>Run FORECAST</strong> to dispatch.
             </div>
-          )}
-
-          {!loadingPromos && activePromos.length === 0 && (
-            <p className="text-center text-[10px] text-charcoal-blue-400 py-2 rounded-xl border border-dashed border-charcoal-blue-200">
-              No promo groups scheduled in this period — you can still run the chunk
-            </p>
-          )}
-
-          {!loadingPromos && activePromos.length > 0 && (
+          ) : /* YAML editor */
+          loadingPromos ? (
+            <div className="flex items-center justify-center gap-2 py-6 text-[10px] text-charcoal-blue-400">
+              <Loader2 size={12} className="animate-spin" /> Loading promo schedules…
+            </div>
+          ) : (
             <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-2 text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 px-1">
-                <span>Promo Group</span>
-                <span className="text-center">Performance %</span>
-              </div>
-              {activePromos.map((p, i) => (
-                <div key={p.id || `${p.promo_group_name}-${i}`} className="grid grid-cols-2 items-center gap-2 rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50/50 px-3 py-2">
-                  <div className="min-w-0">
-                    <span className="text-[10px] font-semibold text-charcoal-blue-800 truncate block" title={p.promo_group_name}>
-                      {p.promo_group_name}
-                    </span>
-                    <span className="text-[9px] text-charcoal-blue-400">
-                      {p.start_date} → {p.end_date} · {p.demand_multiplier}×
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      value={perfPct[p.id] || ''}
-                      onChange={e => setPerfPct(prev => ({ ...prev, [p.id]: Number(e.target.value) }))}
-                      className="w-full rounded-lg border border-charcoal-blue-200 px-2 py-1 text-xs text-center font-semibold text-black focus:border-majorelle-blue-400 focus:outline-none bg-white"
-                      placeholder="0"
-                    />
-                    <span className="text-[10px] text-charcoal-blue-400 flex-shrink-0">%</span>
-                  </div>
+              <div className="flex items-center justify-between">
+                <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">
+                  Performance YAML
+                </label>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowPicker(v => !v)}
+                    className="flex items-center gap-1 rounded-lg border border-charcoal-blue-200 px-2 py-1 text-[10px] font-semibold text-charcoal-blue-600 hover:bg-charcoal-blue-50"
+                  >
+                    <Plus size={10} /> Add promo
+                  </button>
+                  {showPicker && pickerGroups.length > 0 && (
+                    <div className="absolute right-0 top-full mt-1 z-10 w-52 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg overflow-hidden">
+                      <div className="max-h-48 overflow-y-auto">
+                        {pickerGroups.map(g => (
+                          <button
+                            key={g.promo_group_id}
+                            type="button"
+                            onClick={() => appendPromoBlock(g.promo_group_name)}
+                            className="w-full text-left px-3 py-2 text-[10px] text-charcoal-blue-800 hover:bg-charcoal-blue-50 truncate"
+                          >
+                            {g.promo_group_name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {showPicker && pickerGroups.length === 0 && (
+                    <div className="absolute right-0 top-full mt-1 z-10 w-52 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg px-3 py-2 text-[10px] text-charcoal-blue-400">
+                      All promo groups already added
+                    </div>
+                  )}
                 </div>
-              ))}
-              <p className="text-[10px] text-charcoal-blue-400 px-1">
-                +50 = overperformed 50%, -30 = underperformed 30%, 0 = as expected
+              </div>
+
+              <textarea
+                value={yamlText}
+                onChange={e => setYamlText(e.target.value)}
+                rows={12}
+                spellCheck={false}
+                className="w-full rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50/30 px-3 py-3 font-mono text-[11px] text-charcoal-blue-800 focus:border-majorelle-blue-400 focus:outline-none resize-y leading-relaxed"
+              />
+              <p className="text-[10px] text-charcoal-blue-400">
+                Leave <code className="text-[10px] bg-charcoal-blue-100 px-1 rounded">pct: 0</code> for promos that ran as planned. Use a blank <code className="text-[10px] bg-charcoal-blue-100 px-1 rounded">performance: []</code> to run with no overrides.
               </p>
             </div>
           )}
@@ -176,12 +251,14 @@ export function RunChunkModal({
             </button>
             <button
               onClick={handleRun}
-              disabled={running}
+              disabled={running || loadingPromos}
               className="flex-1 rounded-xl bg-majorelle-blue-500 py-2.5 text-xs font-bold text-white hover:bg-majorelle-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {running
                 ? <><Loader2 size={13} className="animate-spin" /> Running…</>
-                : `Run ${CHUNK_WEEKS} Weeks`}
+                : isForecast
+                  ? `Run FORECAST (${chunkWeeks} weeks)`
+                  : `Run ${chunkWeeks} Weeks`}
             </button>
           </div>
         </div>

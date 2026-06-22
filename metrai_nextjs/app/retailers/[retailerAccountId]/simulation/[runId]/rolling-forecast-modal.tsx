@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '@/lib/store/authStore'
 import {
-  saveExtensionPromos, generateExtensionDemand, getDemandStatus, getDemandWeeklyTotals,
-  createRollingSession, runRollingChunk, recalculateRollingDemand, getSessionPromoSchedules,
+  generateExtensionDemand, getDemandStatus, getDemandWeeklyTotals,
+  createRollingSessionYaml, runRollingChunk, recalculateRollingDemand, getSessionPromoSchedules,
 } from '@/lib/api/simulation'
 import { getPromoGroups } from '@/lib/api/promos'
 import {
@@ -14,8 +14,8 @@ import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { Check, AlertCircle, Plus, Trash2, Search, ChevronRight, Loader2 } from 'lucide-react'
-import type { PromoGroupResponse, RollingForecastSession, PerformanceInput, RunChunkResponse } from '@/lib/api/types'
+import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown } from 'lucide-react'
+import type { PromoGroupResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
 import { toIsoWeek } from '@/lib/utils'
 
 // ── Shared primitives (same as extend-modal) ─────────────────────────────────
@@ -48,18 +48,59 @@ function weeksBetween(start: string, end: string): number {
   return Math.max(1, Math.round((e.getTime() - s.getTime()) / (7 * 24 * 3600 * 1000)))
 }
 
-interface ScheduledPromo {
-  clientId: string
-  promo_id: string
-  promo_name: string
-  promo_group_name: string
-  event_type: string
-  store_count: number
-  item_count: number
-  start_date: string
-  end_date: string
-  demand_multiplier: number
-  disabled: boolean
+// ── YAML helpers ──────────────────────────────────────────────────────────────
+
+/** Build a skeleton YAML string from scratch. total_end_date is the top-level key. */
+function buildRollingSessionYaml(totalEndDate: string): string {
+  return [
+    `# Rolling Forecast Session`,
+    `# total_end_date: the full window you want to forecast (must be after base simulation end date)`,
+    `# promos: list of promo groups to schedule — add them with the "Add promo" button below`,
+    `#`,
+    `# Each promo entry:`,
+    `#   name        — must match a promo group name in the catalog`,
+    `#   start/end   — YYYY-MM-DD, end must be >= start`,
+    `#   multiplier  — 1.0 = baseline, 1.25 = +25% demand boost`,
+    ``,
+    `total_end_date: "${totalEndDate}"`,
+    ``,
+    `promos: []`,
+  ].join('\n')
+}
+
+/** Parse total_end_date out of the YAML string without a full parser (simple regex). */
+function extractTotalEndDate(yaml: string): string {
+  const m = yaml.match(/^total_end_date:\s*["']?(\d{4}-\d{2}-\d{2})["']?/m)
+  return m ? m[1] : ''
+}
+
+/** Replace the total_end_date line in the YAML with a new date. */
+function replaceTotalEndDate(yaml: string, newDate: string): string {
+  return yaml.replace(
+    /^(total_end_date:\s*)["']?\d{4}-\d{2}-\d{2}["']?/m,
+    `$1"${newDate}"`,
+  )
+}
+
+/** Append a promo snippet at the end of the YAML (replacing `promos: []` if present). */
+function appendPromoSnippet(yaml: string, promoName: string, startDate: string, endDate: string): string {
+  const snippet = `  - name: "${promoName}"\n    start: "${startDate}"\n    end: "${endDate}"\n    multiplier: 1.0`
+
+  // Replace `promos: []` with a proper list
+  if (/promos:\s*\[\]/.test(yaml)) {
+    return yaml.replace(/promos:\s*\[\]/, `promos:\n${snippet}`)
+  }
+  // Already has items — append after the last item
+  return yaml.trimEnd() + '\n\n' + snippet
+}
+
+/** Lightweight YAML validation — returns null if OK, error message if not. */
+function validateRollingYaml(yaml: string): string | null {
+  const endDate = extractTotalEndDate(yaml)
+  if (!endDate) return 'total_end_date is required (format: YYYY-MM-DD)'
+  // Check it looks like a date
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid YYYY-MM-DD date`
+  return null
 }
 
 type ModalState =
@@ -97,17 +138,15 @@ export function RollingForecastModal({
   const [error, setError] = useState('')
 
   // ── Setup state ───────────────────────────────────────────────────────────
+  // The date picker is a "helper" that keeps total_end_date in sync with the YAML
   const [totalEndDate, setTotalEndDate] = useState('')
-  const [scheduledPromos, setScheduledPromos] = useState<ScheduledPromo[]>([])
+  const [yamlContent, setYamlContent] = useState(() => buildRollingSessionYaml(''))
+  const [yamlError, setYamlError] = useState<string | null>(null)
   const [promoGroupCatalog, setPromoGroupCatalog] = useState<PromoGroupResponse[]>([])
+  const [showPromoDropdown, setShowPromoDropdown] = useState(false)
   const [promoSearch, setPromoSearch] = useState('')
-  const [showAddPanel, setShowAddPanel] = useState(false)
   const [savingSetup, setSavingSetup] = useState(false)
-  // State for configuring a group before adding it
-  const [pendingGroup, setPendingGroup] = useState<PromoGroupResponse | null>(null)
-  const [pendingStartDate, setPendingStartDate] = useState('')
-  const [pendingEndDate, setPendingEndDate] = useState('')
-  const [pendingMultiplier, setPendingMultiplier] = useState(2.0)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // ── Demand preview state ──────────────────────────────────────────────────
   const [chartData, setChartData] = useState<{ week: string; demand_qty?: number }[]>([])
@@ -128,30 +167,56 @@ export function RollingForecastModal({
     getPromoGroups(retailerAccountId).then(setPromoGroupCatalog).catch(() => null)
   }, [open, retailerAccountId])
 
-  // ── When opened in edit mode, pre-load existing promo schedule ───────────
+  // ── When opened fresh (no session), reset YAML skeleton ──────────────────
+  useEffect(() => {
+    if (!open) return
+    if (!existingSession) {
+      const skeleton = buildRollingSessionYaml(totalEndDate)
+      setYamlContent(skeleton)
+      setYamlError(null)
+    }
+  }, [open])
+
+  // ── When opened in edit mode, pre-populate YAML from existing session ────
   useEffect(() => {
     if (!open || !existingSession) return
     setModalState('setup')
     setTotalEndDate(existingSession.total_end_date)
     getSessionPromoSchedules(existingSession.session_id).then(rows => {
-      setScheduledPromos(rows.map((r, i) => ({
-        clientId: `existing-${i}`,
-        promo_id: r.id,
-        promo_name: r.promo_group_name,
-        promo_group_name: r.promo_group_name,
-        event_type: '',
-        store_count: 0,
-        item_count: 0,
-        start_date: r.start_date,
-        end_date: r.end_date,
-        demand_multiplier: r.demand_multiplier,
-        disabled: false,
-      })))
+      let yaml = buildRollingSessionYaml(existingSession.total_end_date)
+      // Rebuild with existing promos
+      if (rows.length > 0) {
+        const promoLines = rows.map(r =>
+          `  - name: "${r.promo_group_name}"\n    start: "${r.start_date}"\n    end: "${r.end_date}"\n    multiplier: ${r.demand_multiplier}`
+        ).join('\n\n')
+        yaml = yaml.replace(/promos:\s*\[\]/, `promos:\n${promoLines}`)
+      }
+      setYamlContent(yaml)
+      setYamlError(null)
     }).catch(() => null)
   }, [open, existingSession?.session_id])
 
   // ── Cleanup poll on unmount ───────────────────────────────────────────────
   useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current) }, [])
+
+  // ── Keep date picker in sync with YAML ────────────────────────────────────
+  function handleYamlChange(val: string) {
+    setYamlContent(val)
+    const parsed = extractTotalEndDate(val)
+    if (parsed) setTotalEndDate(parsed)
+    setYamlError(null)
+  }
+
+  // ── Date picker changes update the YAML ───────────────────────────────────
+  function handleDatePickerChange(newDate: string) {
+    setTotalEndDate(newDate)
+    setYamlContent(prev => {
+      if (extractTotalEndDate(prev)) {
+        return replaceTotalEndDate(prev, newDate)
+      }
+      return buildRollingSessionYaml(newDate)
+    })
+  }
 
   // ── Demand chart loader ───────────────────────────────────────────────────
   async function loadDemandChart(sess: RollingForecastSession) {
@@ -170,38 +235,25 @@ export function RollingForecastModal({
 
   // ── Step: Save setup and generate demand ─────────────────────────────────
   async function handleSaveAndPreview() {
-    if (!totalEndDate) { setError('Please set a total end date.'); return }
-    if (new Date(totalEndDate) <= new Date(baseEndDate)) {
-      setError('Total end date must be after the base simulation end date.'); return
+    // Client-side YAML validation
+    const validErr = validateRollingYaml(yamlContent)
+    if (validErr) { setYamlError(validErr); return }
+
+    const endDate = extractTotalEndDate(yamlContent)
+    if (!endDate) { setYamlError('total_end_date is required'); return }
+    if (new Date(endDate) <= new Date(baseEndDate)) {
+      setYamlError('total_end_date must be after the base simulation end date.'); return
     }
     setError('')
+    setYamlError(null)
     setSavingSetup(true)
     try {
-      // Create session if not already existing
+      // Create session via YAML POST
       let sess = session
       if (!sess) {
-        sess = await createRollingSession(baseSimulationId, retailerAccountId, totalEndDate)
+        sess = await createRollingSessionYaml(baseSimulationId, yamlContent)
         setSession(sess)
         onSessionUpdated(sess)
-      }
-
-      // Save promos
-      if (scheduledPromos.length > 0) {
-        await saveExtensionPromos(
-          baseSimulationId,
-          sess.session_id,
-          retailerAccountId,
-          scheduledPromos.map(p => ({
-            promo_id: p.promo_id,
-            promo_name: p.promo_name,
-            promo_group_name: p.promo_group_name,
-            event_type: p.event_type,
-            start_date: p.start_date,
-            end_date: p.end_date,
-            demand_multiplier: p.demand_multiplier,
-            is_disabled: p.disabled,
-          })),
-        )
       }
 
       // Generate demand — start from day after last completed chunk (or base end date for first run)
@@ -214,12 +266,11 @@ export function RollingForecastModal({
         simulation_id: baseSimulationId,
         retailer_account_id: retailerAccountId,
         start_date: demandStartDate,
-        end_date: totalEndDate,
+        end_date: endDate,
         seed: baseSeed,
       })
 
       pollDemandJob(job.job_id, sess)
-      // Stay on setup but show generating state — modal closes when done
     } catch (e: any) {
       setError(e?.message ?? 'Failed to save setup')
     } finally {
@@ -233,14 +284,8 @@ export function RollingForecastModal({
         const status = await getDemandStatus(jobId)
         if (status.status === 'COMPLETED') {
           setDemandStatus('done')
-          onDemandReady?.(scheduledPromos.map(p => ({
-            promo_group_name: p.promo_group_name,
-            promo_name: p.promo_name,
-            start_date: p.start_date,
-            end_date: p.end_date,
-            demand_multiplier: p.demand_multiplier,
-          })))
-          onClose()           // close this modal — user works from main page now
+          onDemandReady?.([])
+          onClose()
         } else if (status.status === 'FAILED') {
           setDemandStatus('error')
           setError('Demand generation failed.')
@@ -266,7 +311,6 @@ export function RollingForecastModal({
       const result = await runRollingChunk(session.session_id, {})
       setLastChunkResult(result)
 
-      // Extract promo groups that had promos in this chunk
       const chunkStart = currentStart
       const calendar: any[] = result.promo_calendar ?? []
       const groups = [...new Set(
@@ -278,7 +322,6 @@ export function RollingForecastModal({
       setPromoGroups(groups)
       setPerfInputs(Object.fromEntries(groups.map(g => [g, 0])))
 
-      // Update session state
       const updatedSession: RollingForecastSession = {
         ...session,
         current_completed_week: result.rolling_session?.current_completed_week ?? chunkEndDate,
@@ -336,26 +379,19 @@ export function RollingForecastModal({
     }, 2000)
   }
 
-  // ── Add promo group to schedule ───────────────────────────────────────────
-  function confirmAddGroup() {
-    if (!pendingGroup || !pendingStartDate || !pendingEndDate) return
-    setScheduledPromos(prev => [...prev, {
-      clientId: crypto.randomUUID(),
-      promo_id: '',                              // NULL — group-based entry
-      promo_name: pendingGroup.promo_group_name, // used as identifier in backend
-      promo_group_name: pendingGroup.promo_group_name,
-      event_type: '',
-      store_count: 0,
-      item_count: pendingGroup.item_ids?.length ?? 0,
-      start_date: pendingStartDate,
-      end_date: pendingEndDate,
-      demand_multiplier: pendingMultiplier,
-      disabled: false,
-    }])
-    setPendingGroup(null)
-    setPendingStartDate('')
-    setPendingEndDate('')
-    setPendingMultiplier(2.0)
+  // ── Add promo snippet via dropdown ────────────────────────────────────────
+  function handleAddPromo(group: PromoGroupResponse) {
+    const today = new Date().toISOString().slice(0, 10)
+    const weekLater = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+    setYamlContent(prev => appendPromoSnippet(prev, group.promo_group_name, today, weekLater))
+    setShowPromoDropdown(false)
+    setPromoSearch('')
+    // Scroll textarea to bottom so user sees the appended snippet
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.scrollTop = textareaRef.current.scrollHeight
+      }
+    }, 50)
   }
 
   const filteredGroups = promoGroupCatalog.filter(g =>
@@ -369,7 +405,6 @@ export function RollingForecastModal({
 
   const currentStart = session?.current_completed_week || baseEndDate
   const totalEnd = session?.total_end_date || totalEndDate
-  const weeksToRun = chunkEndDate && currentStart ? weeksBetween(currentStart, chunkEndDate) : 0
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
@@ -403,131 +438,95 @@ export function RollingForecastModal({
             {/* ── SETUP ────────────────────────────────────────────────────── */}
             {modalState === 'setup' && (
               <div className="space-y-4">
-                <FormField label="Total Forecast End Date" info="The full window you want to forecast — you'll run it in chunks.">
+
+                {/* Date helper — keeps total_end_date in sync with the YAML */}
+                <FormField label="Total Forecast End Date" info="Sets total_end_date in the YAML. You can also type it directly in the editor below.">
                   <input
                     type="date"
                     value={totalEndDate}
                     min={baseEndDate}
-                    onChange={e => setTotalEndDate(e.target.value)}
+                    onChange={e => handleDatePickerChange(e.target.value)}
                     className={inputCls}
                   />
                 </FormField>
 
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
+                {/* Add promo dropdown */}
+                <div className="relative">
+                  <div className="flex items-center justify-between mb-1.5">
                     <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">
-                      Schedule Promo Groups
+                      Promo Schedule YAML
                     </label>
                     <button
-                      onClick={() => setShowAddPanel(v => !v)}
+                      type="button"
+                      onClick={() => setShowPromoDropdown(v => !v)}
                       className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 hover:text-amber-700"
                     >
-                      <Plus size={11} /> Add promo group
+                      <Plus size={11} /> Add promo
+                      <ChevronDown size={10} className={showPromoDropdown ? 'rotate-180 transition-transform' : 'transition-transform'} />
                     </button>
                   </div>
 
-                  {/* Promo group catalog panel */}
-                  {showAddPanel && (
-                    <div className="rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50 p-3 space-y-3">
-                      <div className="relative">
-                        <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-charcoal-blue-300" />
-                        <input
-                          value={promoSearch}
-                          onChange={e => { setPromoSearch(e.target.value); setPendingGroup(null) }}
-                          placeholder="Search promo groups…"
-                          className={`${inputCls} pl-7`}
-                        />
-                      </div>
-
-                      {/* Group list */}
-                      {!pendingGroup && (
-                        <div className="max-h-40 overflow-y-auto space-y-1">
-                          {filteredGroups.map(g => (
-                            <button
-                              key={g.promo_group_id}
-                              onClick={() => { setPendingGroup(g); setPendingStartDate(''); setPendingEndDate(''); setPendingMultiplier(2.0) }}
-                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[10px] hover:bg-white border border-transparent hover:border-charcoal-blue-100"
-                            >
-                              <Plus size={10} className="flex-shrink-0 text-amber-500" />
-                              <div className="flex-1 min-w-0">
-                                <span className="font-semibold text-charcoal-blue-800">{g.promo_group_name}</span>
-                                {(g.category || g.brand) && (
-                                  <span className="ml-1.5 text-charcoal-blue-400">{[g.category, g.brand].filter(Boolean).join(' · ')}</span>
-                                )}
-                              </div>
-                              <span className="text-charcoal-blue-400 flex-shrink-0">{g.item_ids?.length ?? 0} items</span>
-                            </button>
-                          ))}
-                          {filteredGroups.length === 0 && (
-                            <p className="text-center text-[10px] text-charcoal-blue-400 py-2">No promo groups found</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Configure selected group */}
-                      {pendingGroup && (
-                        <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-bold text-amber-800">{pendingGroup.promo_group_name}</p>
-                            <button onClick={() => setPendingGroup(null)} className="text-[10px] text-charcoal-blue-400 hover:text-charcoal-blue-700">← Back</button>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="flex flex-col gap-0.5">
-                              <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">Start Date</label>
-                              <input type="date" value={pendingStartDate} min={baseEndDate} max={totalEndDate || undefined}
-                                onChange={e => setPendingStartDate(e.target.value)} className={inputCls} />
-                            </div>
-                            <div className="flex flex-col gap-0.5">
-                              <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">End Date</label>
-                              <input type="date" value={pendingEndDate} min={pendingStartDate || baseEndDate} max={totalEndDate || undefined}
-                                onChange={e => setPendingEndDate(e.target.value)} className={inputCls} />
-                            </div>
-                          </div>
-                          <div className="flex flex-col gap-0.5">
-                            <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">Demand Multiplier</label>
-                            <input type="number" step="0.1" min="0.1" value={pendingMultiplier}
-                              onChange={e => setPendingMultiplier(Number(e.target.value))} className={inputCls} />
-                          </div>
+                  {showPromoDropdown && (
+                    <div className="absolute right-0 top-6 z-20 w-72 rounded-xl border border-charcoal-blue-100 bg-white shadow-xl p-3 space-y-2">
+                      <input
+                        value={promoSearch}
+                        onChange={e => setPromoSearch(e.target.value)}
+                        placeholder="Search promo groups…"
+                        className={inputCls}
+                        autoFocus
+                      />
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {filteredGroups.map(g => (
                           <button
-                            onClick={confirmAddGroup}
-                            disabled={!pendingStartDate || !pendingEndDate}
-                            className="w-full rounded-lg bg-amber-500 py-1.5 text-[10px] font-bold text-white hover:bg-amber-600 disabled:opacity-50"
+                            key={g.promo_group_id}
+                            type="button"
+                            onClick={() => handleAddPromo(g)}
+                            className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-[10px] hover:bg-charcoal-blue-50 border border-transparent hover:border-charcoal-blue-100"
                           >
-                            Add to Schedule
+                            <Plus size={10} className="flex-shrink-0 mt-0.5 text-amber-500" />
+                            <div className="flex-1 min-w-0">
+                              <span className="font-semibold text-charcoal-blue-800">{g.promo_group_name}</span>
+                              {(g.category || g.brand) && (
+                                <span className="ml-1.5 text-charcoal-blue-400">{[g.category, g.brand].filter(Boolean).join(' · ')}</span>
+                              )}
+                            </div>
                           </button>
-                        </div>
-                      )}
+                        ))}
+                        {filteredGroups.length === 0 && (
+                          <p className="text-center text-[10px] text-charcoal-blue-400 py-2">No promo groups found</p>
+                        )}
+                      </div>
                     </div>
                   )}
+                </div>
 
-                  {/* Scheduled list */}
-                  {scheduledPromos.length > 0 ? (
-                    <div className="space-y-1.5">
-                      {scheduledPromos.map(p => (
-                        <div key={p.clientId} className="flex items-center gap-2 rounded-xl border border-charcoal-blue-100 bg-white px-3 py-2 text-xs">
-                          <div className="flex-1 min-w-0">
-                            <p className="font-semibold text-charcoal-blue-800 truncate">{p.promo_group_name || p.promo_name}</p>
-                            <p className="text-[10px] text-charcoal-blue-400">{p.start_date} → {p.end_date} · {p.demand_multiplier}×</p>
-                          </div>
-                          <button
-                            onClick={() => setScheduledPromos(prev => prev.filter(s => s.clientId !== p.clientId))}
-                            className="text-charcoal-blue-300 hover:text-rose-500"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-center text-[10px] text-charcoal-blue-400 py-3 rounded-xl border border-dashed border-charcoal-blue-200">
-                      No promos scheduled — rolling forecast will use baseline demand
+                {/* YAML editor textarea */}
+                <div className="space-y-1">
+                  <textarea
+                    ref={textareaRef}
+                    value={yamlContent}
+                    onChange={e => handleYamlChange(e.target.value)}
+                    spellCheck={false}
+                    rows={14}
+                    className={[
+                      'w-full rounded-xl border bg-charcoal-blue-50/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-charcoal-blue-900',
+                      'placeholder:text-charcoal-blue-300 resize-y transition-all focus:outline-none focus:ring-2',
+                      yamlError
+                        ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-100'
+                        : 'border-charcoal-blue-200 focus:border-amber-400 focus:ring-amber-100',
+                    ].join(' ')}
+                    placeholder={buildRollingSessionYaml('')}
+                  />
+                  {yamlError && (
+                    <p className="flex items-center gap-1.5 text-[10px] font-semibold text-rose-600">
+                      <AlertCircle size={11} /> {yamlError}
                     </p>
                   )}
                 </div>
 
                 <button
                   onClick={handleSaveAndPreview}
-                  disabled={savingSetup || demandStatus === 'generating' || !totalEndDate}
+                  disabled={savingSetup || demandStatus === 'generating'}
                   className="w-full rounded-xl bg-amber-500 py-2.5 text-xs font-bold text-white transition-all hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {demandStatus === 'generating'
@@ -542,7 +541,6 @@ export function RollingForecastModal({
             {/* ── DEMAND PREVIEW ───────────────────────────────────────────── */}
             {modalState === 'demand_preview' && (
               <div className="space-y-4">
-                {/* Demand chart */}
                 <div>
                   <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-2">
                     Forecast Demand {demandStatus === 'generating' && <span className="text-amber-500 normal-case">· Generating…</span>}
@@ -566,7 +564,6 @@ export function RollingForecastModal({
                   )}
                 </div>
 
-                {/* Next chunk window — read-only label (fixed 4 weeks) */}
                 {(() => {
                   const nextChunkEnd = currentStart
                     ? (() => {

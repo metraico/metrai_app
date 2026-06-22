@@ -28,6 +28,16 @@ function aggPOS(pos: any[]) {
   const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string; promoGroupName: string; runType: string }>()
   for (const r of pos) {
     const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '', promoGroupName: '', runType: 'base' }
+    const rowIsPromoDemand = Boolean(Number(r.is_promo_demand ?? 0))
+    const rowPromoGroup = r.promo_group_name ?? ''
+    // Prefer a promo_group_name from a row that actually has is_promo_demand=1 over an
+    // earlier non-promo row whose name is blank (or stale). Otherwise keep first-seen.
+    let nextGroup = c.promoGroupName
+    if (rowIsPromoDemand && rowPromoGroup) {
+      nextGroup = rowPromoGroup
+    } else if (!nextGroup) {
+      nextGroup = rowPromoGroup
+    }
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
@@ -35,7 +45,7 @@ function aggPOS(pos: any[]) {
       revenue: c.revenue + Number(r.sales_amount),
       isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
       promoName: c.promoName || (r.promo_name ?? ''),
-      promoGroupName: c.promoGroupName || (r.promo_group_name ?? ''),
+      promoGroupName: nextGroup,
       // keep the most specific run_type seen for this week (rolling_chunk > extension > base)
       runType: r.run_type === 'rolling_chunk' ? 'rolling_chunk'
              : r.run_type === 'extension' && c.runType !== 'rolling_chunk' ? 'extension'
@@ -1126,10 +1136,12 @@ export default function SimulationResultsPage() {
                           {rollingForecastData.length > 0 && (
                             <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Future Demand" barSize={10} />
                           )}
-                          {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+                          {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
+                            <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
+                          )}
                           {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
                           {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-                            <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideTopRight', fontSize: 9, fill: '#7c3aed' }} />
+                            <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                           )}
                         </ComposedChart>
                       </ResponsiveContainer>

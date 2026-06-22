@@ -219,6 +219,7 @@ export interface RollingForecastChunk {
   performance_inputs: Record<string, number>
   extension_id: string | null
   created_at: string
+  chunk_type?: 'SIM' | 'FORECAST'
 }
 
 export interface RollingForecastSession {
@@ -232,6 +233,7 @@ export interface RollingForecastSession {
   created_at: string
   created_by: string | null
   chunks: RollingForecastChunk[]
+  chunk_type_sequence?: string[]
 }
 
 export interface RunChunkRequest {
