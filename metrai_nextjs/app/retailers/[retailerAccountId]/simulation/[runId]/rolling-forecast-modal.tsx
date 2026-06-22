@@ -248,13 +248,12 @@ export function RollingForecastModal({
     setYamlError(null)
     setSavingSetup(true)
     try {
-      // Create session via YAML POST
-      let sess = session
-      if (!sess) {
-        sess = await createRollingSessionYaml(baseSimulationId, yamlContent)
-        setSession(sess)
-        onSessionUpdated(sess)
-      }
+      // Create OR update session via YAML POST. Backend is idempotent on session_id
+      // — for an existing active session it replaces extension_promo_schedules,
+      // updates total_end_date, and invalidates+regenerates post-current demand.
+      const sess = await createRollingSessionYaml(baseSimulationId, yamlContent)
+      setSession(sess)
+      onSessionUpdated(sess)
 
       // Generate demand — start from day after last completed chunk (or base end date for first run)
       const demandStartDate = sess.current_completed_week

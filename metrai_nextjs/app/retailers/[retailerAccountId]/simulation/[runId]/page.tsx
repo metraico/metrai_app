@@ -1073,11 +1073,24 @@ export default function SimulationResultsPage() {
                 // current_completed_week is the last day of the last completed chunk (YYYY-MM-DD).
                 // Adding 7 days gives the first day of the next (unrun) week — consistent with how
                 // the active-session startWeek is computed at lines 534-536.
-                const rollingForecastStartWeek = rollingSession?.current_completed_week
-                  ? toIsoWeek(new Date(new Date(rollingSession.current_completed_week + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
+                // Forecast Start anchor — the base simulation's end-week. Sourced from the
+                // FIRST chunk's start_week because simulation_config.end_week gets mutated
+                // (advanced) as rolling chunks complete and so isn't a stable reference.
+                const sortedChunks = (rollingSession?.chunks ?? [])
+                  .slice()
+                  .sort((a, b) => a.chunk_number - b.chunk_number)
+                const baseSimEndDate = sortedChunks[0]?.start_week ?? runEndWeek
+                const rollingBaseStartWeek = rollingSession ? toIsoWeek(baseSimEndDate) : null
+
+                // Chunk N End marker — ISO week of the last completed chunk's end_week.
+                // (Previously added +7 days to current_completed_week, which moved the label
+                // 1 week past the actual chunk end.)
+                const lastCompletedChunk = sortedChunks
+                  .filter(c => c.status === 'completed')
+                  .slice(-1)[0]
+                const rollingForecastStartWeek = lastCompletedChunk
+                  ? toIsoWeek(lastCompletedChunk.end_week)
                   : null
-                // Base sim end / rolling window start
-                const rollingBaseStartWeek = rollingSession ? toIsoWeek(runEndWeek) : null
                 // One shaded band per completed chunk
                 const chunkAreas = (rollingSession?.chunks ?? [])
                   .filter(c => c.status === 'completed')
