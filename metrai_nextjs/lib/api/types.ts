@@ -198,6 +198,70 @@ export interface ExtendSimulationPayload {
   session_id?: string
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Rolling Forecast
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PerformanceInput {
+  promo_group_name: string
+  pct: number  // +50 = overperformed 50%, -30 = underperformed 30%
+  schedule_id?: string  // extension_promo_schedules.id for per-row precision
+}
+
+export interface RollingForecastChunk {
+  id: string
+  rolling_session_id: string
+  simulation_id: string
+  chunk_number: number
+  start_week: string   // YYYY-MM-DD
+  end_week: string     // YYYY-MM-DD
+  status: 'pending' | 'running' | 'completed'
+  performance_inputs: Record<string, number>
+  extension_id: string | null
+  created_at: string
+  chunk_type?: 'SIM' | 'FORECAST'
+}
+
+export interface RollingForecastSession {
+  id: string
+  simulation_id: string
+  retailer_account_id: string
+  session_id: string
+  status: 'active' | 'completed' | 'abandoned'
+  total_end_date: string        // YYYY-MM-DD
+  current_completed_week: string | null
+  created_at: string
+  created_by: string | null
+  chunks: RollingForecastChunk[]
+  chunk_type_sequence?: string[]
+}
+
+export interface RunChunkRequest {
+  performance_inputs?: PerformanceInput[]
+}
+
+export interface RunChunkResponse extends RunYamlResponse {
+  promo_calendar: {
+    promo_id: string
+    promo_name: string
+    promo_group_name?: string
+    event_type: string
+    start_date: string
+    end_date: string
+    demand_multiplier: number
+  }[]
+  rolling_session: {
+    session_id: string
+    chunk_number: number
+    current_completed_week: string
+    session_status: string
+  }
+}
+
+export interface RecalculateDemandRequest {
+  performance_inputs: PerformanceInput[]
+}
+
 // POST /simulation/{id}/extension-promos
 export interface ExtensionPromoInput {
   promo_id?: string
@@ -249,6 +313,10 @@ export interface RunConfig {
   status: 'RUNNING' | 'COMPLETED' | 'FAILED'
   simulation_granularity: string
   full_config: Record<string, unknown> | null
+  end_week: string | null
+  start_week: string | null
+  is_extended: boolean
+  extension_count: number
 }
 
 // GET /simulation/{simulation_id} — full ClickHouse output (untyped, large)
@@ -339,6 +407,7 @@ export interface POSRecord {
   stockout_qty: string
   sales_amount: string
   is_promo_demand: string
+  run_type?: string  // 'base' | 'extension' | 'rolling_chunk'
 }
 export interface StoreInventoryRecord {
   store_id: string

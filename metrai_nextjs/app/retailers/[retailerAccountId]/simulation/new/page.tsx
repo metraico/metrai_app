@@ -154,6 +154,16 @@ export default function NewSimulationPage() {
   const routeAccountId = params.retailerAccountId as string
 
   // isScenarioPreset: wizard was launched from a specific scenario context (URL ?scenario=...)
+  // If no ?scenario= is present in the URL, redirect to default `promo_forecast`
+  // so the backend never receives a request without a scenario_type.
+  useEffect(() => {
+    if (!searchParams.get('scenario')) {
+      const qs = new URLSearchParams(searchParams.toString())
+      qs.set('scenario', 'promo_forecast')
+      router.replace(`?${qs.toString()}`)
+    }
+  }, [searchParams, router])
+
   const urlScenario = (searchParams.get('scenario') as ScenarioId) ?? 'no_scenario'
   const isScenarioPreset = urlScenario !== 'no_scenario'
 

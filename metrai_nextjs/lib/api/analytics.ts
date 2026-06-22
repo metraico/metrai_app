@@ -88,23 +88,48 @@ export const getDCInventoryRaw = (
     .get(`/analytics/${simulationId}/dc-inventory/raw`, { params })
     .then(r => r.data)
 
-// ── Summary (pre-aggregated, no filter params) ────────────────────────────────
+// ── Summary (pre-aggregated, optionally filterable) ───────────────────────────
+
+export type StoreSalesFilters = {
+  item_id?: string
+  category?: string
+  subcategory?: string
+  brand?: string
+  store_id?: string
+}
+
+export type SupplyChainFilters = {
+  item_id?: string
+  category?: string
+  subcategory?: string
+  brand?: string
+  supplier_dc_id?: string
+  retailer_dc_id?: string
+}
 
 // GET /analytics/{simulation_id}/summary/store-sales
-export const getSummaryStoreSales = (simulationId: string) =>
-  engineClient.get<StoreSalesResponse>(`/analytics/${simulationId}/summary/store-sales`).then(r => r.data)
+export const getSummaryStoreSales = (simulationId: string, filters?: StoreSalesFilters) =>
+  engineClient
+    .get<StoreSalesResponse>(`/analytics/${simulationId}/summary/store-sales`, { params: filters })
+    .then(r => r.data)
 
 // GET /analytics/{simulation_id}/summary/store-inventory
-export const getSummaryStoreInventory = (simulationId: string) =>
-  engineClient.get<{ store_inventory: StoreInventoryRecord[] }>(`/analytics/${simulationId}/summary/store-inventory`).then(r => r.data)
+export const getSummaryStoreInventory = (simulationId: string, filters?: StoreSalesFilters) =>
+  engineClient
+    .get<{ store_inventory: StoreInventoryRecord[] }>(`/analytics/${simulationId}/summary/store-inventory`, { params: filters })
+    .then(r => r.data)
 
 // GET /analytics/{simulation_id}/summary/supply-chain-sales
-export const getSummarySupplyChainSales = (simulationId: string) =>
-  engineClient.get<SupplyChainSalesResponse>(`/analytics/${simulationId}/summary/supply-chain-sales`).then(r => r.data)
+export const getSummarySupplyChainSales = (simulationId: string, filters?: SupplyChainFilters) =>
+  engineClient
+    .get<SupplyChainSalesResponse>(`/analytics/${simulationId}/summary/supply-chain-sales`, { params: filters })
+    .then(r => r.data)
 
 // GET /analytics/{simulation_id}/summary/upstream-inventory
-export const getSummaryUpstreamInventory = (simulationId: string) =>
-  engineClient.get<UpstreamInventoryResponse>(`/analytics/${simulationId}/summary/upstream-inventory`).then(r => r.data)
+export const getSummaryUpstreamInventory = (simulationId: string, filters?: SupplyChainFilters) =>
+  engineClient
+    .get<UpstreamInventoryResponse>(`/analytics/${simulationId}/summary/upstream-inventory`, { params: filters })
+    .then(r => r.data)
 
 // ── Compat aliases (old names used in run page) ───────────────────────────────
 export const getSupplyChainSales = getSupplierSales
