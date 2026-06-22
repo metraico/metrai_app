@@ -173,6 +173,64 @@ function ChartTooltip({ active, payload, label, promoWeekMap }: {
   )
 }
 
+function POSTooltip({ active, payload, label, promoWeekMap }: {
+  active?: boolean; payload?: any[]; label?: string
+  promoWeekMap?: Record<string, { name: string; groupName: string }>
+}) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
+  const promoGroupName = d.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
+  const promoName = d.promo_name || promoWeekMap?.[label ?? '']?.name || ''
+  const promoLabel = promoGroupName || promoName || 'Promo week'
+  const isPromo = d.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
+  const demand = Number(d.demand_qty ?? 0)
+  const sales = Number(d.sales_qty ?? 0)
+  const lost = Number(d.stockout_qty ?? 0)
+  const revenue = Number(d.sales_amount ?? 0)
+  const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
+  const fillRate = demand > 0 ? (sales / demand) * 100 : null
+  const runType = d.run_type
+  const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
+  const isFutureOnly = demand === 0 && forecast != null
+
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
+      {isPromo && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
+          <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
+          <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+        </div>
+      )}
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <p className="font-semibold text-charcoal-blue-700">{label}</p>
+        {runLabel && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">{runLabel}</span>}
+      </div>
+      {!isFutureOnly && (
+        <>
+          <div className="mb-1.5 space-y-0.5">
+            <p className="flex justify-between gap-4 text-violet-700"><span>Demand</span><span className="font-medium">{demand.toLocaleString()}</span></p>
+            <p className="flex justify-between gap-4 text-emerald-700"><span>Sales</span><span className="font-medium">{sales.toLocaleString()}</span></p>
+            <p className="flex justify-between gap-4 text-red-600"><span>Lost Sales</span><span className="font-medium">{lost.toLocaleString()}</span></p>
+          </div>
+          {fillRate != null && (
+            <div className="border-t border-charcoal-blue-100 pt-1.5">
+              <p className="flex justify-between gap-4 text-charcoal-blue-600">
+                <span>Fill Rate</span>
+                <span className={`font-semibold ${fillRate >= 95 ? 'text-emerald-600' : fillRate >= 80 ? 'text-amber-600' : 'text-red-600'}`}>{fillRate.toFixed(1)}%</span>
+              </p>
+            </div>
+          )}
+        </>
+      )}
+      {forecast != null && (
+        <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
+          <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{forecast.toLocaleString()}</span></p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload ?? {}
@@ -209,6 +267,23 @@ function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: 
           {sdcStatus === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
         </div>
       )}
+    </div>
+  )
+}
+
+function StoreInvTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
+  const avail   = Number(d.available_quantity ?? 0)
+  const onOrder = Number(d.on_order_quantity  ?? 0)
+  const status  = avail === 0 && onOrder > 0 ? 'in-transit' : avail === 0 ? 'stockout' : null
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
+      <p className="mb-1.5 font-semibold text-charcoal-blue-700">{label}</p>
+      <p className="flex justify-between gap-4 text-emerald-700"><span>Available</span><span className="font-medium">{avail.toLocaleString()}</span></p>
+      <p className="flex justify-between gap-4 text-amber-600"><span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span></p>
+      {status === 'stockout'   && <p className="mt-1 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
+      {status === 'in-transit' && <p className="mt-1 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
     </div>
   )
 }
@@ -461,10 +536,21 @@ export default function SimulationResultsPage() {
   const [dcInvLoading, setDcInvLoading] = useState(false)
   const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
 
-  const zoom1 = useChartZoom(posData)
+  const [combinedPosDataForZoom, setCombinedPosDataForZoom] = useState<any[]>([])
+  const zoom1 = useChartZoom(combinedPosDataForZoom)
   const zoom2 = useChartZoom(storeInvData)
   const zoom3 = useChartZoom(shipData)
   const zoom4 = useChartZoom(dcInvData)
+
+  // Keep zoom1 data in sync with posData + rollingForecastData so zoom covers future weeks too
+  useEffect(() => {
+    const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+    const merged = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
+    const forecastOnly = rollingForecastData
+      .filter(r => !posData.some(d => d.week === r.week))
+      .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
+    setCombinedPosDataForZoom([...merged, ...forecastOnly].sort((a, b) => a.week.localeCompare(b.week)))
+  }, [posData, rollingForecastData])
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -748,6 +834,16 @@ export default function SimulationResultsPage() {
       bannerDismissRef.current = setTimeout(() => setAnalyticsReadyVisible(false), 5_000)
     }
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
+  }, [analyticsStatus])
+
+  // When analytics becomes READY, reload all 4 charts from ClickHouse
+  useEffect(() => {
+    if (analyticsStatus !== 'READY') return
+    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
 
   // Poll analytics-status endpoint until CH write is done
@@ -1123,7 +1219,7 @@ export default function SimulationResultsPage() {
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis dataKey="week" {...xAxisProps} />
                           <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                          <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                          <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
                             {combinedPosData.map((d, i) => {
@@ -1178,7 +1274,7 @@ export default function SimulationResultsPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Tooltip content={<StoreInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
