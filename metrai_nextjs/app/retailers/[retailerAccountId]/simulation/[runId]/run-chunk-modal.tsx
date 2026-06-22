@@ -8,9 +8,8 @@ import { getPromoGroups } from '@/lib/api/promos'
 import type { RollingForecastSession, RunChunkResponse, PromoGroupResponse } from '@/lib/api/types'
 import yaml from 'js-yaml'
 
-const SIM_CHUNK_WEEKS = 4
-const FORECAST_CHUNK_WEEKS = 12
-const DEFAULT_SEQUENCE = ['SIM', 'FORECAST', 'SIM', 'FORECAST', 'SIM']
+const CHUNK_WEEKS = 4
+const DEFAULT_SEQUENCE = ['SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM']
 
 /** Add `weeks` weeks to a YYYY-MM-DD date string. */
 function addWeeks(dateStr: string, weeks: number): string {
@@ -43,9 +42,7 @@ export function RunChunkModal({
     ? session.chunk_type_sequence
     : DEFAULT_SEQUENCE
   const nextChunkNumber = (session.chunks?.length ?? 0) + 1
-  const nextChunkType = (sequence[nextChunkNumber - 1] ?? 'SIM') as 'SIM' | 'FORECAST'
-  const isForecast = nextChunkType === 'FORECAST'
-  const chunkWeeks = isForecast ? FORECAST_CHUNK_WEEKS : SIM_CHUNK_WEEKS
+  const chunkWeeks = CHUNK_WEEKS
 
   // Fixed chunk end, clamped so it doesn't exceed the session total end date
   const chunkEndDate = clampDate(addWeeks(currentStart, chunkWeeks), totalEnd)
@@ -60,7 +57,6 @@ export function RunChunkModal({
   const [showPicker, setShowPicker] = useState(false)
 
   // Fetch active promo schedule entries for this chunk window and promo groups on open.
-  // For FORECAST chunks no promo performance is needed — submit an empty performance list.
   useEffect(() => {
     if (!open || !currentStart || !chunkEndDate) {
       setYamlText('')
@@ -68,12 +64,6 @@ export function RunChunkModal({
     }
     setError('')
     setShowPicker(false)
-
-    if (isForecast) {
-      setLoadingPromos(false)
-      setYamlText('performance: []\n')
-      return
-    }
 
     setLoadingPromos(true)
     Promise.all([
@@ -88,7 +78,7 @@ export function RunChunkModal({
         setYamlText(buildRunChunkYaml([], currentStart, chunkEndDate, session.session_id))
       })
       .finally(() => setLoadingPromos(false))
-  }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate, isForecast])
+  }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate])
 
   /** Names already present in the YAML textarea (to filter picker). */
   function namesInYaml(): Set<string> {
@@ -150,12 +140,10 @@ export function RunChunkModal({
       <DialogContent className="max-w-lg rounded-2xl p-0 shadow-2xl bg-white">
         <div className="border-b border-charcoal-blue-100 px-6 py-4 pr-12">
           <DialogTitle className="text-sm font-bold text-charcoal-blue-900">
-            {isForecast ? 'Run FORECAST Chunk' : 'Run Simulation Chunk'}
+            Run Simulation Chunk
           </DialogTitle>
           <p className="text-[10px] text-charcoal-blue-400 mt-0.5">
-            {isForecast
-              ? `Next chunk: FORECAST (${chunkWeeks} weeks, ${currentStart} → ${chunkEndDate}). This chunk runs automatically with no promo performance input. Click 'Run FORECAST' to dispatch.`
-              : `Review the next ${chunkWeeks}-week chunk, then enter how your promos actually performed.`}
+            Review the next {chunkWeeks}-week chunk, then enter how your promos actually performed.
           </p>
         </div>
 
@@ -170,7 +158,7 @@ export function RunChunkModal({
           {/* Fixed chunk window — read-only label */}
           <div className="rounded-xl border border-charcoal-blue-100 bg-charcoal-blue-50 px-4 py-3">
             <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-1">
-              Next Chunk {isForecast ? '— FORECAST' : '— SIM'}
+              Next Chunk
             </p>
             <p className="text-xs font-bold text-charcoal-blue-800">
               {currentStart} → {chunkEndDate}
@@ -178,15 +166,8 @@ export function RunChunkModal({
             </p>
           </div>
 
-          {/* FORECAST: read-only notice, no editor */}
-          {isForecast ? (
-            <div className="rounded-xl border border-majorelle-blue-100 bg-majorelle-blue-50/40 px-4 py-3 text-[11px] text-charcoal-blue-700 leading-relaxed">
-              FORECAST chunks run automatically with no promo performance input.
-              The engine will project demand using the carry-forward multipliers
-              from previous SIM chunks. Click <strong>Run FORECAST</strong> to dispatch.
-            </div>
-          ) : /* YAML editor */
-          loadingPromos ? (
+          {/* YAML editor */}
+          {loadingPromos ? (
             <div className="flex items-center justify-center gap-2 py-6 text-[10px] text-charcoal-blue-400">
               <Loader2 size={12} className="animate-spin" /> Loading promo schedules…
             </div>
@@ -256,9 +237,7 @@ export function RunChunkModal({
             >
               {running
                 ? <><Loader2 size={13} className="animate-spin" /> Running…</>
-                : isForecast
-                  ? `Run FORECAST (${chunkWeeks} weeks)`
-                  : `Run ${chunkWeeks} Weeks`}
+                : `Run ${chunkWeeks} Weeks`}
             </button>
           </div>
         </div>
