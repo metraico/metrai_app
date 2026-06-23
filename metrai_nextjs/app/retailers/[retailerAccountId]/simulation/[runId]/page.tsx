@@ -188,7 +188,6 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
   const lost = Number(d.stockout_qty ?? 0)
   const revenue = Number(d.sales_amount ?? 0)
   const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
-  const fillRate = demand > 0 ? (sales / demand) * 100 : null
   const runType = d.run_type
   const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
   const isFutureOnly = demand === 0 && forecast != null
@@ -212,14 +211,6 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
             <p className="flex justify-between gap-4 text-emerald-700"><span>Sales</span><span className="font-medium">{sales.toLocaleString()}</span></p>
             <p className="flex justify-between gap-4 text-red-600"><span>Lost Sales</span><span className="font-medium">{lost.toLocaleString()}</span></p>
           </div>
-          {fillRate != null && (
-            <div className="border-t border-charcoal-blue-100 pt-1.5">
-              <p className="flex justify-between gap-4 text-charcoal-blue-600">
-                <span>Fill Rate</span>
-                <span className={`font-semibold ${fillRate >= 95 ? 'text-emerald-600' : fillRate >= 80 ? 'text-amber-600' : 'text-red-600'}`}>{fillRate.toFixed(1)}%</span>
-              </p>
-            </div>
-          )}
         </>
       )}
       {forecast != null && (

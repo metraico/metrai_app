@@ -110,3 +110,18 @@ input[type=number] {
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+
+/* Remove focus outlines on all recharts interactive elements */
+.recharts-tooltip-wrapper:focus,
+.recharts-tooltip-wrapper:focus-visible,
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-surface:focus,
+.recharts-surface:focus-visible,
+.recharts-brush:focus,
+.recharts-brush:focus-visible,
+.recharts-wrapper [tabindex]:focus,
+.recharts-wrapper [tabindex]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
