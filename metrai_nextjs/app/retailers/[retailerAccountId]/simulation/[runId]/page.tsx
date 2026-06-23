@@ -13,7 +13,7 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals } from '@/lib/api/simulation'
+import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules } from '@/lib/api/simulation'
 import { ExtendForecastModal } from './extend-modal'
 import { RollingForecastModal } from './rolling-forecast-modal'
 import { RunChunkModal } from './run-chunk-modal'
@@ -142,6 +142,17 @@ function computeKPIs(pos: any[], shipments: any[]) {
 
 // ── Custom tooltip ────────────────────────────────────────────────────────────
 
+function PerformanceBadge({ pct }: { pct: number | null | undefined }) {
+  if (pct == null || pct === 0) return null
+  const isOver = pct > 0
+  const label = isOver ? `▲ +${pct.toFixed(1)}% overperformed` : `▼ ${pct.toFixed(1)}% underperformed`
+  return (
+    <div className={`mt-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${isOver ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+      {label}
+    </div>
+  )
+}
+
 function ChartTooltip({ active, payload, label, promoWeekMap }: {
   active?: boolean; payload?: any[]; label?: string
   promoWeekMap?: Record<string, { name: string; groupName: string }>
@@ -188,17 +199,25 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
   const lost = Number(d.stockout_qty ?? 0)
   const revenue = Number(d.sales_amount ?? 0)
   const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
+  const originalForecast = d.original_forecast_qty != null ? Number(d.original_forecast_qty) : null
   const fillRate = demand > 0 ? (sales / demand) * 100 : null
   const runType = d.run_type
   const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
   const isFutureOnly = demand === 0 && forecast != null
+  // Computed performance for rolling_chunk weeks: actual demand vs original forecast
+  const computedPerfPct = runType === 'rolling_chunk' && originalForecast && originalForecast > 0
+    ? ((demand - originalForecast) / originalForecast) * 100
+    : null
 
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
       {isPromo && (
-        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
-          <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
-          <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+        <div className="mb-2 rounded-md bg-violet-50 px-2 py-1">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
+            <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+          </div>
+          <PerformanceBadge pct={computedPerfPct} />
         </div>
       )}
       <div className="mb-1.5 flex items-center justify-between gap-3">
@@ -221,6 +240,11 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
             </div>
           )}
         </>
+      )}
+      {originalForecast != null && runType === 'rolling_chunk' && (
+        <div className="border-t border-charcoal-blue-100 pt-1.5 mt-1">
+          <p className="flex justify-between gap-4 text-cyan-600"><span>Forecasted Demand</span><span className="font-medium">{originalForecast.toLocaleString()}</span></p>
+        </div>
       )}
       {forecast != null && (
         <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
@@ -501,7 +525,10 @@ export default function SimulationResultsPage() {
   const [showRunChunkModal, setShowRunChunkModal] = useState(false)
   const [rollingSession, setRollingSession] = useState<RollingForecastSession | null>(null)
   const [rollingForecastData, setRollingForecastData] = useState<{ week: string; forecast_qty: number }[]>([])
+  // Snapshot accumulates original forecast per week across chunk completions — never shrinks
+  const [rollingForecastSnapshot, setRollingForecastSnapshot] = useState<Map<string, number>>(new Map())
   const [rollingPromos, setRollingPromos] = useState<{ promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]>([])
+  const [promoGroupPerfMap, setPromoGroupPerfMap] = useState<Record<string, number | null>>({})
   const [extensions, setExtensions] = useState<SimulationExtensionRecord[]>([])
   const extensionStartWeek = extensions.length > 0 ? toIsoWeek(extensions[0].previous_end_week) : null
   const [showExtensionHistory, setShowExtensionHistory] = useState(false)
@@ -545,12 +572,16 @@ export default function SimulationResultsPage() {
   // Keep zoom1 data in sync with posData + rollingForecastData so zoom covers future weeks too
   useEffect(() => {
     const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
-    const merged = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
+    const merged = posData.map(d => ({
+      ...d,
+      forecast_qty: forecastByWeek.get(d.week),
+      original_forecast_qty: d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined,
+    }))
     const forecastOnly = rollingForecastData
       .filter(r => !posData.some(d => d.week === r.week))
       .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
     setCombinedPosDataForZoom([...merged, ...forecastOnly].sort((a, b) => a.week.localeCompare(b.week)))
-  }, [posData, rollingForecastData])
+  }, [posData, rollingForecastData, rollingForecastSnapshot])
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -622,6 +653,14 @@ export default function SimulationResultsPage() {
     try {
       const session = await getRollingSession(simulationId)
       setRollingSession(session)
+      // Fetch promo performance pcts for tooltip display
+      getSessionPromoSchedules(session.session_id).then(schedules => {
+        const map: Record<string, number | null> = {}
+        for (const s of schedules) {
+          if (s.performance_pct != null) map[s.promo_group_name] = s.performance_pct
+        }
+        setPromoGroupPerfMap(map)
+      }).catch(() => null)
       // If chunks have run, the cache is stale — re-fetch posData from backend with current filters
       if (session.chunks && session.chunks.length > 0) {
         const activeFilters = {
@@ -649,7 +688,16 @@ export default function SimulationResultsPage() {
           brand: globalBrand || undefined,
         }
         getDemandWeeklyTotals(session.retailer_account_id, startWeek, endWeek, seed, filters)
-          .then(rows => setRollingForecastData(rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))))
+          .then(rows => {
+            const mapped = rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))
+            setRollingForecastData(mapped)
+            // Accumulate into snapshot so completed-chunk weeks retain their original forecast
+            setRollingForecastSnapshot(prev => {
+              const next = new Map(prev)
+              mapped.forEach(r => next.set(r.week, r.forecast_qty))
+              return next
+            })
+          })
           .catch(() => null)
       } else {
         setRollingForecastData([])
@@ -1191,7 +1239,12 @@ export default function SimulationResultsPage() {
                 const chunkAreas = (rollingSession?.chunks ?? [])
                   .filter(c => c.status === 'completed')
                   .map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
-                const mergedPosData = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
+                const mergedPosData = posData.map(d => ({
+                  ...d,
+                  forecast_qty: forecastByWeek.get(d.week),
+                  // For completed rolling_chunk weeks, attach the original forecast from snapshot for tooltip performance
+                  original_forecast_qty: d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined,
+                }))
                 const forecastOnlyWeeks = rollingForecastData
                   .filter(r => !posData.some(d => d.week === r.week))
                   .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))

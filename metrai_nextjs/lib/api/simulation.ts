@@ -269,6 +269,7 @@ export const getSessionPromoSchedules = (
     start_date: string
     end_date: string
     demand_multiplier: number
+    performance_pct: number | null
   }[]>(
     `/rolling-session/${sessionId}/promo-schedules`,
     { params: { start_date: startDate, end_date: endDate } },
