@@ -1,29 +1,43 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useParams } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
+import { useParams, useRouter } from 'next/navigation'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, History, ChevronDown, FileCode } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea, Cell,
 } from 'recharts'
 import {
   getAnalyticsMeta,
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl } from '@/lib/api/simulation'
+import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals } from '@/lib/api/simulation'
+import { ExtendForecastModal } from './extend-modal'
+import { RollingForecastModal } from './rolling-forecast-modal'
+import { RunChunkModal } from './run-chunk-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
-import type { AnalyticsMeta, SimulationSummary } from '@/lib/api/types'
+import type { AnalyticsMeta, SimulationSummary, SimulationExtensionRecord, RollingForecastSession } from '@/lib/api/types'
+import { toIsoWeek } from '@/lib/utils'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
 function aggPOS(pos: any[]) {
-  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string }>()
+  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string; promoGroupName: string; runType: string }>()
   for (const r of pos) {
-    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '' }
+    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '', promoGroupName: '', runType: 'base' }
+    const rowIsPromoDemand = Boolean(Number(r.is_promo_demand ?? 0))
+    const rowPromoGroup = r.promo_group_name ?? ''
+    // Prefer a promo_group_name from a row that actually has is_promo_demand=1 over an
+    // earlier non-promo row whose name is blank (or stale). Otherwise keep first-seen.
+    let nextGroup = c.promoGroupName
+    if (rowIsPromoDemand && rowPromoGroup) {
+      nextGroup = rowPromoGroup
+    } else if (!nextGroup) {
+      nextGroup = rowPromoGroup
+    }
     map.set(r.pos_week, {
       demand: c.demand + Number(r.demand_qty),
       sales: c.sales + Number(r.sales_qty),
@@ -31,6 +45,11 @@ function aggPOS(pos: any[]) {
       revenue: c.revenue + Number(r.sales_amount),
       isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
       promoName: c.promoName || (r.promo_name ?? ''),
+      promoGroupName: nextGroup,
+      // keep the most specific run_type seen for this week (rolling_chunk > extension > base)
+      runType: r.run_type === 'rolling_chunk' ? 'rolling_chunk'
+             : r.run_type === 'extension' && c.runType !== 'rolling_chunk' ? 'extension'
+             : c.runType,
     })
   }
   return [...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([week, v]) => ({
@@ -41,6 +60,8 @@ function aggPOS(pos: any[]) {
     sales_amount: v.revenue,
     is_promo_week: v.isPromo ? 1 : 0,
     promo_name: v.promoName,
+    promo_group_name: v.promoGroupName,
+    run_type: v.runType,
   }))
 }
 
@@ -123,17 +144,20 @@ function computeKPIs(pos: any[], shipments: any[]) {
 
 function ChartTooltip({ active, payload, label, promoWeekMap }: {
   active?: boolean; payload?: any[]; label?: string
-  promoWeekMap?: Record<string, string>
+  promoWeekMap?: Record<string, { name: string; groupName: string }>
 }) {
   if (!active || !payload?.length) return null
-  const promoName = payload[0]?.payload?.promo_name || promoWeekMap?.[label ?? ''] || ''
-  const isPromo = payload[0]?.payload?.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
+  const data = payload[0]?.payload ?? {}
+  const promoGroupName = data.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
+  const promoName = data.promo_name || promoWeekMap?.[label ?? '']?.name || ''
+  const promoLabel = promoGroupName || promoName || 'Promo week'
+  const isPromo = data.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[140px]">
       {isPromo && (
         <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
           <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
-          <span className="font-semibold text-violet-700 truncate">{promoName || 'Promo week'}</span>
+          <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
         </div>
       )}
       <p className="mb-1 font-semibold text-charcoal-blue-700">{label}</p>
@@ -145,6 +169,64 @@ function ChartTooltip({ active, payload, label, promoWeekMap }: {
           </span>
         </p>
       ))}
+    </div>
+  )
+}
+
+function POSTooltip({ active, payload, label, promoWeekMap }: {
+  active?: boolean; payload?: any[]; label?: string
+  promoWeekMap?: Record<string, { name: string; groupName: string }>
+}) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
+  const promoGroupName = d.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
+  const promoName = d.promo_name || promoWeekMap?.[label ?? '']?.name || ''
+  const promoLabel = promoGroupName || promoName || 'Promo week'
+  const isPromo = d.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
+  const demand = Number(d.demand_qty ?? 0)
+  const sales = Number(d.sales_qty ?? 0)
+  const lost = Number(d.stockout_qty ?? 0)
+  const revenue = Number(d.sales_amount ?? 0)
+  const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
+  const fillRate = demand > 0 ? (sales / demand) * 100 : null
+  const runType = d.run_type
+  const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
+  const isFutureOnly = demand === 0 && forecast != null
+
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
+      {isPromo && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
+          <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
+          <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+        </div>
+      )}
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <p className="font-semibold text-charcoal-blue-700">{label}</p>
+        {runLabel && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">{runLabel}</span>}
+      </div>
+      {!isFutureOnly && (
+        <>
+          <div className="mb-1.5 space-y-0.5">
+            <p className="flex justify-between gap-4 text-violet-700"><span>Demand</span><span className="font-medium">{demand.toLocaleString()}</span></p>
+            <p className="flex justify-between gap-4 text-emerald-700"><span>Sales</span><span className="font-medium">{sales.toLocaleString()}</span></p>
+            <p className="flex justify-between gap-4 text-red-600"><span>Lost Sales</span><span className="font-medium">{lost.toLocaleString()}</span></p>
+          </div>
+          {fillRate != null && (
+            <div className="border-t border-charcoal-blue-100 pt-1.5">
+              <p className="flex justify-between gap-4 text-charcoal-blue-600">
+                <span>Fill Rate</span>
+                <span className={`font-semibold ${fillRate >= 95 ? 'text-emerald-600' : fillRate >= 80 ? 'text-amber-600' : 'text-red-600'}`}>{fillRate.toFixed(1)}%</span>
+              </p>
+            </div>
+          )}
+        </>
+      )}
+      {forecast != null && (
+        <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
+          <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{forecast.toLocaleString()}</span></p>
+        </div>
+      )}
     </div>
   )
 }
@@ -185,6 +267,23 @@ function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: 
           {sdcStatus === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
         </div>
       )}
+    </div>
+  )
+}
+
+function StoreInvTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
+  const avail   = Number(d.available_quantity ?? 0)
+  const onOrder = Number(d.on_order_quantity  ?? 0)
+  const status  = avail === 0 && onOrder > 0 ? 'in-transit' : avail === 0 ? 'stockout' : null
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
+      <p className="mb-1.5 font-semibold text-charcoal-blue-700">{label}</p>
+      <p className="flex justify-between gap-4 text-emerald-700"><span>Available</span><span className="font-medium">{avail.toLocaleString()}</span></p>
+      <p className="flex justify-between gap-4 text-amber-600"><span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span></p>
+      {status === 'stockout'   && <p className="mt-1 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
+      {status === 'in-transit' && <p className="mt-1 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
     </div>
   )
 }
@@ -388,6 +487,7 @@ type PageState = 'loading' | 'polling' | 'ready' | 'error'
 
 export default function SimulationResultsPage() {
   const params = useParams()
+  const router = useRouter()
   const simulationId = params.runId as string
   const { cache } = useSimulationStore()
 
@@ -396,7 +496,17 @@ export default function SimulationResultsPage() {
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
+  const [showExtendModal, setShowExtendModal] = useState(false)
+  const [showRollingModal, setShowRollingModal] = useState(false)
+  const [showRunChunkModal, setShowRunChunkModal] = useState(false)
+  const [rollingSession, setRollingSession] = useState<RollingForecastSession | null>(null)
+  const [rollingForecastData, setRollingForecastData] = useState<{ week: string; forecast_qty: number }[]>([])
+  const [rollingPromos, setRollingPromos] = useState<{ promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]>([])
+  const [extensions, setExtensions] = useState<SimulationExtensionRecord[]>([])
+  const extensionStartWeek = extensions.length > 0 ? toIsoWeek(extensions[0].previous_end_week) : null
+  const [showExtensionHistory, setShowExtensionHistory] = useState(false)
   const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
+  const [runEndWeek, setRunEndWeek] = useState<string>('')
   const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [narrativeStep, setNarrativeStep] = useState(0)
@@ -426,10 +536,21 @@ export default function SimulationResultsPage() {
   const [dcInvLoading, setDcInvLoading] = useState(false)
   const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
 
-  const zoom1 = useChartZoom(posData)
+  const [combinedPosDataForZoom, setCombinedPosDataForZoom] = useState<any[]>([])
+  const zoom1 = useChartZoom(combinedPosDataForZoom)
   const zoom2 = useChartZoom(storeInvData)
   const zoom3 = useChartZoom(shipData)
   const zoom4 = useChartZoom(dcInvData)
+
+  // Keep zoom1 data in sync with posData + rollingForecastData so zoom covers future weeks too
+  useEffect(() => {
+    const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+    const merged = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
+    const forecastOnly = rollingForecastData
+      .filter(r => !posData.some(d => d.week === r.week))
+      .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
+    setCombinedPosDataForZoom([...merged, ...forecastOnly].sort((a, b) => a.week.localeCompare(b.week)))
+  }, [posData, rollingForecastData])
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -451,11 +572,20 @@ export default function SimulationResultsPage() {
 
   const loadSummary = useCallback(async () => {
     if (cache?.simulationId === simulationId && cache.summary) {
-      setSimName(cache.simulationName)
-      applySummary(cache.summary)
-      getAnalyticsMeta(simulationId).then(setMeta).catch(() => null)
-      setPageState('ready')
-      return
+      // Check if the cache is stale: if the summary only contains base/null run_type rows,
+      // rolling_chunk and extension weeks are absent. Bust the cache so fresh data is fetched.
+      const cachedPos = cache.summary.weekly_pos ?? []
+      const hasRollingOrExtensionRows = cachedPos.some((r: any) => r.run_type === 'rolling_chunk' || r.run_type === 'extension')
+      if (hasRollingOrExtensionRows) {
+        // Cache has up-to-date rolling/extension data — use it directly
+        setSimName(cache.simulationName)
+        applySummary(cache.summary)
+        getAnalyticsMeta(simulationId).then(setMeta).catch(() => null)
+        setPageState('ready')
+        return
+      }
+      // Cache only has base rows (no rolling_chunk/extension) — fall through to fresh fetch
+      // to pick up any rolling chunks or extensions that have since completed.
     }
     try {
       const [metaData, storeSales, storeInv, supplyChain, upstream] = await Promise.all([
@@ -477,6 +607,63 @@ export default function SimulationResultsPage() {
       setPageState('error')
     }
   }, [simulationId, cache, applySummary])
+
+  // ── Load extension history once simulation is ready ──────────────────────
+  useEffect(() => {
+    if (pageState !== 'ready') return
+    getSimulationExtensions(simulationId).then(setExtensions).catch(() => null)
+  }, [pageState, simulationId])
+
+  // ── Load rolling forecast session and unrun forecast demand ───────────────
+  const baseSeed: number = (runFullConfig as any)?.random_seed ?? 42
+
+  const refreshRollingForecast = useCallback(async () => {
+    if (!runEndWeek) return
+    try {
+      const session = await getRollingSession(simulationId)
+      setRollingSession(session)
+      // If chunks have run, the cache is stale — re-fetch posData from backend with current filters
+      if (session.chunks && session.chunks.length > 0) {
+        const activeFilters = {
+          item_id: globalItem || undefined,
+          store_id: globalStore || undefined,
+          category: globalCategory || undefined,
+          subcategory: globalSubcategory || undefined,
+          brand: globalBrand || undefined,
+        }
+        getSummaryStoreSales(simulationId, activeFilters)
+          .then(s => setPosData(aggPOS(s.weekly_pos ?? [])))
+          .catch(() => null)
+      }
+      if (session.status === 'active') {
+        const startWeek = session.current_completed_week
+          ? toIsoWeek(new Date(new Date(session.current_completed_week + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
+          : toIsoWeek(runEndWeek)
+        const endWeek = toIsoWeek(session.total_end_date)
+        const seed = (runFullConfig as any)?.random_seed ?? 42
+        const filters = {
+          item_id: globalItem || undefined,
+          store_id: globalStore || undefined,
+          category: globalCategory || undefined,
+          subcategory: globalSubcategory || undefined,
+          brand: globalBrand || undefined,
+        }
+        getDemandWeeklyTotals(session.retailer_account_id, startWeek, endWeek, seed, filters)
+          .then(rows => setRollingForecastData(rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))))
+          .catch(() => null)
+      } else {
+        setRollingForecastData([])
+      }
+    } catch {
+      // 404 = no active session, that's fine
+    }
+  }, [simulationId, runEndWeek, runFullConfig,
+      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
+
+  useEffect(() => {
+    if (pageState !== 'ready' || !runEndWeek) return
+    refreshRollingForecast()
+  }, [pageState, refreshRollingForecast, runEndWeek])
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
@@ -533,7 +720,9 @@ export default function SimulationResultsPage() {
   }, [simulationId])
 
   const resetToSummary = useCallback((chart: 'pos' | 'inv' | 'ship' | 'dc') => {
-    if (cache?.simulationId === simulationId && cache.summary) {
+    const cachedPos = cache?.summary?.weekly_pos ?? []
+    const cacheHasRollingRows = cachedPos.some((r: any) => r.run_type === 'rolling_chunk' || r.run_type === 'extension')
+    if (cache?.simulationId === simulationId && cache.summary && cacheHasRollingRows) {
       const s = cache.summary
       if (chart === 'pos')  setPosData(aggPOS(s.weekly_pos ?? []))
       if (chart === 'inv')  setStoreInvData(aggStoreInv(s.store_inventory ?? []))
@@ -555,12 +744,44 @@ export default function SimulationResultsPage() {
   useEffect(() => {
     if (!filterMountedRef.current) { filterMountedRef.current = true; return }
     if (pageState !== 'ready') return
+    const posFilters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
+    const shipFilters = {
+      item_id: globalItem || undefined,
+      supplier_dc_id: globalSdc || undefined,
+      retailer_dc_id: globalRdc || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
     const anyPos  = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
     const anyShip = !!(globalItem || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
-    if (anyPos)  { fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand); fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand) }
-    else         { resetToSummary('pos'); resetToSummary('inv') }
+    const anyFilter = anyPos || anyShip
+    if (anyPos) {
+      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    } else {
+      resetToSummary('pos'); resetToSummary('inv')
+    }
     if (anyShip) { fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand); fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand) }
     else         { resetToSummary('ship'); resetToSummary('dc') }
+    // Re-fetch KPI summary using all active filters so KPI cards always reflect the filtered scope.
+    // posFilters covers item/store/category/subcategory/brand (drives Total Sales, Revenue, Stockout Rate).
+    // shipFilters covers item/SDC/RDC/category/subcategory/brand (drives Avg Fill Rate).
+    // When no filters are active both calls fetch the full unfiltered summary.
+    Promise.all([
+      getSummaryStoreSales(simulationId, anyFilter ? posFilters : undefined),
+      getSummarySupplyChainSales(simulationId, anyFilter ? shipFilters : undefined),
+    ]).then(([ss, sc]) => {
+      setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
+    }).catch(() => null)
+    // Re-fetch rolling forecast demand with the updated filters so it matches the same scope
+    if (rollingSession?.status === 'active') refreshRollingForecast()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
@@ -576,6 +797,7 @@ export default function SimulationResultsPage() {
         if (!cancelled) {
           setSimName(String((cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
           setRunFullConfig(cfg.full_config)
+          if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
       }).catch(() => null)
       return
@@ -588,6 +810,7 @@ export default function SimulationResultsPage() {
         if (!cancelled) {
           setSimName(String(name))
           setRunFullConfig(cfg.full_config)
+          if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
         if (cfg.status === 'COMPLETED') {
           if (!cancelled) await loadSummary()
@@ -611,6 +834,16 @@ export default function SimulationResultsPage() {
       bannerDismissRef.current = setTimeout(() => setAnalyticsReadyVisible(false), 5_000)
     }
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
+  }, [analyticsStatus])
+
+  // When analytics becomes READY, reload all 4 charts from ClickHouse
+  useEffect(() => {
+    if (analyticsStatus !== 'READY') return
+    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
 
   // Poll analytics-status endpoint until CH write is done
@@ -805,7 +1038,71 @@ export default function SimulationResultsPage() {
                 {meta.items_meta.length} items · {meta.stores_meta.length} stores · {meta.dcs_meta.length} DCs
               </p>
             )}
+            {/* Extension history toggle */}
+            {extensions.length > 0 && (
+              <div className="mt-2">
+                <button
+                  onClick={() => setShowExtensionHistory(v => !v)}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-majorelle-blue-500 hover:text-majorelle-blue-700"
+                >
+                  <History size={12} />
+                  Extension History ({extensions.length})
+                  <ChevronDown size={12} className={`transition-transform duration-150 ${showExtensionHistory ? 'rotate-180' : ''}`} />
+                </button>
+                {showExtensionHistory && (
+                  <div className="mt-2 space-y-1.5">
+                    {extensions.map(ext => (
+                      <div key={ext.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 px-3 py-2 text-xs">
+                        <span className="font-bold text-charcoal-blue-400">#{ext.extension_number}</span>
+                        <span className="font-mono font-semibold text-charcoal-blue-700">{ext.previous_end_week} → {ext.new_end_week}</span>
+                        {ext.scenario_type !== 'no_scenario' && (
+                          <span className="rounded-full border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-0.5 text-[10px] font-bold text-majorelle-blue-600">
+                            {ext.scenario_name || ext.scenario_type}
+                          </span>
+                        )}
+                        <span className="ml-auto text-[10px] text-charcoal-blue-400">
+                          {new Date(ext.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+          <div className="flex items-center gap-2">
+            {pageState === 'ready' && (
+              <button
+                onClick={() => setShowExtendModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-majorelle-blue-400 px-4 py-2 text-xs font-bold text-majorelle-blue-600 transition-all hover:bg-majorelle-blue-50"
+              >
+                <ChevronRight size={13} /> Extend Forecast
+              </button>
+            )}
+            {pageState === 'ready' && !rollingSession && (
+              <button
+                onClick={() => setShowRollingModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
+              >
+                <ChevronRight size={13} /> Rolling Forecast
+              </button>
+            )}
+            {pageState === 'ready' && rollingSession?.status === 'active' && (
+              <button
+                onClick={() => setShowRollingModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
+              >
+                <ChevronRight size={13} /> Edit Setup
+              </button>
+            )}
+            {pageState === 'ready' && rollingSession?.status === 'active' && rollingForecastData.length > 0 && (
+              <button
+                onClick={() => setShowRunChunkModal(true)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600"
+              >
+                <ChevronRight size={13} /> Run Weeks
+              </button>
+            )}
           <button
             onClick={handleExport}
             disabled={exportLoading}
@@ -814,6 +1111,7 @@ export default function SimulationResultsPage() {
             {exportLoading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
             {exportLoading ? 'Exporting…' : 'Export'}
           </button>
+          </div>
         </div>
 
         {/* Analytics write status banner */}
@@ -865,32 +1163,101 @@ export default function SimulationResultsPage() {
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
               {/* Chart 1 — POS Store Sales */}
-              <ChartShell
-                title="POS — Store Sales"
-                subtitle="Weekly demand, sales and lost sales across all stores"
-                error={posError} loading={posLoading}
-                isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
-                chart={(h) => (
-                  <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom1.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
-                      onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
-                      style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom1.displayData.filter(d => d.is_promo_week).map(d => (
-                        <ReferenceArea key={d.week} x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
-                      ))}
-                      {zoom1.selectionArea()}
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                      <Tooltip content={<ChartTooltip />} />
-                      <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
-                      <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
-                      <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                )}
-              />
+              {(() => {
+                // Merge simulated posData with rolling forecast data for unrun weeks
+                const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+                // current_completed_week is the last day of the last completed chunk (YYYY-MM-DD).
+                // Adding 7 days gives the first day of the next (unrun) week — consistent with how
+                // the active-session startWeek is computed at lines 534-536.
+                // Forecast Start anchor — the base simulation's end-week. Sourced from the
+                // FIRST chunk's start_week because simulation_config.end_week gets mutated
+                // (advanced) as rolling chunks complete and so isn't a stable reference.
+                const sortedChunks = (rollingSession?.chunks ?? [])
+                  .slice()
+                  .sort((a, b) => a.chunk_number - b.chunk_number)
+                const baseSimEndDate = sortedChunks[0]?.start_week ?? runEndWeek
+                const rollingBaseStartWeek = rollingSession ? toIsoWeek(baseSimEndDate) : null
+
+                // Chunk N End marker — ISO week of the last completed chunk's end_week.
+                // (Previously added +7 days to current_completed_week, which moved the label
+                // 1 week past the actual chunk end.)
+                const lastCompletedChunk = sortedChunks
+                  .filter(c => c.status === 'completed')
+                  .slice(-1)[0]
+                const rollingForecastStartWeek = lastCompletedChunk
+                  ? toIsoWeek(lastCompletedChunk.end_week)
+                  : null
+                // One shaded band per completed chunk
+                const chunkAreas = (rollingSession?.chunks ?? [])
+                  .filter(c => c.status === 'completed')
+                  .map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
+                const mergedPosData = posData.map(d => ({ ...d, forecast_qty: forecastByWeek.get(d.week) }))
+                const forecastOnlyWeeks = rollingForecastData
+                  .filter(r => !posData.some(d => d.week === r.week))
+                  .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
+                const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks].sort((a, b) => a.week.localeCompare(b.week))
+
+                return (
+                  <ChartShell
+                    title="POS — Store Sales"
+                    subtitle="Weekly demand, sales and lost sales across all stores"
+                    error={posError} loading={posLoading}
+                    isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
+                    chart={(h) => (
+                      <ResponsiveContainer width="100%" height={h}>
+                        <ComposedChart data={zoom1.isZoomed ? zoom1.displayData : combinedPosData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
+                          onMouseDown={zoom1.onMouseDown} onMouseMove={zoom1.onMouseMove} onMouseUp={zoom1.onMouseUp}
+                          style={{ cursor: zoom1.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
+                          {combinedPosData.filter(d => d.is_promo_week).map(d => (
+                            <ReferenceArea
+                              key={d.week} x1={d.week} x2={d.week}
+                              fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                              fillOpacity={0.12} stroke="none"
+                            />
+                          ))}
+                          {zoom1.selectionArea()}
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis dataKey="week" {...xAxisProps} />
+                          <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                          <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                          <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                          <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
+                            {combinedPosData.map((d, i) => {
+                              const rt = d.run_type
+                              const fill = rt === 'rolling_chunk' ? '#a78bfa' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
+                              return <Cell key={i} fill={fill} />
+                            })}
+                          </Bar>
+                          <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
+                            {combinedPosData.map((d, i) => {
+                              const rt = d.run_type
+                              const fill = rt === 'rolling_chunk' ? '#34d399' : rt === 'extension' ? '#6ee7b7' : '#10b981'
+                              return <Cell key={i} fill={fill} />
+                            })}
+                          </Bar>
+                          <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
+                            {combinedPosData.map((d, i) => {
+                              const rt = d.run_type
+                              const fill = rt === 'rolling_chunk' ? '#f87171' : rt === 'extension' ? '#fca5a5' : '#ef4444'
+                              return <Cell key={i} fill={fill} />
+                            })}
+                          </Bar>
+                          {rollingForecastData.length > 0 && (
+                            <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Future Demand" barSize={10} />
+                          )}
+                          {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
+                            <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
+                          )}
+                          {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+                          {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
+                            <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                          )}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    )}
+                  />
+                )
+              })()}
 
               {/* Chart 2 — Store Inventory */}
               <ChartShell
@@ -907,10 +1274,11 @@ export default function SimulationResultsPage() {
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
-                      <Tooltip formatter={(v) => Number(v).toLocaleString()} />
+                      <Tooltip content={<StoreInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -928,17 +1296,26 @@ export default function SimulationResultsPage() {
                       onMouseDown={zoom3.onMouseDown} onMouseMove={zoom3.onMouseMove} onMouseUp={zoom3.onMouseUp}
                       style={{ cursor: zoom3.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
                       {zoom3.displayData.filter(d => d.is_promo_week).map(d => (
-                        <ReferenceArea key={d.week} yAxisId="left" x1={d.week} x2={d.week} fill="#8b5cf6" fillOpacity={0.12} stroke="none" />
+                        <ReferenceArea
+                          key={d.week} yAxisId="left" x1={d.week} x2={d.week}
+                          fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                          fillOpacity={0.12} stroke="none"
+                        />
                       ))}
                       {zoom3.selectionArea('left')}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
-                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, d.promo_name]))} />} />
+                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10} />
-                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10} />
+                      <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
+                        {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
+                      </Bar>
+                      <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10}>
+                        {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
+                      </Bar>
+                      {extensionStartWeek && <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -974,6 +1351,7 @@ export default function SimulationResultsPage() {
                       {dcViewMode === 'both' && (
                         <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
                       )}
+                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -1092,9 +1470,16 @@ export default function SimulationResultsPage() {
                         <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10} />
-                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10} />
-                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10} />
+                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
+                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
+                        </Bar>
+                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
+                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
+                        </Bar>
+                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
+                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
+                        </Bar>
+                        {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                       </ComposedChart>
                     )}
                   </ResponsiveContainer>
@@ -1144,10 +1529,51 @@ export default function SimulationResultsPage() {
       </div>
     </div>
 
-    {/* YAML config modal — same overlay style as chart expand */}
+    <ExtendForecastModal
+      open={showExtendModal}
+      onClose={() => setShowExtendModal(false)}
+      baseSimulationId={simulationId}
+    />
+
+    <RollingForecastModal
+      open={showRollingModal}
+      onClose={() => setShowRollingModal(false)}
+      baseSimulationId={simulationId}
+      retailerAccountId={params.retailerAccountId as string}
+      baseSeed={baseSeed}
+      baseEndDate={runEndWeek}
+      existingSession={rollingSession}
+      onSessionUpdated={(s) => {
+        setRollingSession(s)
+        if (!s || s.status !== 'active') setRollingForecastData([])
+      }}
+      onDemandReady={(promos) => { setRollingPromos(promos); refreshRollingForecast() }}
+    />
+
+    {rollingSession && (
+      <RunChunkModal
+        open={showRunChunkModal}
+        onClose={() => setShowRunChunkModal(false)}
+        session={rollingSession}
+        baseEndDate={runEndWeek}
+        onChunkComplete={(result) => {
+          const updatedSession: RollingForecastSession = {
+            ...rollingSession,
+            current_completed_week: result.rolling_session?.current_completed_week ?? rollingSession.current_completed_week,
+            status: result.rolling_session?.session_status as any ?? 'active',
+          }
+          setRollingSession(updatedSession)
+          // refreshRollingForecast internally re-fetches getSummaryStoreSales (posData) when chunks exist.
+          // Do NOT also call loadSummary() here — the concurrent fetch would race and may overwrite
+          // rolling_chunk-typed rows with stale base-only data, causing chunk weeks to vanish from charts.
+          refreshRollingForecast()
+        }}
+      />
+    )}
+
+    {/* YAML config modal */}
     {yamlModalOpen && (() => {
       const fc = runFullConfig as any
-      // Build a clean display YAML from the stored SimulationRequest dict
       const displayYaml = fc ? (() => {
         const run: Record<string, unknown> = {
           simulation_name: fc.simulation_name,
@@ -1178,8 +1604,6 @@ export default function SimulationResultsPage() {
         }
         return yaml.dump({ run })
       })() : ''
-
-      // Parse promo entries from stored promo_yaml string
       const promoEntries: any[] = (() => {
         try {
           const raw = fc?.promo_yaml
@@ -1188,7 +1612,6 @@ export default function SimulationResultsPage() {
           return parsed?.promos ?? []
         } catch { return [] }
       })()
-
       return (
         <ChartModal
           title="Run YAML Config"
@@ -1198,9 +1621,7 @@ export default function SimulationResultsPage() {
             <button
               onClick={() => navigator.clipboard.writeText(displayYaml)}
               className="rounded-full border border-charcoal-blue-200 px-2 py-1 text-xs font-semibold text-charcoal-blue-500 hover:bg-charcoal-blue-50"
-            >
-              Copy
-            </button>
+            >Copy</button>
           }
           onClose={() => setYamlModalOpen(false)}
         >
@@ -1213,10 +1634,8 @@ export default function SimulationResultsPage() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-charcoal-blue-100 text-left text-[10px] font-semibold text-charcoal-blue-500">
-                    <th className="pb-1 pr-4">Name</th>
-                    <th className="pb-1 pr-4">Start</th>
-                    <th className="pb-1 pr-4">End</th>
-                    <th className="pb-1">Multiplier</th>
+                    <th className="pb-1 pr-4">Name</th><th className="pb-1 pr-4">Start</th>
+                    <th className="pb-1 pr-4">End</th><th className="pb-1">Multiplier</th>
                   </tr>
                 </thead>
                 <tbody>
