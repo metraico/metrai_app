@@ -53,14 +53,6 @@ export interface CreateRetailerResponse {
   currency_code: string
   is_active: boolean
 }
-export interface CreateRetailerResponse {
-  retailer_account_id: string
-  retailer_account_code: string
-  retailer_account_name: string
-  country_code: string | null
-  currency_code: string
-  is_active: boolean
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Demand  (engine: POST /demand/generate, GET /demand/status/{job_id})
@@ -172,35 +164,18 @@ export interface SimulationRun {
 }
 
 // GET /simulation/{id}/extensions
-export interface SimulationExtensionRecord {
-  id: string
-  simulation_id: string
-  extension_number: number
-  previous_end_week: string
-  new_end_week: string
-  scenario_type: string
-  scenario_name: string
-  promo_config: string
-  scenario_config: string
-  status: string
-  created_at: string
-  created_by: string | null
-}
-
-// POST /simulation/{id}/extend
-export interface ExtendSimulationPayload {
-  extension_end_date: string   // YYYY-MM-DD
-  simulation_name?: string
-  notes?: string
-  promo_yaml?: string
-  scenario_yaml?: string
-  seed?: number
-  session_id?: string
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Rolling Forecast
 // ─────────────────────────────────────────────────────────────────────────────
+
+export interface GenerateExtensionDemandRequest {
+  session_id: string
+  simulation_id: string
+  retailer_account_id: string
+  start_date: string   // YYYY-MM-DD
+  end_date: string     // YYYY-MM-DD
+  seed: number
+}
 
 export interface PerformanceInput {
   promo_group_name: string
@@ -260,33 +235,6 @@ export interface RunChunkResponse extends RunYamlResponse {
 
 export interface RecalculateDemandRequest {
   performance_inputs: PerformanceInput[]
-}
-
-// POST /simulation/{id}/extension-promos
-export interface ExtensionPromoInput {
-  promo_id?: string
-  promo_name: string
-  promo_group_name: string
-  event_type: string
-  start_date: string   // YYYY-MM-DD
-  end_date: string     // YYYY-MM-DD
-  demand_multiplier: number
-  is_disabled: boolean
-}
-
-export interface SaveExtensionPromosResponse {
-  session_id: string
-  saved: number
-}
-
-// POST /demand/generate/extend
-export interface GenerateExtensionDemandRequest {
-  session_id: string
-  simulation_id: string
-  retailer_account_id: string
-  start_date: string   // YYYY-MM-DD
-  end_date: string     // YYYY-MM-DD
-  seed: number
 }
 
 // GET /simulation/{id}/ending-inventory

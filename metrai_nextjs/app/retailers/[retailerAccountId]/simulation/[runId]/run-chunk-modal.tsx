@@ -47,6 +47,12 @@ export function RunChunkModal({
   // Fixed chunk end, clamped so it doesn't exceed the session total end date
   const chunkEndDate = clampDate(addWeeks(currentStart, chunkWeeks), totalEnd)
 
+  // Weeks remaining after this chunk completes
+  const msPerWeek = 7 * 24 * 3600 * 1000
+  const weeksRemaining = Math.max(0, Math.round(
+    (new Date(totalEnd + 'T12:00:00').getTime() - new Date(chunkEndDate + 'T12:00:00').getTime()) / msPerWeek
+  ))
+
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [yamlText, setYamlText] = useState('')
@@ -66,18 +72,20 @@ export function RunChunkModal({
     setShowPicker(false)
 
     setLoadingPromos(true)
-    Promise.all([
-      getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate),
-      getPromoGroups(session.retailer_account_id),
-    ])
-      .then(([schedules, groups]) => {
-        setPromoGroups(groups)
+    // Fetch independently — a failed promo-groups lookup (used only for the picker)
+    // must not blank out the active schedules.
+    getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate)
+      .then(schedules => {
         setYamlText(buildRunChunkYaml(schedules, currentStart, chunkEndDate, session.session_id))
       })
-      .catch(() => {
+      .catch(err => {
+        console.error('Failed to load session promo schedules', err)
         setYamlText(buildRunChunkYaml([], currentStart, chunkEndDate, session.session_id))
       })
       .finally(() => setLoadingPromos(false))
+    getPromoGroups(session.retailer_account_id)
+      .then(setPromoGroups)
+      .catch(err => console.error('Failed to load promo groups', err))
   }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate])
 
   /** Names already present in the YAML textarea (to filter picker). */
@@ -160,10 +168,15 @@ export function RunChunkModal({
             <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-1">
               Next Chunk
             </p>
-            <p className="text-xs font-bold text-charcoal-blue-800">
-              {currentStart} → {chunkEndDate}
-              <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} weeks)</span>
-            </p>
+            <div className="flex items-center justify-between gap-4">
+              <p className="text-xs font-bold text-charcoal-blue-800">
+                {currentStart} → {chunkEndDate}
+                <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} weeks)</span>
+              </p>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${weeksRemaining === 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                {weeksRemaining === 0 ? 'Last chunk' : `${weeksRemaining}w remaining after`}
+              </span>
+            </div>
           </div>
 
           {/* YAML editor */}

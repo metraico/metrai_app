@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, Suspense } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { getRuns, deleteSimulation } from '@/lib/api/simulation'
 import type { SimulationRun } from '@/lib/api/types'
@@ -22,7 +22,7 @@ const STATUS_LABELS: Record<string, string> = {
   COMPLETED: 'Completed', RUNNING: 'Running', FAILED: 'Failed',
 }
 
-export default function RunsPage() {
+function RunsPageInner() {
   const params = useParams()
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -170,5 +170,13 @@ export default function RunsPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function RunsPage() {
+  return (
+    <Suspense>
+      <RunsPageInner />
+    </Suspense>
   )
 }
