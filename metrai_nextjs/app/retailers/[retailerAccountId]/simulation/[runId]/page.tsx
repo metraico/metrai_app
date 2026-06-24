@@ -518,6 +518,8 @@ export default function SimulationResultsPage() {
   const [rollingForecastData, setRollingForecastData] = useState<{ week: string; forecast_qty: number }[]>([])
   // Snapshot accumulates original forecast per week across chunk completions — never shrinks
   const [rollingForecastSnapshot, setRollingForecastSnapshot] = useState<Map<string, number>>(new Map())
+  // Pre-simulation forecasted demand for base simulation weeks (from weekly_demand)
+  const [baseForecastMap, setBaseForecastMap] = useState<Map<string, number>>(new Map())
   const [rollingPromos, setRollingPromos] = useState<{ promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]>([])
   const [promoGroupPerfMap, setPromoGroupPerfMap] = useState<Record<string, number | null>>({})
   const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
@@ -564,18 +566,20 @@ export default function SimulationResultsPage() {
     const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
     const merged = posData.map(d => {
       const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
+      const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
       return {
         ...d,
         forecast_qty: forecastByWeek.get(d.week),
         original_forecast_qty: origForecast,
-        primary_demand_qty: origForecast ?? d.demand_qty,
+        base_forecast_qty: baseForecast,
+        primary_demand_qty: origForecast ?? baseForecast ?? d.demand_qty,
       }
     })
     const forecastOnly = rollingForecastData
       .filter(r => !posData.some(d => d.week === r.week))
       .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
     setCombinedPosDataForZoom([...merged, ...forecastOnly].sort((a, b) => a.week.localeCompare(b.week)))
-  }, [posData, rollingForecastData, rollingForecastSnapshot])
+  }, [posData, rollingForecastData, rollingForecastSnapshot, baseForecastMap])
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
 
@@ -721,6 +725,31 @@ export default function SimulationResultsPage() {
     if (pageState !== 'ready' || !runEndWeek) return
     refreshRollingForecast()
   }, [pageState, refreshRollingForecast, runEndWeek])
+
+  // ── Fetch base simulation forecasted demand from weekly_demand ────────────
+  useEffect(() => {
+    const baseWeeks = posData.filter(d => d.run_type === 'base')
+    if (baseWeeks.length === 0 || !runFullConfig) return
+    const seed = (runFullConfig as any)?.random_seed ?? 42
+    const retailerAccountId = params.retailerAccountId as string
+    const startWeek = baseWeeks[0].week
+    const endWeek = baseWeeks[baseWeeks.length - 1].week
+    const filters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
+    getDemandWeeklyTotals(retailerAccountId, startWeek, endWeek, seed, filters)
+      .then(rows => {
+        const m = new Map<string, number>()
+        rows.forEach(r => m.set(r.pos_week, r.demand_qty))
+        setBaseForecastMap(m)
+      })
+      .catch(() => null)
+  }, [posData, runFullConfig, params.retailerAccountId,
+      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
@@ -1211,12 +1240,13 @@ export default function SimulationResultsPage() {
                   .map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
                 const mergedPosData = posData.map(d => {
                   const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
+                  const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
                   return {
                     ...d,
                     forecast_qty: forecastByWeek.get(d.week),
                     original_forecast_qty: origForecast,
-                    // For rolling_chunk weeks show forecasted demand; for base/extension show actual demand
-                    primary_demand_qty: origForecast ?? d.demand_qty,
+                    base_forecast_qty: baseForecast,
+                    primary_demand_qty: origForecast ?? baseForecast ?? d.demand_qty,
                   }
                 })
                 const forecastOnlyWeeks = rollingForecastData
