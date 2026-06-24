@@ -53,14 +53,6 @@ export interface CreateRetailerResponse {
   currency_code: string
   is_active: boolean
 }
-export interface CreateRetailerResponse {
-  retailer_account_id: string
-  retailer_account_code: string
-  retailer_account_name: string
-  country_code: string | null
-  currency_code: string
-  is_active: boolean
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Demand  (engine: POST /demand/generate, GET /demand/status/{job_id})
