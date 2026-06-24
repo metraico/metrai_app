@@ -72,18 +72,20 @@ export function RunChunkModal({
     setShowPicker(false)
 
     setLoadingPromos(true)
-    Promise.all([
-      getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate),
-      getPromoGroups(session.retailer_account_id),
-    ])
-      .then(([schedules, groups]) => {
-        setPromoGroups(groups)
+    // Fetch independently — a failed promo-groups lookup (used only for the picker)
+    // must not blank out the active schedules.
+    getSessionPromoSchedules(session.session_id, currentStart, chunkEndDate)
+      .then(schedules => {
         setYamlText(buildRunChunkYaml(schedules, currentStart, chunkEndDate, session.session_id))
       })
-      .catch(() => {
+      .catch(err => {
+        console.error('Failed to load session promo schedules', err)
         setYamlText(buildRunChunkYaml([], currentStart, chunkEndDate, session.session_id))
       })
       .finally(() => setLoadingPromos(false))
+    getPromoGroups(session.retailer_account_id)
+      .then(setPromoGroups)
+      .catch(err => console.error('Failed to load promo groups', err))
   }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate])
 
   /** Names already present in the YAML textarea (to filter picker). */
