@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, History, ChevronDown, FileCode } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
@@ -13,13 +13,12 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getSimulationExtensions, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules } from '@/lib/api/simulation'
-import { ExtendForecastModal } from './extend-modal'
+import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules } from '@/lib/api/simulation'
 import { RollingForecastModal } from './rolling-forecast-modal'
 import { RunChunkModal } from './run-chunk-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
-import type { AnalyticsMeta, SimulationSummary, SimulationExtensionRecord, RollingForecastSession } from '@/lib/api/types'
+import type { AnalyticsMeta, SimulationSummary, RollingForecastSession } from '@/lib/api/types'
 import { toIsoWeek } from '@/lib/utils'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
@@ -521,7 +520,6 @@ export default function SimulationResultsPage() {
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
   const [simName, setSimName] = useState('Simulation Results')
-  const [showExtendModal, setShowExtendModal] = useState(false)
   const [showRollingModal, setShowRollingModal] = useState(false)
   const [showRunChunkModal, setShowRunChunkModal] = useState(false)
   const [rollingSession, setRollingSession] = useState<RollingForecastSession | null>(null)
@@ -530,9 +528,6 @@ export default function SimulationResultsPage() {
   const [rollingForecastSnapshot, setRollingForecastSnapshot] = useState<Map<string, number>>(new Map())
   const [rollingPromos, setRollingPromos] = useState<{ promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]>([])
   const [promoGroupPerfMap, setPromoGroupPerfMap] = useState<Record<string, number | null>>({})
-  const [extensions, setExtensions] = useState<SimulationExtensionRecord[]>([])
-  const extensionStartWeek = extensions.length > 0 ? toIsoWeek(extensions[0].previous_end_week) : null
-  const [showExtensionHistory, setShowExtensionHistory] = useState(false)
   const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
   const [runEndWeek, setRunEndWeek] = useState<string>('')
   const [yamlModalOpen, setYamlModalOpen] = useState(false)
@@ -545,6 +540,8 @@ export default function SimulationResultsPage() {
 
   // Chart 1 — POS (store sales)
   const [posData, setPosData] = useState<any[]>([])
+  // Derive extensionStartWeek from posData so chart styling works for sims that have extension data
+  const extensionStartWeek = posData.find(d => d.run_type === 'extension')?.week ?? null
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
 
@@ -644,11 +641,7 @@ export default function SimulationResultsPage() {
     }
   }, [simulationId, cache, applySummary])
 
-  // ── Load extension history once simulation is ready ──────────────────────
-  useEffect(() => {
-    if (pageState !== 'ready') return
-    getSimulationExtensions(simulationId).then(setExtensions).catch(() => null)
-  }, [pageState, simulationId])
+
 
   // ── Load rolling forecast session and unrun forecast demand ───────────────
   const baseSeed: number = (runFullConfig as any)?.random_seed ?? 42
@@ -1110,47 +1103,8 @@ export default function SimulationResultsPage() {
                 {meta.items_meta.length} items · {meta.stores_meta.length} stores · {meta.dcs_meta.length} DCs
               </p>
             )}
-            {/* Extension history toggle */}
-            {extensions.length > 0 && (
-              <div className="mt-2">
-                <button
-                  onClick={() => setShowExtensionHistory(v => !v)}
-                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-majorelle-blue-500 hover:text-majorelle-blue-700"
-                >
-                  <History size={12} />
-                  Extension History ({extensions.length})
-                  <ChevronDown size={12} className={`transition-transform duration-150 ${showExtensionHistory ? 'rotate-180' : ''}`} />
-                </button>
-                {showExtensionHistory && (
-                  <div className="mt-2 space-y-1.5">
-                    {extensions.map(ext => (
-                      <div key={ext.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 px-3 py-2 text-xs">
-                        <span className="font-bold text-charcoal-blue-400">#{ext.extension_number}</span>
-                        <span className="font-mono font-semibold text-charcoal-blue-700">{ext.previous_end_week} → {ext.new_end_week}</span>
-                        {ext.scenario_type !== 'no_scenario' && (
-                          <span className="rounded-full border border-majorelle-blue-200 bg-majorelle-blue-50 px-2 py-0.5 text-[10px] font-bold text-majorelle-blue-600">
-                            {ext.scenario_name || ext.scenario_type}
-                          </span>
-                        )}
-                        <span className="ml-auto text-[10px] text-charcoal-blue-400">
-                          {new Date(ext.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
           <div className="flex items-center gap-2">
-            {pageState === 'ready' && (
-              <button
-                onClick={() => setShowExtendModal(true)}
-                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-majorelle-blue-400 px-4 py-2 text-xs font-bold text-majorelle-blue-600 transition-all hover:bg-majorelle-blue-50"
-              >
-                <ChevronRight size={13} /> Extend Forecast
-              </button>
-            )}
             {pageState === 'ready' && !rollingSession && (
               <button
                 onClick={() => setShowRollingModal(true)}
@@ -1609,12 +1563,6 @@ export default function SimulationResultsPage() {
         })()}
       </div>
     </div>
-
-    <ExtendForecastModal
-      open={showExtendModal}
-      onClose={() => setShowExtendModal(false)}
-      baseSimulationId={simulationId}
-    />
 
     <RollingForecastModal
       open={showRollingModal}
