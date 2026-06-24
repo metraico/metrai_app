@@ -675,7 +675,7 @@ export default function SimulationResultsPage() {
           .catch(() => null)
       }
       if (session.status === 'active') {
-        const startWeek = session.current_completed_week
+        const futureStartWeek = session.current_completed_week
           ? toIsoWeek(new Date(new Date(session.current_completed_week + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
           : toIsoWeek(runEndWeek)
         const endWeek = toIsoWeek(session.total_end_date)
@@ -687,11 +687,11 @@ export default function SimulationResultsPage() {
           subcategory: globalSubcategory || undefined,
           brand: globalBrand || undefined,
         }
-        getDemandWeeklyTotals(session.retailer_account_id, startWeek, endWeek, seed, filters)
+        // Fetch future demand (for the forecast line/bar)
+        getDemandWeeklyTotals(session.retailer_account_id, futureStartWeek, endWeek, seed, filters)
           .then(rows => {
             const mapped = rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))
             setRollingForecastData(mapped)
-            // Accumulate into snapshot so completed-chunk weeks retain their original forecast
             setRollingForecastSnapshot(prev => {
               const next = new Map(prev)
               mapped.forEach(r => next.set(r.week, r.forecast_qty))
@@ -699,6 +699,25 @@ export default function SimulationResultsPage() {
             })
           })
           .catch(() => null)
+
+        // Backfill snapshot with original forecast for already-completed chunk weeks.
+        // weekly_demand retains the pre-run forecast even after chunks execute, so this
+        // gives us the original prediction to compare against actual demand in the tooltip.
+        const completedChunks = (session.chunks ?? []).filter(c => c.status === 'completed')
+        if (completedChunks.length > 0) {
+          const sorted = [...completedChunks].sort((a, b) => a.chunk_number - b.chunk_number)
+          const snapshotStartWeek = toIsoWeek(sorted[0].start_week)
+          const snapshotEndWeek = toIsoWeek(session.current_completed_week!)
+          getDemandWeeklyTotals(session.retailer_account_id, snapshotStartWeek, snapshotEndWeek, seed, filters)
+            .then(rows => {
+              setRollingForecastSnapshot(prev => {
+                const next = new Map(prev)
+                rows.forEach(r => next.set(r.pos_week, r.demand_qty))
+                return next
+              })
+            })
+            .catch(() => null)
+        }
       } else {
         setRollingForecastData([])
       }
