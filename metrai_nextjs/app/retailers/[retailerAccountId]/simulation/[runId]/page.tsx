@@ -536,6 +536,12 @@ export default function SimulationResultsPage() {
   const [posData, setPosData] = useState<any[]>([])
   // Derive extensionStartWeek from posData so chart styling works for sims that have extension data
   const extensionStartWeek = posData.find(d => d.run_type === 'extension')?.week ?? null
+  // Rolling forecast reference lines — shared across all 4 charts
+  const _sortedChunks = (rollingSession?.chunks ?? []).slice().sort((a, b) => a.chunk_number - b.chunk_number)
+  const rollingBaseStartWeek = rollingSession ? toIsoWeek(_sortedChunks[0]?.start_week ?? runEndWeek ?? '') : null
+  const _lastCompletedChunk = (rollingSession?.chunks ?? []).filter(c => c.status === 'completed').slice(-1)[0]
+  const rollingForecastStartWeek = _lastCompletedChunk ? toIsoWeek(_lastCompletedChunk.end_week) : null
+  const chunkAreas = (rollingSession?.chunks ?? []).filter(c => c.status === 'completed').map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
 
@@ -922,13 +928,18 @@ export default function SimulationResultsPage() {
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
   }, [analyticsStatus])
 
-  // When analytics becomes READY, reload all 4 charts from ClickHouse
+  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse
+  // Delay all fetches by 4s to ensure CH writes are fully complete before querying
   useEffect(() => {
     if (analyticsStatus !== 'READY') return
-    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-    fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
-    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
+    const t = setTimeout(() => {
+      loadSummary()
+      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+      fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
+    }, 4000)
+    return () => clearTimeout(t)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
 
@@ -1216,28 +1227,7 @@ export default function SimulationResultsPage() {
                 // current_completed_week is the last day of the last completed chunk (YYYY-MM-DD).
                 // Adding 7 days gives the first day of the next (unrun) week — consistent with how
                 // the active-session startWeek is computed at lines 534-536.
-                // Forecast Start anchor — the base simulation's end-week. Sourced from the
-                // FIRST chunk's start_week because simulation_config.end_week gets mutated
-                // (advanced) as rolling chunks complete and so isn't a stable reference.
-                const sortedChunks = (rollingSession?.chunks ?? [])
-                  .slice()
-                  .sort((a, b) => a.chunk_number - b.chunk_number)
-                const baseSimEndDate = sortedChunks[0]?.start_week ?? runEndWeek
-                const rollingBaseStartWeek = rollingSession ? toIsoWeek(baseSimEndDate) : null
-
-                // Chunk N End marker — ISO week of the last completed chunk's end_week.
-                // (Previously added +7 days to current_completed_week, which moved the label
-                // 1 week past the actual chunk end.)
-                const lastCompletedChunk = sortedChunks
-                  .filter(c => c.status === 'completed')
-                  .slice(-1)[0]
-                const rollingForecastStartWeek = lastCompletedChunk
-                  ? toIsoWeek(lastCompletedChunk.end_week)
-                  : null
-                // One shaded band per completed chunk
-                const chunkAreas = (rollingSession?.chunks ?? [])
-                  .filter(c => c.status === 'completed')
-                  .map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
+                // rollingBaseStartWeek, rollingForecastStartWeek, chunkAreas are hoisted to component level
                 const mergedPosData = posData.map(d => {
                   const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
                   const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
@@ -1335,7 +1325,13 @@ export default function SimulationResultsPage() {
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
-                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+                      {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
+                        <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
+                      )}
+                      {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+                      {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
+                        <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -1372,7 +1368,13 @@ export default function SimulationResultsPage() {
                       <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10}>
                         {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
                       </Bar>
-                      {extensionStartWeek && <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+                      {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
+                        <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
+                      )}
+                      {rollingBaseStartWeek && <ReferenceLine yAxisId="left" x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+                      {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
+                        <ReferenceLine yAxisId="left" x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                      )}
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -1408,7 +1410,13 @@ export default function SimulationResultsPage() {
                       {dcViewMode === 'both' && (
                         <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
                       )}
-                      {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
+                      {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
+                        <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
+                      )}
+                      {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+                      {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
+                        <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
