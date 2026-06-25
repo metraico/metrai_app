@@ -155,7 +155,7 @@ function RunsPageInner() {
                   </p>
                   <p className="text-xs text-charcoal-blue-400">
                     <span className="font-bold text-charcoal-blue-700">Created:</span>{' '}
-                    {new Date(run.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    {new Date(run.created_at).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }).replace(/\//g, '-')}
                   </p>
                 </div>
 

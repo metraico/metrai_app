@@ -10,6 +10,14 @@ export function cn(...inputs: ClassValue[]) {
  * Correctly handles year boundaries (e.g. Dec 31, 2025 → "2026-W01").
  * Uses Thursday-anchored ISO week definition, matching Python's date.isocalendar().
  */
+/** Convert YYYY-MM-DD → MM-DD-YYYY for display. Safe with null/undefined. */
+export function fmtDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return '—'
+  const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return dateStr
+  return `${m[2]}-${m[3]}-${m[1]}`
+}
+
 export function toIsoWeek(dateStr: string): string {
   const d = new Date(dateStr + 'T12:00:00') // noon avoids DST edge cases
   // Find Thursday of the current ISO week

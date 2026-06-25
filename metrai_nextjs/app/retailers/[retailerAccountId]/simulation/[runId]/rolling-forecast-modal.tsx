@@ -6,17 +6,17 @@ import {
   generateExtensionDemand, getDemandStatus, getDemandWeeklyTotals,
   createRollingSessionYaml, runRollingChunk, recalculateRollingDemand, getSessionPromoSchedules,
 } from '@/lib/api/simulation'
-import { getPromoGroups } from '@/lib/api/promos'
+import { getPromoGroups, getPromos } from '@/lib/api/promos'
 import {
   Dialog, DialogContent, DialogTitle,
 } from '@/components/ui/dialog'
 import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from 'recharts'
 import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown } from 'lucide-react'
-import type { PromoGroupResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
-import { toIsoWeek } from '@/lib/utils'
+import type { PromoGroupResponse, PromoResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
+import { toIsoWeek, fmtDate } from '@/lib/utils'
 
 // ── Shared primitives (same as extend-modal) ─────────────────────────────────
 
@@ -143,6 +143,7 @@ export function RollingForecastModal({
   const [yamlContent, setYamlContent] = useState(() => buildRollingSessionYaml(''))
   const [yamlError, setYamlError] = useState<string | null>(null)
   const [promoGroupCatalog, setPromoGroupCatalog] = useState<PromoGroupResponse[]>([])
+  const [promoCatalog, setPromoCatalog] = useState<PromoResponse[]>([])
   const [showPromoDropdown, setShowPromoDropdown] = useState(false)
   const [promoSearch, setPromoSearch] = useState('')
   const [savingSetup, setSavingSetup] = useState(false)
@@ -161,10 +162,11 @@ export function RollingForecastModal({
   const [promoGroups, setPromoGroups] = useState<string[]>([])
   const [perfInputs, setPerfInputs] = useState<Record<string, number>>({})
 
-  // ── Load promo groups catalog ─────────────────────────────────────────────
+  // ── Load promo catalog ────────────────────────────────────────────────────
   useEffect(() => {
     if (!open || !retailerAccountId) return
     getPromoGroups(retailerAccountId).then(setPromoGroupCatalog).catch(() => null)
+    getPromos(retailerAccountId).then(setPromoCatalog).catch(() => null)
   }, [open, retailerAccountId])
 
   // ── When opened fresh (no session), reset YAML skeleton ──────────────────
@@ -379,13 +381,14 @@ export function RollingForecastModal({
   }
 
   // ── Add promo snippet via dropdown ────────────────────────────────────────
-  function handleAddPromo(group: PromoGroupResponse) {
+  function handleAddPromo(promo: PromoResponse) {
     const today = new Date().toISOString().slice(0, 10)
     const weekLater = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10)
-    setYamlContent(prev => appendPromoSnippet(prev, group.promo_group_name, today, weekLater))
+    const start = promo.start_date ?? today
+    const end = promo.end_date ?? weekLater
+    setYamlContent(prev => appendPromoSnippet(prev, promo.promo_group_name ?? promo.promo_name, start, end))
     setShowPromoDropdown(false)
     setPromoSearch('')
-    // Scroll textarea to bottom so user sees the appended snippet
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.scrollTop = textareaRef.current.scrollHeight
@@ -393,11 +396,10 @@ export function RollingForecastModal({
     }, 50)
   }
 
-  const filteredGroups = promoGroupCatalog.filter(g =>
+  const filteredPromos = promoCatalog.filter(p =>
     promoSearch === '' ||
-    g.promo_group_name.toLowerCase().includes(promoSearch.toLowerCase()) ||
-    (g.category ?? '').toLowerCase().includes(promoSearch.toLowerCase()) ||
-    (g.brand ?? '').toLowerCase().includes(promoSearch.toLowerCase())
+    p.promo_name.toLowerCase().includes(promoSearch.toLowerCase()) ||
+    (p.promo_group_name ?? '').toLowerCase().includes(promoSearch.toLowerCase())
   )
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -442,6 +444,7 @@ export function RollingForecastModal({
                 <FormField label="Total Forecast End Date" info="Sets total_end_date in the YAML. You can also type it directly in the editor below.">
                   <input
                     type="date"
+                    lang="en-US"
                     value={totalEndDate}
                     min={baseEndDate}
                     onChange={e => handleDatePickerChange(e.target.value)}
@@ -470,29 +473,29 @@ export function RollingForecastModal({
                       <input
                         value={promoSearch}
                         onChange={e => setPromoSearch(e.target.value)}
-                        placeholder="Search promo groups…"
+                        placeholder="Search promos…"
                         className={inputCls}
                         autoFocus
                       />
                       <div className="max-h-48 overflow-y-auto space-y-1">
-                        {filteredGroups.map(g => (
+                        {filteredPromos.map(p => (
                           <button
-                            key={g.promo_group_id}
+                            key={p.promo_id}
                             type="button"
-                            onClick={() => handleAddPromo(g)}
+                            onClick={() => handleAddPromo(p)}
                             className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-[10px] hover:bg-charcoal-blue-50 border border-transparent hover:border-charcoal-blue-100"
                           >
                             <Plus size={10} className="flex-shrink-0 mt-0.5 text-amber-500" />
                             <div className="flex-1 min-w-0">
-                              <span className="font-semibold text-charcoal-blue-800">{g.promo_group_name}</span>
-                              {(g.category || g.brand) && (
-                                <span className="ml-1.5 text-charcoal-blue-400">{[g.category, g.brand].filter(Boolean).join(' · ')}</span>
+                              <span className="font-semibold text-charcoal-blue-800">{p.promo_name}</span>
+                              {p.promo_group_name && (
+                                <span className="ml-1.5 text-charcoal-blue-400">{p.promo_group_name}</span>
                               )}
                             </div>
                           </button>
                         ))}
-                        {filteredGroups.length === 0 && (
-                          <p className="text-center text-[10px] text-charcoal-blue-400 py-2">No promo groups found</p>
+                        {filteredPromos.length === 0 && (
+                          <p className="text-center text-[10px] text-charcoal-blue-400 py-2">No promos found</p>
                         )}
                       </div>
                     </div>
@@ -578,7 +581,7 @@ export function RollingForecastModal({
                         Next Chunk
                       </p>
                       <p className="text-xs font-bold text-charcoal-blue-800">
-                        {currentStart} → {nextChunkEnd}
+                        {fmtDate(currentStart)} → {fmtDate(nextChunkEnd)}
                         <span className="ml-2 font-normal text-charcoal-blue-500">(4 weeks)</span>
                       </p>
                     </div>
@@ -602,7 +605,7 @@ export function RollingForecastModal({
                 <div className="text-center">
                   <p className="text-sm font-bold text-charcoal-blue-800">Running simulation chunk…</p>
                   <p className="text-xs text-charcoal-blue-400 mt-1">
-                    {currentStart} → {chunkEndDate}
+                    {fmtDate(currentStart)} → {fmtDate(chunkEndDate)}
                   </p>
                 </div>
               </div>
@@ -614,7 +617,7 @@ export function RollingForecastModal({
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
                   <p className="text-xs font-bold text-emerald-800">
                     <Check size={12} className="inline mr-1" />
-                    Chunk complete — {session?.current_completed_week}
+                    Chunk complete — {fmtDate(session?.current_completed_week)}
                   </p>
                   <p className="text-[10px] text-emerald-700 mt-0.5">
                     How did your promos actually perform vs. the forecast?
@@ -690,7 +693,7 @@ export function RollingForecastModal({
                   <p className="text-sm font-bold text-charcoal-blue-800">Rolling forecast complete!</p>
                   <p className="text-xs text-charcoal-blue-500 mt-1">
                     All chunks have been committed.
-                    Your simulation now covers through {session?.total_end_date ?? totalEnd}.
+                    Your simulation now covers through {fmtDate(session?.total_end_date ?? totalEnd)}.
                   </p>
                 </div>
                 <button

@@ -4,9 +4,10 @@ import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Loader2, AlertCircle, Plus } from 'lucide-react'
 import { getSessionPromoSchedules, runRollingChunkYaml, buildRunChunkYaml } from '@/lib/api/simulation'
-import { getPromoGroups } from '@/lib/api/promos'
-import type { RollingForecastSession, RunChunkResponse, PromoGroupResponse } from '@/lib/api/types'
+import { getPromos } from '@/lib/api/promos'
+import type { RollingForecastSession, RunChunkResponse, PromoResponse } from '@/lib/api/types'
 import yaml from 'js-yaml'
+import { fmtDate } from '@/lib/utils'
 
 const CHUNK_WEEKS = 4
 const DEFAULT_SEQUENCE = ['SIM', 'SIM', 'SIM', 'SIM', 'SIM', 'SIM']
@@ -58,8 +59,8 @@ export function RunChunkModal({
   const [yamlText, setYamlText] = useState('')
   const [loadingPromos, setLoadingPromos] = useState(false)
 
-  // Promo groups for the "Add promo" picker
-  const [promoGroups, setPromoGroups] = useState<PromoGroupResponse[]>([])
+  // Promos for the "Add promo" picker
+  const [promoGroups, setPromoGroups] = useState<PromoResponse[]>([])
   const [showPicker, setShowPicker] = useState(false)
 
   // Fetch active promo schedule entries for this chunk window and promo groups on open.
@@ -83,9 +84,9 @@ export function RunChunkModal({
         setYamlText(buildRunChunkYaml([], currentStart, chunkEndDate, session.session_id))
       })
       .finally(() => setLoadingPromos(false))
-    getPromoGroups(session.retailer_account_id)
+    getPromos(session.retailer_account_id)
       .then(setPromoGroups)
-      .catch(err => console.error('Failed to load promo groups', err))
+      .catch(err => console.error('Failed to load promos', err))
   }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate])
 
   /** Names already present in the YAML textarea (to filter picker). */
@@ -99,7 +100,8 @@ export function RunChunkModal({
     return found
   }
 
-  function appendPromoBlock(groupName: string) {
+  function appendPromoBlock(promo: PromoResponse) {
+    const groupName = promo.promo_group_name ?? promo.promo_name
     const block = [
       '',
       `  - schedule_id: ""`,
@@ -141,7 +143,7 @@ export function RunChunkModal({
   }
 
   const unavailableNames = namesInYaml()
-  const pickerGroups = promoGroups.filter(g => !unavailableNames.has(g.promo_group_name))
+  const pickerGroups = promoGroups.filter(g => !unavailableNames.has(g.promo_group_name ?? g.promo_name))
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
@@ -170,7 +172,7 @@ export function RunChunkModal({
             </p>
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs font-bold text-charcoal-blue-800">
-                {currentStart} → {chunkEndDate}
+                {fmtDate(currentStart)} → {fmtDate(chunkEndDate)}
                 <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} weeks)</span>
               </p>
               <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${weeksRemaining === 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
@@ -199,16 +201,19 @@ export function RunChunkModal({
                     <Plus size={10} /> Add promo
                   </button>
                   {showPicker && pickerGroups.length > 0 && (
-                    <div className="absolute right-0 top-full mt-1 z-10 w-52 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg overflow-hidden">
+                    <div className="absolute right-0 top-full mt-1 z-10 w-64 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg overflow-hidden">
                       <div className="max-h-48 overflow-y-auto">
                         {pickerGroups.map(g => (
                           <button
-                            key={g.promo_group_id}
+                            key={g.promo_id}
                             type="button"
-                            onClick={() => appendPromoBlock(g.promo_group_name)}
-                            className="w-full text-left px-3 py-2 text-[10px] text-charcoal-blue-800 hover:bg-charcoal-blue-50 truncate"
+                            onClick={() => appendPromoBlock(g)}
+                            className="w-full text-left px-3 py-2 text-[10px] hover:bg-charcoal-blue-50"
                           >
-                            {g.promo_group_name}
+                            <span className="font-semibold text-charcoal-blue-800 block truncate">{g.promo_name}</span>
+                            {g.promo_group_name && (
+                              <span className="text-charcoal-blue-400 block truncate">{g.promo_group_name}</span>
+                            )}
                           </button>
                         ))}
                       </div>
@@ -216,7 +221,7 @@ export function RunChunkModal({
                   )}
                   {showPicker && pickerGroups.length === 0 && (
                     <div className="absolute right-0 top-full mt-1 z-10 w-52 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg px-3 py-2 text-[10px] text-charcoal-blue-400">
-                      All promo groups already added
+                      All promos already added
                     </div>
                   )}
                 </div>

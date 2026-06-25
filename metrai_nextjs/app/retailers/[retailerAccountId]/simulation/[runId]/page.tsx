@@ -19,7 +19,7 @@ import { RunChunkModal } from './run-chunk-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession } from '@/lib/api/types'
-import { toIsoWeek } from '@/lib/utils'
+import { toIsoWeek, fmtDate } from '@/lib/utils'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
@@ -928,17 +928,30 @@ export default function SimulationResultsPage() {
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
   }, [analyticsStatus])
 
-  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse
-  // Delay all fetches by 4s to ensure CH writes are fully complete before querying
+  // Track previous analyticsStatus so we only refresh charts on PENDING→READY
+  // transition (simulation just wrote to CH), not on initial page load where
+  // status goes null→READY and data is already loaded from loadSummary().
+  const prevAnalyticsStatusRef = useRef<string | null>(null)
+
   useEffect(() => {
-    if (analyticsStatus !== 'READY') return
+    if (analyticsStatus !== 'READY' || prevAnalyticsStatusRef.current !== 'PENDING') {
+      prevAnalyticsStatusRef.current = analyticsStatus
+      return
+    }
+    prevAnalyticsStatusRef.current = analyticsStatus
+
+    // Transition was PENDING→READY: CH just finished writing.
+    // Graphs 1/3/4: fire immediately via individual endpoints (these CH tables are ready).
+    // Graph 2: loadSummary() delayed 6s — uses getSummaryStoreInventory which is the
+    // same path as a browser refresh and is the only endpoint that reliably returns
+    // store inventory data. fetchStoreInvFiltered is NOT called here because its
+    // getStoreInventory endpoint returns empty even when data exists in CH.
+    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
     const t = setTimeout(() => {
       loadSummary()
-      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
-      fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
-    }, 4000)
+    }, 6000)
     return () => clearTimeout(t)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
@@ -1701,8 +1714,8 @@ export default function SimulationResultsPage() {
                   {promoEntries.map((p: any, i: number) => (
                     <tr key={i} className="border-b border-charcoal-blue-50">
                       <td className="py-1 pr-4 font-medium text-charcoal-blue-900">{p.promo_name}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.start_date}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.end_date}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{fmtDate(p.start_date)}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{fmtDate(p.end_date)}</td>
                       <td className="py-1 text-charcoal-blue-600">{p.demand_multiplier ?? '—'}</td>
                     </tr>
                   ))}
