@@ -508,6 +508,12 @@ export default function SimulationResultsPage() {
   const [posData, setPosData] = useState<any[]>([])
   // Derive extensionStartWeek from posData so chart styling works for sims that have extension data
   const extensionStartWeek = posData.find(d => d.run_type === 'extension')?.week ?? null
+  // Rolling forecast reference lines — shared across all 4 charts
+  const _sortedChunks = (rollingSession?.chunks ?? []).slice().sort((a, b) => a.chunk_number - b.chunk_number)
+  const rollingBaseStartWeek = rollingSession ? toIsoWeek(_sortedChunks[0]?.start_week ?? runEndWeek ?? '') : null
+  const _lastCompletedChunk = (rollingSession?.chunks ?? []).filter(c => c.status === 'completed').slice(-1)[0]
+  const rollingForecastStartWeek = _lastCompletedChunk ? toIsoWeek(_lastCompletedChunk.end_week) : null
+  const chunkAreas = (rollingSession?.chunks ?? []).filter(c => c.status === 'completed').map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
 
@@ -917,13 +923,18 @@ export default function SimulationResultsPage() {
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
   }, [analyticsStatus])
 
-  // When analytics becomes READY, reload all 4 charts from ClickHouse
+  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse
+  // Delay all fetches by 4s to ensure CH writes are fully complete before querying
   useEffect(() => {
     if (analyticsStatus !== 'READY') return
-    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-    fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
-    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
+    const t = setTimeout(() => {
+      loadSummary()
+      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+      fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+      fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
+    }, 4000)
+    return () => clearTimeout(t)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
 
@@ -1096,20 +1107,6 @@ export default function SimulationResultsPage() {
     )
   }
 
-  const sortedChunksForRef = (rollingSession?.chunks ?? [])
-    .slice()
-    .sort((a, b) => a.chunk_number - b.chunk_number)
-  const rollingBaseStartWeek = rollingSession
-    ? toIsoWeek(sortedChunksForRef[0]?.start_week ?? runEndWeek ?? '')
-    : null
-  const lastCompletedChunkForRef = sortedChunksForRef.filter(c => c.status === 'completed').slice(-1)[0]
-  const rollingForecastStartWeek = lastCompletedChunkForRef
-    ? toIsoWeek(lastCompletedChunkForRef.end_week)
-    : null
-  const chunkAreas = sortedChunksForRef
-    .filter(c => c.status === 'completed')
-    .map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
-
   return (
     <>
     <div className="w-full min-h-screen bg-gradient-to-br from-charcoal-blue-50 via-white to-charcoal-blue-50 px-6 py-6">
@@ -1222,6 +1219,7 @@ export default function SimulationResultsPage() {
               {(() => {
                 // Merge simulated posData with rolling forecast data for unrun weeks
                 const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+                // rollingBaseStartWeek, rollingForecastStartWeek, chunkAreas are hoisted to component level
                 const mergedPosData = posData.map(d => {
                   const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
                   const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
