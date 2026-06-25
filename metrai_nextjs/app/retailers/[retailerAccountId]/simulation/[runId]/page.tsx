@@ -113,11 +113,11 @@ function aggDCInv(dc: any[], _sup: any[]) {
     dcOnOrder.set(w, (dcOnOrder.get(w) ?? 0) + Number(r.on_order_quantity ?? 0))
   }
   const weeks = [...dcOnHand.keys()].sort()
-  return weeks.map(w => {
-    const onHand  = dcOnHand.get(w)  ?? 0
-    const onOrder = dcOnOrder.get(w) ?? 0
-    return { week: w, dc_on_hand: onHand, dc_on_order: onOrder, dc_available: onHand + onOrder }
-  })
+  return weeks.map(w => ({
+    week: w,
+    dc_on_hand:  dcOnHand.get(w)  ?? 0,
+    dc_on_order: dcOnOrder.get(w) ?? 0,
+  }))
 }
 
 function computeKPIs(pos: any[], shipments: any[]) {
@@ -240,15 +240,15 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
 
 function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
   if (!active || !payload?.length) return null
-  const d         = payload[0]?.payload ?? {}
-  const available = d.dc_available ?? 0
-  const onOrder   = d.dc_on_order  ?? 0
-  const status    = available === 0 && onOrder > 0 ? 'in-transit' : available === 0 ? 'stockout' : null
+  const d       = payload[0]?.payload ?? {}
+  const onHand  = d.dc_on_hand  ?? 0
+  const onOrder = d.dc_on_order ?? 0
+  const status  = onHand === 0 && onOrder > 0 ? 'in-transit' : onHand === 0 ? 'stockout' : null
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[190px]">
       <p className="mb-2 font-semibold text-charcoal-blue-700">{label}</p>
       <p className="flex justify-between gap-4 text-charcoal-blue-700">
-        <span>Available</span><span className="font-medium">{available.toLocaleString()}</span>
+        <span>On Hand</span><span className="font-medium">{onHand.toLocaleString()}</span>
       </p>
       <p className="flex justify-between gap-4 text-charcoal-blue-500">
         <span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span>
@@ -1393,7 +1393,7 @@ export default function SimulationResultsPage() {
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<DCInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Line dataKey="dc_available" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
+                      <Line dataKey="dc_on_hand" stroke="#10b981" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
                       <Line dataKey="dc_on_order" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 2" />
                       {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
                         <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
