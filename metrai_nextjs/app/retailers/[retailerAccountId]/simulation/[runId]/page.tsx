@@ -627,7 +627,7 @@ export default function SimulationResultsPage() {
         }
         setPromoGroupPerfMap(map)
       }).catch(() => null)
-      // If chunks have run, the cache is stale — re-fetch posData from backend with current filters
+      // If chunks have run, the cache is stale — re-fetch all charts from backend with current filters
       if (session.chunks && session.chunks.length > 0) {
         const activeFilters = {
           item_id: globalItem || undefined,
@@ -636,8 +636,31 @@ export default function SimulationResultsPage() {
           subcategory: globalSubcategory || undefined,
           brand: globalBrand || undefined,
         }
+        const shipFilters = {
+          item_id: globalItem || undefined,
+          supplier_dc_id: globalSdc || undefined,
+          retailer_dc_id: globalRdc || undefined,
+          category: globalCategory || undefined,
+          subcategory: globalSubcategory || undefined,
+          brand: globalBrand || undefined,
+        }
         getSummaryStoreSales(simulationId, activeFilters)
           .then(s => setPosData(aggPOS(s.weekly_pos ?? [])))
+          .catch(() => null)
+        getSummaryStoreInventory(simulationId, activeFilters)
+          .then(s => setStoreInvData(aggStoreInv(s.store_inventory ?? [])))
+          .catch(() => null)
+        getSummarySupplyChainSales(simulationId, shipFilters)
+          .then(s => setShipData(aggShipments(s.weekly_shipments ?? [])))
+          .catch(() => null)
+        getDCInventory(simulationId, {
+          item_id:        globalItem || undefined,
+          dc_id:          globalRdc  || undefined,
+          supplier_dc_id: globalSdc  || undefined,
+          category:       globalCategory    || undefined,
+          subcategory:    globalSubcategory || undefined,
+          brand:          globalBrand       || undefined,
+        }).then(s => setDcInvData(aggDCInv(s.dc_inventory ?? [], s.supplier_dc_inventory ?? [])))
           .catch(() => null)
       }
       if (session.status === 'active') {
@@ -691,7 +714,7 @@ export default function SimulationResultsPage() {
       // 404 = no active session, that's fine
     }
   }, [simulationId, runEndWeek, runFullConfig,
-      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
+      globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   useEffect(() => {
     if (pageState !== 'ready' || !runEndWeek) return
