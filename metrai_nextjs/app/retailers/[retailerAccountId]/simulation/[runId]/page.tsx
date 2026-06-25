@@ -104,29 +104,20 @@ function aggShipments(rows: any[]) {
   }))
 }
 
-function aggDCInv(dc: any[], sup: any[]) {
-  const dcOnHand   = new Map<string, number>()
-  const dcOnOrder  = new Map<string, number>()
-  const supOnHand  = new Map<string, number>()
-  const supOnOrder = new Map<string, number>()
+function aggDCInv(dc: any[], _sup: any[]) {
+  const dcOnHand  = new Map<string, number>()
+  const dcOnOrder = new Map<string, number>()
   for (const r of dc) {
     const w = r.inventory_week
     dcOnHand.set(w,  (dcOnHand.get(w)  ?? 0) + Number(r.on_hand_quantity))
     dcOnOrder.set(w, (dcOnOrder.get(w) ?? 0) + Number(r.on_order_quantity ?? 0))
   }
-  for (const r of sup) {
-    const w = r.inventory_week
-    supOnHand.set(w,  (supOnHand.get(w)  ?? 0) + Number(r.on_hand_quantity))
-    supOnOrder.set(w, (supOnOrder.get(w) ?? 0) + Number(r.on_order_quantity ?? 0))
-  }
-  const weeks = [...new Set([...dcOnHand.keys(), ...supOnHand.keys()])].sort()
-  return weeks.map(w => ({
-    week: w,
-    dc_inventory:          dcOnHand.get(w)   ?? 0,
-    dc_on_order:           dcOnOrder.get(w)  ?? 0,
-    supplier_dc_inventory: supOnHand.get(w)  ?? 0,
-    supplier_dc_on_order:  supOnOrder.get(w) ?? 0,
-  }))
+  const weeks = [...dcOnHand.keys()].sort()
+  return weeks.map(w => {
+    const onHand  = dcOnHand.get(w)  ?? 0
+    const onOrder = dcOnOrder.get(w) ?? 0
+    return { week: w, dc_on_hand: onHand, dc_on_order: onOrder, dc_available: onHand + onOrder }
+  })
 }
 
 function computeKPIs(pos: any[], shipments: any[]) {
@@ -249,40 +240,21 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
 
 function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) {
   if (!active || !payload?.length) return null
-  const d = payload[0]?.payload ?? {}
-  const rdcOnHand  = d.dc_inventory          ?? 0
-  const rdcOnOrder = d.dc_on_order           ?? 0
-  const sdcOnHand  = d.supplier_dc_inventory ?? 0
-  const sdcOnOrder = d.supplier_dc_on_order  ?? 0
-  const rdcStatus  = rdcOnHand === 0 && rdcOnOrder > 0 ? 'in-transit' : rdcOnHand === 0 ? 'stockout' : null
-  const sdcStatus  = sdcOnHand === 0 && sdcOnOrder > 0 ? 'in-transit' : sdcOnHand === 0 ? 'stockout' : null
+  const d         = payload[0]?.payload ?? {}
+  const available = d.dc_available ?? 0
+  const onOrder   = d.dc_on_order  ?? 0
+  const status    = available === 0 && onOrder > 0 ? 'in-transit' : available === 0 ? 'stockout' : null
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[190px]">
       <p className="mb-2 font-semibold text-charcoal-blue-700">{label}</p>
-      <div className="mb-1.5">
-        <p className="font-semibold text-indigo-600 mb-0.5">Retailer DC</p>
-        <p className="flex justify-between gap-4 text-charcoal-blue-700">
-          <span>On Hand</span><span className="font-medium">{rdcOnHand.toLocaleString()}</span>
-        </p>
-        <p className="flex justify-between gap-4 text-charcoal-blue-500">
-          <span>On Order</span><span className="font-medium">{rdcOnOrder.toLocaleString()}</span>
-        </p>
-        {rdcStatus === 'stockout'   && <p className="mt-0.5 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
-        {rdcStatus === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
-      </div>
-      {(sdcOnHand > 0 || sdcOnOrder > 0) && (
-        <div className="border-t border-charcoal-blue-100 pt-1.5">
-          <p className="font-semibold text-rose-500 mb-0.5">Supplier DC</p>
-          <p className="flex justify-between gap-4 text-charcoal-blue-700">
-            <span>On Hand</span><span className="font-medium">{sdcOnHand.toLocaleString()}</span>
-          </p>
-          <p className="flex justify-between gap-4 text-charcoal-blue-500">
-            <span>On Order</span><span className="font-medium">{sdcOnOrder.toLocaleString()}</span>
-          </p>
-          {sdcStatus === 'stockout'   && <p className="mt-0.5 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
-          {sdcStatus === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
-        </div>
-      )}
+      <p className="flex justify-between gap-4 text-charcoal-blue-700">
+        <span>Available</span><span className="font-medium">{available.toLocaleString()}</span>
+      </p>
+      <p className="flex justify-between gap-4 text-charcoal-blue-500">
+        <span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span>
+      </p>
+      {status === 'stockout'   && <p className="mt-0.5 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
+      {status === 'in-transit' && <p className="mt-0.5 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
     </div>
   )
 }
@@ -553,7 +525,7 @@ export default function SimulationResultsPage() {
   const [dcInvData, setDcInvData] = useState<any[]>([])
   const [dcInvError, setDcInvError] = useState('')
   const [dcInvLoading, setDcInvLoading] = useState(false)
-  const [dcViewMode, setDcViewMode] = useState<'both' | 'rdc_only'>('both')
+
 
   const [combinedPosDataForZoom, setCombinedPosDataForZoom] = useState<any[]>([])
   const zoom1 = useChartZoom(combinedPosDataForZoom)
@@ -1383,16 +1355,9 @@ export default function SimulationResultsPage() {
               {/* Chart 4 — DC Inventory */}
               <ChartShell
                 title="DC Inventory"
-                subtitle="Weekly on-hand inventory at Retailer DCs and Supplier DCs"
+                subtitle="Weekly inventory at Retailer DCs"
                 error={dcInvError} loading={dcInvLoading}
                 isZoomed={zoom4.isZoomed} onZoomReset={zoom4.resetZoom}
-                filters={
-                  <ToggleSegment
-                    value={dcViewMode}
-                    onChange={v => setDcViewMode(v as 'both' | 'rdc_only')}
-                    options={[{ value: 'both', label: 'Both' }, { value: 'rdc_only', label: 'Retailer DC only' }]}
-                  />
-                }
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
                     <ComposedChart data={zoom4.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
@@ -1404,10 +1369,8 @@ export default function SimulationResultsPage() {
                       <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
                       <Tooltip content={<DCInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                      <Line dataKey="dc_inventory" stroke="#6366f1" name="Retailer DC" type="monotone" strokeWidth={2} dot={false} />
-                      {dcViewMode === 'both' && (
-                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Supplier DC" type="monotone" strokeWidth={2} dot={false} />
-                      )}
+                      <Line dataKey="dc_available" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
+                      <Line dataKey="dc_on_order" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 2" />
                       {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
                     </ComposedChart>
                   </ResponsiveContainer>
