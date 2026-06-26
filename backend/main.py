@@ -188,6 +188,7 @@ def health():
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
+@app.post("/auth/register")
 @app.post("/register")
 def register(body: dict):
     username  = (body.get("username") or "").strip().lower()
@@ -376,6 +377,7 @@ def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
         "retailer_account_id": retailer_account_id,
     }
 
+@app.post("/auth/login")
 @app.post("/login")
 def login(credentials: dict):
     username = (credentials.get("username") or "").strip().lower()
@@ -442,6 +444,7 @@ def login(credentials: dict):
     }
 
 
+@app.post("/auth/refresh")
 @app.post("/refresh")
 def refresh_token(body: dict):
     raw_rt = body.get("refresh_token", "")
@@ -452,10 +455,18 @@ def refresh_token(body: dict):
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
+            # retailer_account_id lives on user_accounts (M:N), not users — pick the first link.
             cur.execute(
                 """
                 SELECT rt.user_id::text, rt.expires_at, rt.revoked,
-                       u.retailer_account_id::text, u.role, u.is_active
+                       (
+                         SELECT ua.retailer_account_id::text
+                         FROM user_accounts ua
+                         WHERE ua.user_id = rt.user_id
+                         ORDER BY ua.joined_at ASC
+                         LIMIT 1
+                       ) AS retailer_account_id,
+                       u.role, u.is_active
                 FROM refresh_tokens rt
                 JOIN users u ON rt.user_id = u.user_id
                 WHERE rt.token_hash = %s
@@ -470,6 +481,7 @@ def refresh_token(body: dict):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     user_id, expires_at, revoked, retailer_account_id, role, is_active = row
+    retailer_account_id = retailer_account_id or ""
 
     if revoked or not is_active:
         raise HTTPException(status_code=401, detail="Token revoked")
@@ -492,6 +504,7 @@ def refresh_token(body: dict):
     }
 
 
+@app.post("/auth/logout")
 @app.post("/logout")
 def logout(body: dict, current_user: dict = Depends(get_current_user)):
     raw_rt = body.get("refresh_token", "")
@@ -503,24 +516,42 @@ def logout(body: dict, current_user: dict = Depends(get_current_user)):
 # ── Run history ───────────────────────────────────────────────────────────────
 
 @app.get("/runs")
-def get_runs(current_user: dict = Depends(get_current_user)):
+def get_runs(
+    current_user: dict = Depends(get_current_user),
+    scenario_type: str | None = None,
+):
     retailer_account_id = current_user.get("retailer_account_id") or ""
     user_id             = current_user["user_id"]
     if not POSTGRES_DSN or not retailer_account_id:
         return []
+
+    if scenario_type == "no_scenario":
+        scenario_filter = "AND scenario_type IS NULL"
+        scenario_params: tuple = ()
+    elif scenario_type:
+        scenario_filter = "AND scenario_type = %s"
+        scenario_params = (scenario_type,)
+    else:
+        scenario_filter = ""
+        scenario_params = ()
+
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT simulation_id::text, simulation_name, simulation_status,
-                       created_at, start_week, end_week, random_seed, notes
+                       created_at, start_week, end_week, random_seed, notes,
+                       COALESCE(simulation_granularity, 'weekly') AS simulation_granularity,
+                       COALESCE(scenario_type, 'no_scenario') AS scenario_type,
+                       COALESCE(is_extended, FALSE) AS is_extended,
+                       COALESCE(extension_count, 0) AS extension_count
                 FROM simulation_config
-                WHERE retailer_account_id = %s AND user_id = %s
+                WHERE retailer_account_id = %s AND user_id = %s {scenario_filter}
                 ORDER BY created_at DESC
                 LIMIT 50
                 """,
-                (retailer_account_id, user_id),
+                (retailer_account_id, user_id) + scenario_params,
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -528,7 +559,8 @@ def get_runs(current_user: dict = Depends(get_current_user)):
                 for k, v in row.items():
                     if hasattr(v, "isoformat"):
                         row[k] = v.isoformat()
-            logger.info("GET /runs — user=%s account=%s returned %d runs", user_id, retailer_account_id, len(rows))
+            logger.info("GET /runs — user=%s account=%s scenario=%s returned %d runs",
+                        user_id, retailer_account_id, scenario_type, len(rows))
             return rows
     finally:
         conn.close()
@@ -575,97 +607,94 @@ def get_entities(current_user: dict = Depends(get_current_user)):
 # ── Run YAML template ────────────────────────────────────────────────────────
 
 @app.get("/run-yaml-template")
-def get_run_yaml_template(current_user: dict = Depends(get_current_user)):
-    """Generate a pre-filled entity-first YAML run config for this retailer account."""
-    import hashlib
+def get_run_yaml_template(
+    current_user: dict = Depends(get_current_user),
+    store_target_wos: int = 2,
+    store_initial_wos: int = 2,
+    retailer_dc_target_wos: int = 4,
+    retailer_dc_initial_wos: int = 4,
+    supplier_dc_initial_wos: int = 4,
+    retailer_dc_to_store_lead_weeks: int = 1,
+    supplier_dc_to_retailer_dc_lead_weeks: int = 1,
+    dc_otd_rate: float = 0.95,
+    dc_in_full_rate: float = 0.95,
+    supplier_otd_rate: float = 0.95,
+    supplier_in_full_rate: float = 0.95,
+):
+    """Pre-filled YAML template using the retailer's actual DCs and suppliers."""
+    import yaml as _yaml
 
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
 
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, retailer_account_id)
+    dcs: list[str] = []
+    suppliers: list[str] = []
+    if retailer_account_id:
+        conn = _pg_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT dc_code FROM distribution_centers "
+                    "WHERE retailer_account_id = %s AND COALESCE(dc_type, '') != 'SUPPLIER' ORDER BY dc_code",
+                    (retailer_account_id,),
+                )
+                dcs = [r[0] for r in cur.fetchall()]
 
-            def q(sql, params):
-                cur.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in cur.fetchall()]
+                cur.execute(
+                    "SELECT supplier_code FROM suppliers WHERE retailer_account_id = %s ORDER BY supplier_code",
+                    (retailer_account_id,),
+                )
+                suppliers = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
 
-            acct = (data_acct,)
-            supplier_dcs = q(
-                "SELECT dc_code FROM distribution_centers "
-                "WHERE retailer_account_id = %s AND dc_role = 'SUPPLIER_DC' ORDER BY dc_code", acct
-            )
-            retailer_dcs = q(
-                "SELECT dc_code FROM distribution_centers "
-                "WHERE retailer_account_id = %s AND COALESCE(dc_role, 'RETAILER_DC') = 'RETAILER_DC' ORDER BY dc_code", acct
-            )
-            stores = q(
-                "SELECT store_code FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct
-            )
-    finally:
-        conn.close()
+    template: dict = {
+        "run": {
+            "retailer_account_id":                    retailer_account_id,
+            "simulation_name":                        "New Simulation Run",
+            "notes":                                  "",
+            "start_date":                             "2024-01-01",
+            "end_date":                               "2024-12-31",
+            "seed":                                   42,
+            "store_target_wos":                       store_target_wos,
+            "store_initial_wos":                      store_initial_wos,
+            "retailer_dc_target_wos":                 retailer_dc_target_wos,
+            "retailer_dc_initial_wos":                retailer_dc_initial_wos,
+            "supplier_dc_initial_wos":                supplier_dc_initial_wos,
+            "supplier_dc_to_retailer_dc_lead_weeks":  supplier_dc_to_retailer_dc_lead_weeks,
+            "retailer_dc_to_store_lead_weeks":        retailer_dc_to_store_lead_weeks,
+            "supplier_otd_rate":                      supplier_otd_rate,
+            "supplier_in_full_rate":                  supplier_in_full_rate,
+            "dc_otd_rate":                            dc_otd_rate,
+            "dc_in_full_rate":                        dc_in_full_rate,
+        }
+    }
 
-    def _hash_f(code: str, lo: float, hi: float, step: float = 0.01) -> float:
-        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
-        steps = int((hi - lo) / step)
-        return round(lo + (h % (steps + 1)) * step, 2)
+    if dcs:
+        template["run"]["dcs"] = {
+            dc: {
+                "otd_rate":            dc_otd_rate,
+                "in_full_rate":        dc_in_full_rate,
+                "lead_weeks_to_store": retailer_dc_to_store_lead_weeks,
+                "target_wos":          retailer_dc_target_wos,
+                "initial_wos":         retailer_dc_initial_wos,
+            }
+            for dc in dcs
+        }
 
-    def _hash_i(code: str, lo: int, hi: int) -> int:
-        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
-        return lo + (h % (hi - lo + 1))
+    if suppliers:
+        template["run"]["suppliers"] = {
+            sup: {
+                "otd_rate":     supplier_otd_rate,
+                "in_full_rate": supplier_in_full_rate,
+                "lead_weeks":   supplier_dc_to_retailer_dc_lead_weeks,
+                "initial_wos":  supplier_dc_initial_wos,
+            }
+            for sup in suppliers
+        }
 
-    lines = [
-        'run:',
-        '  simulation_name: "My Simulation Run"',
-        '  start_date: "2024-01-01"',
-        '  end_date:   "2026-06-30"',
-        '  seed: 42',
-        '',
-        '  store_target_wos:        2',
-        '  retailer_dc_target_wos:  4',
-        '  supplier_dc_initial_wos: 4',
-    ]
-
-    if supplier_dcs:
-        lines += ['', '  suppliers:']
-        for row in supplier_dcs:
-            code = row["dc_code"]
-            lines += [
-                f'    {code}:',
-                f'      on_time:     {_hash_f(code + "_ot", 0.88, 0.97)}',
-                f'      partial:     {_hash_f(code + "_pt", 0.03, 0.09)}',
-                f'      lead_weeks:  {_hash_i(code + "_lw", 1, 2)}',
-                f'      initial_wos: {_hash_i(code + "_iwos", 5, 8)}',
-            ]
-
-    if retailer_dcs:
-        lines += ['', '  dcs:']
-        for row in retailer_dcs:
-            code = row["dc_code"]
-            lines += [
-                f'    {code}:',
-                f'      on_time:             {_hash_f(code + "_ot", 0.90, 0.97)}',
-                f'      partial:             {_hash_f(code + "_pt", 0.03, 0.07)}',
-                f'      lead_weeks_to_store: {_hash_i(code + "_lw", 1, 2)}',
-                f'      target_wos:          {_hash_i(code + "_wos", 4, 6)}',
-                f'      initial_wos:         {_hash_i(code + "_iwos", 4, 7)}',
-            ]
-
-    if stores:
-        lines += ['', '  stores:']
-        for row in stores:
-            code = row["store_code"]
-            lines += [
-                f'    {code}:',
-                f'      target_wos:  {_hash_i(code + "_wos", 2, 3)}',
-                f'      initial_wos: {_hash_i(code + "_iwos", 2, 4)}',
-            ]
-
-    lines.append('')
-    return {"yaml": '\n'.join(lines)}
+    return {"yaml": _yaml.dump(template, default_flow_style=False, sort_keys=False, allow_unicode=True)}
 
 
 # ── Network mappings ──────────────────────────────────────────────────────────

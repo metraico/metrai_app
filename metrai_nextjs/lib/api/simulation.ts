@@ -1,4 +1,4 @@
-import { engineClient } from './client'
+import { apiClient, engineClient } from './client'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,18 +55,14 @@ export const runSimulation = (yamlContent: string, promoYamlContent = '', scenar
 export const pollSimulationUntilDone = (result: RunYamlResponse) =>
   Promise.resolve(result)
 
-// GET /run-config/{simulation_id}
+// GET /run-config/{simulation_id} — app-backend proxies to sim-engine
 export const getRunConfig = (simulationId: string) =>
-  engineClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
+  apiClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
 
-// GET /runs?retailer_account_id=&user_id=&scenario_type=
-export const getRuns = (retailerAccountId: string, userId: string, scenarioType?: string) =>
-  engineClient.get<SimulationRun[]>('/runs', {
-    params: {
-      retailer_account_id: retailerAccountId,
-      user_id: userId,
-      ...(scenarioType ? { scenario_type: scenarioType } : {}),
-    }
+// GET /runs?scenario_type=  (retailer_account_id and user_id derived from JWT by app-backend)
+export const getRuns = (_retailerAccountId: string, _userId: string, scenarioType?: string) =>
+  apiClient.get<SimulationRun[]>('/runs', {
+    params: { ...(scenarioType ? { scenario_type: scenarioType } : {}) },
   }).then(r => r.data)
 
 // GET /run-yaml-template
@@ -86,10 +82,9 @@ export interface YamlTemplateParams {
 }
 
 export const getRunYamlTemplate = (params: YamlTemplateParams = {}) => {
-  const { retailerAccountId, ...rest } = params
-  return engineClient.get<{ yaml: string }>('/run-yaml-template', {
-    params: { ...(retailerAccountId ? { retailer_account_id: retailerAccountId } : {}), ...rest },
-  }).then(r => r.data)
+  // retailer_account_id is derived from the JWT by app-backend; drop it from params.
+  const { retailerAccountId: _ignored, ...rest } = params
+  return apiClient.get<{ yaml: string }>('/run-yaml-template', { params: rest }).then(r => r.data)
 }
 
 // GET /simulation/{simulation_id} — full ClickHouse output (available after background write)

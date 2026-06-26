@@ -1,14 +1,22 @@
-import { engineClient } from './client'
+import { apiClient } from './client'
 import type { RetailerAccount, CreateRetailerRequest, CreateRetailerResponse } from './types'
 
-// GET /retailers → { retailers: RetailerAccount[] }
+// GET /accounts → RetailerAccount[]
 export const getRetailers = () =>
-  engineClient.get<{ retailers: RetailerAccount[] }>('/retailers').then(r => r.data.retailers)
+  apiClient.get<RetailerAccount[]>('/accounts').then(r => r.data)
 
-// POST /retailers → CreateRetailerResponse
+// POST /accounts — app-backend auto-generates the account code from the name.
 export const createRetailer = (data: CreateRetailerRequest) =>
-  engineClient.post<CreateRetailerResponse>('/retailers', data).then(r => r.data)
+  apiClient.post<CreateRetailerResponse>('/accounts', {
+    account_name:  data.retailer_account_name,
+    account_type:  'GROCERY',
+    country_code:  data.country_code,
+    currency_code: data.currency_code,
+  }).then(r => r.data)
 
-// No switch-account on engine — kept for compat, always rejects (caller falls through to catch)
-export const switchAccount = (_retailerAccountId: string): Promise<{ access_token: string; refresh_token: string; retailer_account_id: string }> =>
-  Promise.reject(new Error('no-op'))
+// POST /switch-account — mints a new JWT with retailer_account_id embedded
+export const switchAccount = (retailerAccountId: string): Promise<{ access_token: string; refresh_token: string; retailer_account_id: string }> =>
+  apiClient.post<{ access_token: string; refresh_token: string; retailer_account_id: string }>(
+    '/switch-account',
+    { retailer_account_id: retailerAccountId },
+  ).then(r => r.data)
