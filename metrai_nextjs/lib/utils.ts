@@ -23,3 +23,19 @@ export function toIsoWeek(dateStr: string): string {
   const weekNum = Math.round((thursday.getTime() - firstThursday.getTime()) / (7 * 24 * 3600 * 1000)) + 1
   return `${isoYear}-W${String(weekNum).padStart(2, '0')}`
 }
+
+/** YYYY-MM-DD → MM-DD-YYYY for display and YAML generation. Passes through anything that doesn't match. */
+export function formatDateUS(iso: string): string {
+  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return iso
+  return `${m[2]}-${m[3]}-${m[1]}`
+}
+
+/** MM-DD-YYYY or YYYY-MM-DD → YYYY-MM-DD for internal use after reading from user input or YAML. */
+export function parseToISO(dateStr: string): string {
+  if (!dateStr) return dateStr
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr
+  const m = dateStr.match(/^(\d{2})-(\d{2})-(\d{4})$/)
+  if (m) return `${m[3]}-${m[1]}-${m[2]}`
+  return dateStr
+}

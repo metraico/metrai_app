@@ -11,7 +11,7 @@ import { Tabs, TabsContent } from '@/components/ui/tabs'
 import yaml from 'js-yaml'
 import type { SimulatePreviewResponse } from '@/lib/api/types'
 import { SCENARIOS, NO_SCENARIO, type ScenarioId } from '@/lib/scenarios'
-import { cn } from '@/lib/utils'
+import { cn, formatDateUS } from '@/lib/utils'
 
 interface RunFormValues {
   simulation_name: string
@@ -263,7 +263,7 @@ export default function NewSimulationPage() {
     if (selectedScenario === 'promo_forecast' && promoPreview?.promos?.length) {
       const lines = ['scenario_type: promo_forecast', 'promos:']
       for (const p of promoPreview.promos) {
-        lines.push(`  - promo_name: ${p.promo_name}    # ${p.start_date} → ${p.end_date} | base: ${p.demand_multiplier}x`)
+        lines.push(`  - promo_name: ${p.promo_name}    # ${formatDateUS(p.start_date)} → ${formatDateUS(p.end_date)} | base: ${p.demand_multiplier}x`)
         lines.push(`    performance_adjustment: 0    # 0 to 200 (%)`)
         lines.push('')
       }
@@ -712,7 +712,7 @@ export default function NewSimulationPage() {
                                       <td className="px-2 py-1">
                                         <span className="rounded bg-majorelle-blue-50 px-1 py-0.5 font-bold text-majorelle-blue-600">{p.event_type || '—'}</span>
                                       </td>
-                                      <td className="px-2 py-1 whitespace-nowrap text-charcoal-blue-400">{p.start_date} → {p.end_date}</td>
+                                      <td className="px-2 py-1 whitespace-nowrap text-charcoal-blue-400">{formatDateUS(p.start_date)} → {formatDateUS(p.end_date)}</td>
                                       <td className="px-2 py-1 text-center font-bold text-emerald-600">{p.demand_multiplier}×</td>
                                     </tr>
                                   ))}
@@ -887,7 +887,7 @@ export default function NewSimulationPage() {
                         <div>
                           <p className="text-xs font-bold text-charcoal-blue-950">{p.promo_name}</p>
                           <p className="text-[10px] text-charcoal-blue-400">
-                            {p.start_date} → {p.end_date} · {p.store_count} stores · {p.item_count} items
+                            {formatDateUS(p.start_date)} → {formatDateUS(p.end_date)} · {p.store_count} stores · {p.item_count} items
                           </p>
                         </div>
                         <span className="rounded-full border border-majorelle-blue-200 px-2 py-0.5 text-[9px] font-semibold text-majorelle-blue-500 whitespace-nowrap">

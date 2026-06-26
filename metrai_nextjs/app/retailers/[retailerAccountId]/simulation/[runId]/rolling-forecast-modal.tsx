@@ -16,7 +16,7 @@ import {
 } from 'recharts'
 import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown } from 'lucide-react'
 import type { PromoGroupResponse, PromoResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
-import { toIsoWeek } from '@/lib/utils'
+import { toIsoWeek, formatDateUS, parseToISO } from '@/lib/utils'
 
 // ── Shared primitives (same as extend-modal) ─────────────────────────────────
 
@@ -60,25 +60,25 @@ function buildRollingSessionYaml(totalEndDate: string): string {
     `# Each promo entry:`,
     `#   name        — must match a promo group name in the catalog (drives item associations)`,
     `#   promo_name  — optional: specific promo type e.g. BOGO_Ad, 2/$6 (display/audit only)`,
-    `#   start/end   — YYYY-MM-DD, end must be >= start`,
+    `#   start/end   — MM-DD-YYYY, end must be >= start`,
     `#   multiplier  — 1.0 = baseline, 1.25 = +25% demand boost`,
     ``,
-    `total_end_date: "${totalEndDate}"`,
+    `total_end_date: "${formatDateUS(totalEndDate)}"`,
     ``,
     `promos: []`,
   ].join('\n')
 }
 
-/** Parse total_end_date out of the YAML string without a full parser (simple regex). */
+/** Parse total_end_date out of the YAML string. Returns YYYY-MM-DD regardless of input format. */
 function extractTotalEndDate(yaml: string): string {
-  const m = yaml.match(/^total_end_date:\s*["']?(\d{4}-\d{2}-\d{2})["']?/m)
-  return m ? m[1] : ''
+  const m = yaml.match(/^total_end_date:\s*["']?(\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})["']?/m)
+  return m ? parseToISO(m[1]) : ''
 }
 
-/** Replace the total_end_date line in the YAML with a new date. */
+/** Replace the total_end_date line in the YAML with a new date (written as MM-DD-YYYY). */
 function replaceTotalEndDate(yaml: string, newDate: string): string {
   return yaml.replace(
-    /^(total_end_date:\s*)["']?\d{4}-\d{2}-\d{2}["']?/m,
+    /^(total_end_date:\s*)["']?(?:\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})["']?/m,
     `$1"${newDate}"`,
   )
 }
@@ -95,7 +95,7 @@ function appendPromoSnippet(
   const nameLines = promoName
     ? `  - name: "${promoGroupName}"\n    promo_name: "${promoName}"\n`
     : `  - name: "${promoGroupName}"\n`
-  const snippet = `${nameLines}    start: "${startDate}"\n    end: "${endDate}"\n    multiplier: ${multiplier}`
+  const snippet = `${nameLines}    start: "${formatDateUS(startDate)}"\n    end: "${formatDateUS(endDate)}"\n    multiplier: ${multiplier}`
 
   // Replace `promos: []` with a proper list
   if (/promos:\s*\[\]/.test(yaml)) {
@@ -108,9 +108,9 @@ function appendPromoSnippet(
 /** Lightweight YAML validation — returns null if OK, error message if not. */
 function validateRollingYaml(yaml: string): string | null {
   const endDate = extractTotalEndDate(yaml)
-  if (!endDate) return 'total_end_date is required (format: YYYY-MM-DD)'
-  // Check it looks like a date
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid YYYY-MM-DD date`
+  if (!endDate) return 'total_end_date is required (format: MM-DD-YYYY)'
+  // extractTotalEndDate normalises to YYYY-MM-DD internally
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid date`
   return null
 }
 
@@ -204,7 +204,7 @@ export function RollingForecastModal({
           if (r.promo_name && r.promo_name !== r.promo_group_name) {
             lines.push(`    promo_name: "${r.promo_name}"`)
           }
-          lines.push(`    start: "${r.start_date}"`, `    end: "${r.end_date}"`, `    multiplier: ${r.demand_multiplier}`)
+          lines.push(`    start: "${formatDateUS(r.start_date)}"`, `    end: "${formatDateUS(r.end_date)}"`, `    multiplier: ${r.demand_multiplier}`)
           return lines.join('\n')
         }).join('\n\n')
         yaml = yaml.replace(/promos:\s*\[\]/, `promos:\n${promoLines}`)
@@ -227,10 +227,11 @@ export function RollingForecastModal({
 
   // ── Date picker changes update the YAML ───────────────────────────────────
   function handleDatePickerChange(newDate: string) {
+    // HTML date input returns YYYY-MM-DD; store internally as YYYY-MM-DD but write MM-DD-YYYY to YAML
     setTotalEndDate(newDate)
     setYamlContent(prev => {
       if (extractTotalEndDate(prev)) {
-        return replaceTotalEndDate(prev, newDate)
+        return replaceTotalEndDate(prev, formatDateUS(newDate))
       }
       return buildRollingSessionYaml(newDate)
     })
@@ -636,7 +637,7 @@ export function RollingForecastModal({
                         Next Chunk
                       </p>
                       <p className="text-xs font-bold text-charcoal-blue-800">
-                        {currentStart} → {nextChunkEnd}
+                        {formatDateUS(currentStart)} → {formatDateUS(nextChunkEnd)}
                         <span className="ml-2 font-normal text-charcoal-blue-500">(4 weeks)</span>
                       </p>
                     </div>
@@ -660,7 +661,7 @@ export function RollingForecastModal({
                 <div className="text-center">
                   <p className="text-sm font-bold text-charcoal-blue-800">Running simulation chunk…</p>
                   <p className="text-xs text-charcoal-blue-400 mt-1">
-                    {currentStart} → {chunkEndDate}
+                    {formatDateUS(currentStart)} → {formatDateUS(chunkEndDate)}
                   </p>
                 </div>
               </div>
@@ -748,7 +749,7 @@ export function RollingForecastModal({
                   <p className="text-sm font-bold text-charcoal-blue-800">Rolling forecast complete!</p>
                   <p className="text-xs text-charcoal-blue-500 mt-1">
                     All chunks have been committed.
-                    Your simulation now covers through {session?.total_end_date ?? totalEnd}.
+                    Your simulation now covers through {formatDateUS(session?.total_end_date ?? totalEnd)}.
                   </p>
                 </div>
                 <button
