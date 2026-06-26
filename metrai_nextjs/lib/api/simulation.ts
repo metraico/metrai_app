@@ -13,7 +13,7 @@ const CHUNK_WEEKS = 4
  * `performance` entry with schedule_id and pct: 0.
  */
 export function buildRunChunkYaml(
-  promos: { id: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
+  promos: { id: string; promo_name?: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
   chunkStart: string,
   chunkEnd: string,
   sessionId?: string,
@@ -33,7 +33,7 @@ export function buildRunChunkYaml(
   const entries = promos.map(p =>
     [
       `  - schedule_id: "${p.id}"`,
-      `    pct: 0        # ${p.promo_group_name}  ${p.start_date} → ${p.end_date}`,
+      `    pct: 0        # ${p.promo_name ? `${p.promo_name} (${p.promo_group_name})` : p.promo_group_name}  ${p.start_date} → ${p.end_date}`,
     ].join('\n')
   ).join('\n\n')
 
@@ -244,6 +244,7 @@ export const getSessionPromoSchedules = (
 ) =>
   engineClient.get<{
     id: string
+    promo_name: string
     promo_group_name: string
     start_date: string
     end_date: string

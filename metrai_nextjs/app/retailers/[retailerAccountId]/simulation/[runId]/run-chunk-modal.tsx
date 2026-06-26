@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Loader2, AlertCircle, Plus } from 'lucide-react'
 import { getSessionPromoSchedules, runRollingChunkYaml, buildRunChunkYaml } from '@/lib/api/simulation'
-import { getPromoGroups } from '@/lib/api/promos'
-import type { RollingForecastSession, RunChunkResponse, PromoGroupResponse } from '@/lib/api/types'
+import { getPromoGroups, getPromos } from '@/lib/api/promos'
+import type { RollingForecastSession, RunChunkResponse, PromoGroupResponse, PromoResponse } from '@/lib/api/types'
 import yaml from 'js-yaml'
 
 const CHUNK_WEEKS = 4
@@ -60,6 +60,7 @@ export function RunChunkModal({
 
   // Promo groups for the "Add promo" picker
   const [promoGroups, setPromoGroups] = useState<PromoGroupResponse[]>([])
+  const [promosCatalog, setPromosCatalog] = useState<PromoResponse[]>([])
   const [showPicker, setShowPicker] = useState(false)
 
   // Fetch active promo schedule entries for this chunk window and promo groups on open.
@@ -86,6 +87,9 @@ export function RunChunkModal({
     getPromoGroups(session.retailer_account_id)
       .then(setPromoGroups)
       .catch(err => console.error('Failed to load promo groups', err))
+    getPromos(session.retailer_account_id)
+      .then(setPromosCatalog)
+      .catch(err => console.error('Failed to load promos catalog', err))
   }, [open, session.session_id, session.retailer_account_id, currentStart, chunkEndDate])
 
   /** Names already present in the YAML textarea (to filter picker). */
@@ -93,17 +97,18 @@ export function RunChunkModal({
     const found = new Set<string>()
     const lines = yamlText.split('\n')
     for (const line of lines) {
-      const m = line.match(/promo_group_name:\s*["']?([^"'\n]+)["']?/)
+      const m = line.match(/(?:promo_group_name|promo_name):\s*["']?([^"'\n]+)["']?/)
       if (m) found.add(m[1].trim())
     }
     return found
   }
 
-  function appendPromoBlock(groupName: string) {
+  function appendPromoBlock(promo: PromoResponse) {
     const block = [
       '',
       `  - schedule_id: ""`,
-      `    promo_group_name: ${groupName}`,
+      `    promo_group_name: ${promo.promo_group_name ?? promo.promo_name}`,
+      `    promo_name: ${promo.promo_name}`,
       `    pct: 0`,
     ].join('\n')
 
@@ -141,7 +146,19 @@ export function RunChunkModal({
   }
 
   const unavailableNames = namesInYaml()
+
+  // Build a map of group name → individual promos for grouped picker display
+  const promosByGroup = promosCatalog.reduce<Record<string, PromoResponse[]>>((acc, p) => {
+    const key = p.promo_group_name ?? ''
+    if (key) { acc[key] = acc[key] ?? []; acc[key].push(p) }
+    return acc
+  }, {})
+
   const pickerGroups = promoGroups.filter(g => !unavailableNames.has(g.promo_group_name))
+  // Individual promos available to add (not already in the YAML)
+  const pickerPromos = promosCatalog.filter(p =>
+    !unavailableNames.has(p.promo_group_name ?? '') && !unavailableNames.has(p.promo_name)
+  )
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
@@ -198,25 +215,52 @@ export function RunChunkModal({
                   >
                     <Plus size={10} /> Add promo
                   </button>
-                  {showPicker && pickerGroups.length > 0 && (
-                    <div className="absolute right-0 top-full mt-1 z-10 w-52 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg overflow-hidden">
-                      <div className="max-h-48 overflow-y-auto">
-                        {pickerGroups.map(g => (
-                          <button
-                            key={g.promo_group_id}
-                            type="button"
-                            onClick={() => appendPromoBlock(g.promo_group_name)}
-                            className="w-full text-left px-3 py-2 text-[10px] text-charcoal-blue-800 hover:bg-charcoal-blue-50 truncate"
-                          >
-                            {g.promo_group_name}
-                          </button>
-                        ))}
+                  {showPicker && (pickerPromos.length > 0 || pickerGroups.length > 0) && (
+                    <div className="absolute right-0 top-full mt-1 z-10 w-64 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg overflow-hidden">
+                      <div className="max-h-56 overflow-y-auto">
+                        {pickerGroups.map(g => {
+                          const groupPromos = (promosByGroup[g.promo_group_name] ?? []).filter(
+                            p => !unavailableNames.has(p.promo_name)
+                          )
+                          if (groupPromos.length === 0 && unavailableNames.has(g.promo_group_name)) return null
+                          return (
+                            <div key={g.promo_group_id}>
+                              <p className="px-3 pt-2 pb-0.5 text-[9px] font-bold uppercase tracking-widest text-charcoal-blue-400">
+                                {g.promo_group_name}
+                              </p>
+                              {groupPromos.length > 0 ? (
+                                groupPromos.map(p => (
+                                  <button
+                                    key={p.promo_id}
+                                    type="button"
+                                    onClick={() => appendPromoBlock(p)}
+                                    className="flex w-full items-center gap-2 px-3 py-1.5 text-[10px] text-charcoal-blue-800 hover:bg-charcoal-blue-50"
+                                  >
+                                    <Plus size={9} className="flex-shrink-0 text-amber-500" />
+                                    <span className="flex-1 truncate font-semibold">{p.promo_name}</span>
+                                    <span className="text-charcoal-blue-400 tabular-nums">×{p.demand_multiplier.toFixed(2)}</span>
+                                  </button>
+                                ))
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => appendPromoBlock({ ...g, promo_id: g.promo_group_id, promo_name: g.promo_group_name, event_type: '', start_date: null, end_date: null, demand_multiplier: 1.0, post_promo_decay_days: 0, post_promo_decay_shape: 'LINEAR', store_ids: [] } as PromoResponse)}
+                                  className="flex w-full items-center gap-2 px-3 py-1.5 text-[10px] text-charcoal-blue-800 hover:bg-charcoal-blue-50"
+                                >
+                                  <Plus size={9} className="flex-shrink-0 text-amber-500" />
+                                  <span className="flex-1 truncate font-semibold">{g.promo_group_name}</span>
+                                  <span className="text-charcoal-blue-400">×1.00</span>
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
-                  {showPicker && pickerGroups.length === 0 && (
+                  {showPicker && pickerPromos.length === 0 && pickerGroups.length === 0 && (
                     <div className="absolute right-0 top-full mt-1 z-10 w-52 rounded-xl border border-charcoal-blue-200 bg-white shadow-lg px-3 py-2 text-[10px] text-charcoal-blue-400">
-                      All promo groups already added
+                      All promos already added
                     </div>
                   )}
                 </div>
