@@ -501,6 +501,7 @@ export default function SimulationResultsPage() {
   const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
   const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
+  const analyticsStatusRef = useRef<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
   const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -769,7 +770,11 @@ export default function SimulationResultsPage() {
     try {
       const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
       const data = await getStoreInventory(simulationId, p)
-      setStoreInvData(aggStoreInv(data.store_inventory ?? []))
+      const rows = aggStoreInv(data.store_inventory ?? [])
+      setStoreInvData(rows)
+      if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
+        setAnalyticsStatus('PENDING')
+      }
     } catch (e: any) { setStoreInvError(e?.message ?? 'Failed') }
     finally { setStoreInvLoading(false) }
   }, [simulationId])
@@ -801,7 +806,11 @@ export default function SimulationResultsPage() {
         subcategory:    subcategory || undefined,
         brand:          brand    || undefined,
       })
-      setDcInvData(aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? []))
+      const rows = aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? [])
+      setDcInvData(rows)
+      if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
+        setAnalyticsStatus('PENDING')
+      }
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
     finally { setDcInvLoading(false) }
   }, [simulationId])
@@ -923,18 +932,17 @@ export default function SimulationResultsPage() {
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
   }, [analyticsStatus])
 
-  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse
-  // Delay all fetches by 4s to ensure CH writes are fully complete before querying
+  // Keep ref in sync so fetch callbacks can read current status without stale closure
+  useEffect(() => { analyticsStatusRef.current = analyticsStatus }, [analyticsStatus])
+
+  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse immediately
   useEffect(() => {
     if (analyticsStatus !== 'READY') return
-    const t = setTimeout(() => {
-      loadSummary()
-      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
-      fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
-    }, 4000)
-    return () => clearTimeout(t)
+    loadSummary()
+    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
 
