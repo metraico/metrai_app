@@ -6,7 +6,7 @@ import {
   generateExtensionDemand, getDemandStatus, getDemandWeeklyTotals,
   createRollingSessionYaml, runRollingChunk, recalculateRollingDemand, getSessionPromoSchedules,
 } from '@/lib/api/simulation'
-import { getPromoGroups } from '@/lib/api/promos'
+import { getPromoGroups, getPromos } from '@/lib/api/promos'
 import {
   Dialog, DialogContent, DialogTitle,
 } from '@/components/ui/dialog'
@@ -15,8 +15,8 @@ import {
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
 import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown } from 'lucide-react'
-import type { PromoGroupResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
-import { toIsoWeek } from '@/lib/utils'
+import type { PromoGroupResponse, PromoResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
+import { toIsoWeek, formatDateUS, parseToISO } from '@/lib/utils'
 
 // ── Shared primitives (same as extend-modal) ─────────────────────────────────
 
@@ -58,33 +58,44 @@ function buildRollingSessionYaml(totalEndDate: string): string {
     `# promos: list of promo groups to schedule — add them with the "Add promo" button below`,
     `#`,
     `# Each promo entry:`,
-    `#   name        — must match a promo group name in the catalog`,
-    `#   start/end   — YYYY-MM-DD, end must be >= start`,
+    `#   name        — must match a promo group name in the catalog (drives item associations)`,
+    `#   promo_name  — optional: specific promo type e.g. BOGO_Ad, 2/$6 (display/audit only)`,
+    `#   start/end   — MM-DD-YYYY, end must be >= start`,
     `#   multiplier  — 1.0 = baseline, 1.25 = +25% demand boost`,
     ``,
-    `total_end_date: "${totalEndDate}"`,
+    `total_end_date: "${formatDateUS(totalEndDate)}"`,
     ``,
     `promos: []`,
   ].join('\n')
 }
 
-/** Parse total_end_date out of the YAML string without a full parser (simple regex). */
+/** Parse total_end_date out of the YAML string. Returns YYYY-MM-DD regardless of input format. */
 function extractTotalEndDate(yaml: string): string {
-  const m = yaml.match(/^total_end_date:\s*["']?(\d{4}-\d{2}-\d{2})["']?/m)
-  return m ? m[1] : ''
+  const m = yaml.match(/^total_end_date:\s*["']?(\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})["']?/m)
+  return m ? parseToISO(m[1]) : ''
 }
 
-/** Replace the total_end_date line in the YAML with a new date. */
+/** Replace the total_end_date line in the YAML with a new date (written as MM-DD-YYYY). */
 function replaceTotalEndDate(yaml: string, newDate: string): string {
   return yaml.replace(
-    /^(total_end_date:\s*)["']?\d{4}-\d{2}-\d{2}["']?/m,
+    /^(total_end_date:\s*)["']?(?:\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})["']?/m,
     `$1"${newDate}"`,
   )
 }
 
 /** Append a promo snippet at the end of the YAML (replacing `promos: []` if present). */
-function appendPromoSnippet(yaml: string, promoName: string, startDate: string, endDate: string): string {
-  const snippet = `  - name: "${promoName}"\n    start: "${startDate}"\n    end: "${endDate}"\n    multiplier: 1.0`
+function appendPromoSnippet(
+  yaml: string,
+  promoGroupName: string,
+  promoName: string | null,
+  startDate: string,
+  endDate: string,
+  multiplier = 1.0,
+): string {
+  const nameLines = promoName
+    ? `  - name: "${promoGroupName}"\n    promo_name: "${promoName}"\n`
+    : `  - name: "${promoGroupName}"\n`
+  const snippet = `${nameLines}    start: "${formatDateUS(startDate)}"\n    end: "${formatDateUS(endDate)}"\n    multiplier: ${multiplier}`
 
   // Replace `promos: []` with a proper list
   if (/promos:\s*\[\]/.test(yaml)) {
@@ -97,9 +108,9 @@ function appendPromoSnippet(yaml: string, promoName: string, startDate: string, 
 /** Lightweight YAML validation — returns null if OK, error message if not. */
 function validateRollingYaml(yaml: string): string | null {
   const endDate = extractTotalEndDate(yaml)
-  if (!endDate) return 'total_end_date is required (format: YYYY-MM-DD)'
-  // Check it looks like a date
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid YYYY-MM-DD date`
+  if (!endDate) return 'total_end_date is required (format: MM-DD-YYYY)'
+  // extractTotalEndDate normalises to YYYY-MM-DD internally
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid date`
   return null
 }
 
@@ -143,6 +154,7 @@ export function RollingForecastModal({
   const [yamlContent, setYamlContent] = useState(() => buildRollingSessionYaml(''))
   const [yamlError, setYamlError] = useState<string | null>(null)
   const [promoGroupCatalog, setPromoGroupCatalog] = useState<PromoGroupResponse[]>([])
+  const [promosCatalog, setPromosCatalog] = useState<PromoResponse[]>([])
   const [showPromoDropdown, setShowPromoDropdown] = useState(false)
   const [promoSearch, setPromoSearch] = useState('')
   const [savingSetup, setSavingSetup] = useState(false)
@@ -165,6 +177,7 @@ export function RollingForecastModal({
   useEffect(() => {
     if (!open || !retailerAccountId) return
     getPromoGroups(retailerAccountId).then(setPromoGroupCatalog).catch(() => null)
+    getPromos(retailerAccountId).then(setPromosCatalog).catch(() => null)
   }, [open, retailerAccountId])
 
   // ── When opened fresh (no session), reset YAML skeleton ──────────────────
@@ -186,9 +199,14 @@ export function RollingForecastModal({
       let yaml = buildRollingSessionYaml(existingSession.total_end_date)
       // Rebuild with existing promos
       if (rows.length > 0) {
-        const promoLines = rows.map(r =>
-          `  - name: "${r.promo_group_name}"\n    start: "${r.start_date}"\n    end: "${r.end_date}"\n    multiplier: ${r.demand_multiplier}`
-        ).join('\n\n')
+        const promoLines = rows.map(r => {
+          const lines = [`  - name: "${r.promo_group_name}"`]
+          if (r.promo_name && r.promo_name !== r.promo_group_name) {
+            lines.push(`    promo_name: "${r.promo_name}"`)
+          }
+          lines.push(`    start: "${formatDateUS(r.start_date)}"`, `    end: "${formatDateUS(r.end_date)}"`, `    multiplier: ${r.demand_multiplier}`)
+          return lines.join('\n')
+        }).join('\n\n')
         yaml = yaml.replace(/promos:\s*\[\]/, `promos:\n${promoLines}`)
       }
       setYamlContent(yaml)
@@ -209,10 +227,11 @@ export function RollingForecastModal({
 
   // ── Date picker changes update the YAML ───────────────────────────────────
   function handleDatePickerChange(newDate: string) {
+    // HTML date input returns YYYY-MM-DD; store internally as YYYY-MM-DD but write MM-DD-YYYY to YAML
     setTotalEndDate(newDate)
     setYamlContent(prev => {
       if (extractTotalEndDate(prev)) {
-        return replaceTotalEndDate(prev, newDate)
+        return replaceTotalEndDate(prev, formatDateUS(newDate))
       }
       return buildRollingSessionYaml(newDate)
     })
@@ -379,10 +398,17 @@ export function RollingForecastModal({
   }
 
   // ── Add promo snippet via dropdown ────────────────────────────────────────
-  function handleAddPromo(group: PromoGroupResponse) {
+  function handleAddPromo(promo: PromoResponse) {
     const today = new Date().toISOString().slice(0, 10)
     const weekLater = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10)
-    setYamlContent(prev => appendPromoSnippet(prev, group.promo_group_name, today, weekLater))
+    setYamlContent(prev => appendPromoSnippet(
+      prev,
+      promo.promo_group_name ?? promo.promo_name,
+      promo.promo_name,
+      today,
+      weekLater,
+      promo.demand_multiplier,
+    ))
     setShowPromoDropdown(false)
     setPromoSearch('')
     // Scroll textarea to bottom so user sees the appended snippet
@@ -393,11 +419,21 @@ export function RollingForecastModal({
     }, 50)
   }
 
+  // Build a map of group name → individual promos for grouped picker display
+  const promosByGroup = promosCatalog.reduce<Record<string, PromoResponse[]>>((acc, p) => {
+    const key = p.promo_group_name ?? ''
+    if (key) { acc[key] = acc[key] ?? []; acc[key].push(p) }
+    return acc
+  }, {})
+
   const filteredGroups = promoGroupCatalog.filter(g =>
     promoSearch === '' ||
     g.promo_group_name.toLowerCase().includes(promoSearch.toLowerCase()) ||
     (g.category ?? '').toLowerCase().includes(promoSearch.toLowerCase()) ||
-    (g.brand ?? '').toLowerCase().includes(promoSearch.toLowerCase())
+    (g.brand ?? '').toLowerCase().includes(promoSearch.toLowerCase()) ||
+    (promosByGroup[g.promo_group_name] ?? []).some(p =>
+      p.promo_name.toLowerCase().includes(promoSearch.toLowerCase())
+    )
   )
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -474,25 +510,48 @@ export function RollingForecastModal({
                         className={inputCls}
                         autoFocus
                       />
-                      <div className="max-h-48 overflow-y-auto space-y-1">
-                        {filteredGroups.map(g => (
-                          <button
-                            key={g.promo_group_id}
-                            type="button"
-                            onClick={() => handleAddPromo(g)}
-                            className="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-[10px] hover:bg-charcoal-blue-50 border border-transparent hover:border-charcoal-blue-100"
-                          >
-                            <Plus size={10} className="flex-shrink-0 mt-0.5 text-amber-500" />
-                            <div className="flex-1 min-w-0">
-                              <span className="font-semibold text-charcoal-blue-800">{g.promo_group_name}</span>
-                              {(g.category || g.brand) && (
-                                <span className="ml-1.5 text-charcoal-blue-400">{[g.category, g.brand].filter(Boolean).join(' · ')}</span>
+                      <div className="max-h-56 overflow-y-auto space-y-1">
+                        {filteredGroups.map(g => {
+                          const groupPromos = promosByGroup[g.promo_group_name] ?? []
+                          return (
+                            <div key={g.promo_group_id}>
+                              {/* Group header — non-clickable label */}
+                              <p className="px-2 pt-1.5 pb-0.5 text-[9px] font-bold uppercase tracking-widest text-charcoal-blue-400">
+                                {g.promo_group_name}
+                                {(g.category || g.brand) && (
+                                  <span className="ml-1.5 font-normal normal-case text-charcoal-blue-300">{[g.category, g.brand].filter(Boolean).join(' · ')}</span>
+                                )}
+                              </p>
+                              {groupPromos.length > 0 ? (
+                                groupPromos.map(p => (
+                                  <button
+                                    key={p.promo_id}
+                                    type="button"
+                                    onClick={() => handleAddPromo(p)}
+                                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[10px] hover:bg-charcoal-blue-50 border border-transparent hover:border-charcoal-blue-100"
+                                  >
+                                    <Plus size={9} className="flex-shrink-0 text-amber-500" />
+                                    <span className="flex-1 font-semibold text-charcoal-blue-800 truncate">{p.promo_name}</span>
+                                    <span className="text-charcoal-blue-400 tabular-nums">×{p.demand_multiplier.toFixed(2)}</span>
+                                  </button>
+                                ))
+                              ) : (
+                                /* Fallback — no individual promos; click the group itself */
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddPromo({ ...g, promo_id: g.promo_group_id, promo_name: g.promo_group_name, event_type: '', start_date: null, end_date: null, demand_multiplier: 1.0, post_promo_decay_days: 0, post_promo_decay_shape: 'LINEAR', store_ids: [] } as PromoResponse)}
+                                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[10px] hover:bg-charcoal-blue-50 border border-transparent hover:border-charcoal-blue-100"
+                                >
+                                  <Plus size={9} className="flex-shrink-0 text-amber-500" />
+                                  <span className="flex-1 font-semibold text-charcoal-blue-800 truncate">{g.promo_group_name}</span>
+                                  <span className="text-charcoal-blue-300">×1.00</span>
+                                </button>
                               )}
                             </div>
-                          </button>
-                        ))}
+                          )
+                        })}
                         {filteredGroups.length === 0 && (
-                          <p className="text-center text-[10px] text-charcoal-blue-400 py-2">No promo groups found</p>
+                          <p className="text-center text-[10px] text-charcoal-blue-400 py-2">No promos found</p>
                         )}
                       </div>
                     </div>
@@ -578,7 +637,7 @@ export function RollingForecastModal({
                         Next Chunk
                       </p>
                       <p className="text-xs font-bold text-charcoal-blue-800">
-                        {currentStart} → {nextChunkEnd}
+                        {formatDateUS(currentStart)} → {formatDateUS(nextChunkEnd)}
                         <span className="ml-2 font-normal text-charcoal-blue-500">(4 weeks)</span>
                       </p>
                     </div>
@@ -602,7 +661,7 @@ export function RollingForecastModal({
                 <div className="text-center">
                   <p className="text-sm font-bold text-charcoal-blue-800">Running simulation chunk…</p>
                   <p className="text-xs text-charcoal-blue-400 mt-1">
-                    {currentStart} → {chunkEndDate}
+                    {formatDateUS(currentStart)} → {formatDateUS(chunkEndDate)}
                   </p>
                 </div>
               </div>
@@ -690,7 +749,7 @@ export function RollingForecastModal({
                   <p className="text-sm font-bold text-charcoal-blue-800">Rolling forecast complete!</p>
                   <p className="text-xs text-charcoal-blue-500 mt-1">
                     All chunks have been committed.
-                    Your simulation now covers through {session?.total_end_date ?? totalEnd}.
+                    Your simulation now covers through {formatDateUS(session?.total_end_date ?? totalEnd)}.
                   </p>
                 </div>
                 <button

@@ -501,6 +501,7 @@ export default function SimulationResultsPage() {
   const [narrativeStep, setNarrativeStep] = useState(0)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
   const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
+  const analyticsStatusRef = useRef<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
   const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -769,7 +770,11 @@ export default function SimulationResultsPage() {
     try {
       const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
       const data = await getStoreInventory(simulationId, p)
-      setStoreInvData(aggStoreInv(data.store_inventory ?? []))
+      const rows = aggStoreInv(data.store_inventory ?? [])
+      setStoreInvData(rows)
+      if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
+        setAnalyticsStatus('PENDING')
+      }
     } catch (e: any) { setStoreInvError(e?.message ?? 'Failed') }
     finally { setStoreInvLoading(false) }
   }, [simulationId])
@@ -801,7 +806,11 @@ export default function SimulationResultsPage() {
         subcategory:    subcategory || undefined,
         brand:          brand    || undefined,
       })
-      setDcInvData(aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? []))
+      const rows = aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? [])
+      setDcInvData(rows)
+      if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
+        setAnalyticsStatus('PENDING')
+      }
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
     finally { setDcInvLoading(false) }
   }, [simulationId])
@@ -923,18 +932,17 @@ export default function SimulationResultsPage() {
     return () => { if (bannerDismissRef.current) clearTimeout(bannerDismissRef.current) }
   }, [analyticsStatus])
 
-  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse
-  // Delay all fetches by 4s to ensure CH writes are fully complete before querying
+  // Keep ref in sync so fetch callbacks can read current status without stale closure
+  useEffect(() => { analyticsStatusRef.current = analyticsStatus }, [analyticsStatus])
+
+  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse immediately
   useEffect(() => {
     if (analyticsStatus !== 'READY') return
-    const t = setTimeout(() => {
-      loadSummary()
-      fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
-      fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
-      fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
-    }, 4000)
-    return () => clearTimeout(t)
+    loadSummary()
+    fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
+    fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
+    fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus])
 
@@ -1066,6 +1074,8 @@ export default function SimulationResultsPage() {
   }, [meta])
 
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
+
+  const yAxisTickFormatter = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()
 
   const [exportLoading, setExportLoading] = useState(false)
   const handleExport = async () => {
@@ -1257,7 +1267,7 @@ export default function SimulationResultsPage() {
                           {zoom1.selectionArea()}
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis dataKey="week" {...xAxisProps} />
-                          <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                          <YAxis tickFormatter={yAxisTickFormatter} />
                           <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="primary_demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
@@ -1312,7 +1322,7 @@ export default function SimulationResultsPage() {
                       {zoom2.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis tickFormatter={yAxisTickFormatter} />
                       <Tooltip content={<StoreInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
@@ -1350,7 +1360,7 @@ export default function SimulationResultsPage() {
                       {zoom3.selectionArea('left')}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis yAxisId="left" tickFormatter={yAxisTickFormatter} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
@@ -1388,7 +1398,7 @@ export default function SimulationResultsPage() {
                       {zoom4.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis tickFormatter={yAxisTickFormatter} />
                       <Tooltip content={<DCInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="dc_on_hand" stroke="#10b981" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
@@ -1504,7 +1514,7 @@ export default function SimulationResultsPage() {
                       <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
+                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Vendor A" type="monotone" strokeWidth={2} dot={false} />
@@ -1515,7 +1525,7 @@ export default function SimulationResultsPage() {
                       <ComposedChart data={step.posSlice} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
+                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
