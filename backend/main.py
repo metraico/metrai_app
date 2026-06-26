@@ -33,12 +33,25 @@ POSTGRES_DSN   = os.getenv("POSTGRES_DSN")
 JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
 
 JWT_ALGORITHM    = "HS256"
-_ACCESS_MINUTES  = 15
+_ACCESS_MINUTES  = 1440  # 24 hours
 _REFRESH_DAYS    = 7
 _RATE_WINDOW     = 900   # seconds (15 min)
 _RATE_MAX        = 5     # failed attempts before lockout
 
-app = FastAPI(title="Metrai App Backend", version="0.2.0")
+app = FastAPI(
+    title="Metrai App Backend",
+    version="0.2.0",
+    openapi_tags=[
+        {"name": "auth",        "description": "Register, login, token refresh, and logout"},
+        {"name": "accounts",    "description": "Retailer account management and account switching"},
+        {"name": "runs",        "description": "Simulation run history and YAML template generation"},
+        {"name": "entities",    "description": "Reference data — items, stores, DCs, suppliers, network mappings"},
+        {"name": "promos",      "description": "Promo catalogue read access"},
+        {"name": "simulation",  "description": "Simulation execution, lifecycle, and proxied run-config"},
+        {"name": "analytics",   "description": "Proxied analytics from the simulation engine"},
+        {"name": "system",      "description": "Health and liveness"},
+    ],
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -181,15 +194,15 @@ def _bootstrap_demo_password():
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
-@app.get("/health")
+@app.get("/health", tags=["system"])
 def health():
     return {"status": "ok"}
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/auth/register")
-@app.post("/register")
+@app.post("/auth/register", tags=["auth"])
+@app.post("/register", tags=["auth"], include_in_schema=False)
 def register(body: dict):
     username  = (body.get("username") or "").strip().lower()
     password  = body.get("password") or ""
@@ -257,7 +270,7 @@ def register(body: dict):
     }
 
 
-@app.get("/accounts")
+@app.get("/accounts", tags=["accounts"])
 def get_accounts(current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
     if not POSTGRES_DSN:
@@ -286,7 +299,7 @@ def get_accounts(current_user: dict = Depends(get_current_user)):
         conn.close()
 
 
-@app.post("/accounts")
+@app.post("/accounts", tags=["accounts"])
 def create_account(body: dict, current_user: dict = Depends(get_current_user)):
     user_id      = current_user["user_id"]
     account_name = (body.get("account_name") or "").strip()
@@ -344,7 +357,7 @@ def create_account(body: dict, current_user: dict = Depends(get_current_user)):
     return {"retailer_account_id": new_account_id, "retailer_account_code": account_id_c, "retailer_account_name": account_name}
 
 
-@app.post("/switch-account")
+@app.post("/switch-account", tags=["accounts"])
 def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
     user_id             = current_user["user_id"]
     retailer_account_id = (body.get("retailer_account_id") or "").strip()
@@ -377,8 +390,8 @@ def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
         "retailer_account_id": retailer_account_id,
     }
 
-@app.post("/auth/login")
-@app.post("/login")
+@app.post("/auth/login", tags=["auth"])
+@app.post("/login", tags=["auth"], include_in_schema=False)
 def login(credentials: dict):
     username = (credentials.get("username") or "").strip().lower()
     password = credentials.get("password") or ""
@@ -444,8 +457,8 @@ def login(credentials: dict):
     }
 
 
-@app.post("/auth/refresh")
-@app.post("/refresh")
+@app.post("/auth/refresh", tags=["auth"])
+@app.post("/refresh", tags=["auth"], include_in_schema=False)
 def refresh_token(body: dict):
     raw_rt = body.get("refresh_token", "")
     if not raw_rt:
@@ -504,8 +517,8 @@ def refresh_token(body: dict):
     }
 
 
-@app.post("/auth/logout")
-@app.post("/logout")
+@app.post("/auth/logout", tags=["auth"])
+@app.post("/logout", tags=["auth"], include_in_schema=False)
 def logout(body: dict, current_user: dict = Depends(get_current_user)):
     raw_rt = body.get("refresh_token", "")
     if raw_rt:
@@ -515,7 +528,7 @@ def logout(body: dict, current_user: dict = Depends(get_current_user)):
 
 # ── Run history ───────────────────────────────────────────────────────────────
 
-@app.get("/runs")
+@app.get("/runs", tags=["runs"])
 def get_runs(
     current_user: dict = Depends(get_current_user),
     scenario_type: str | None = None,
@@ -578,7 +591,7 @@ def _resolve_data_account(cur, retailer_account_id: str) -> str:
     return row[0] if row else retailer_account_id
 
 
-@app.get("/entities")
+@app.get("/entities", tags=["entities"])
 def get_entities(current_user: dict = Depends(get_current_user)):
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
@@ -606,7 +619,7 @@ def get_entities(current_user: dict = Depends(get_current_user)):
 
 # ── Run YAML template ────────────────────────────────────────────────────────
 
-@app.get("/run-yaml-template")
+@app.get("/run-yaml-template", tags=["runs"])
 def get_run_yaml_template(
     current_user: dict = Depends(get_current_user),
     store_target_wos: int = 2,
@@ -699,7 +712,7 @@ def get_run_yaml_template(
 
 # ── Network mappings ──────────────────────────────────────────────────────────
 
-@app.get("/mappings")
+@app.get("/mappings", tags=["entities"])
 def get_mappings(current_user: dict = Depends(get_current_user)):
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
@@ -726,7 +739,7 @@ def get_mappings(current_user: dict = Depends(get_current_user)):
         conn.close()
 
 
-@app.post("/mappings")
+@app.post("/mappings", tags=["entities"])
 def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
     retailer_account_id = current_user["retailer_account_id"]   # always from JWT, never from body
     if not POSTGRES_DSN:
@@ -765,7 +778,7 @@ def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
 
 # ── Promos ────────────────────────────────────────────────────────────────────
 
-@app.get("/promos")
+@app.get("/promos", tags=["promos"])
 def get_promos(current_user: dict = Depends(get_current_user)):
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
@@ -802,7 +815,7 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 
 # ── Simulation proxy ──────────────────────────────────────────────────────────
 
-@app.post("/run")
+@app.post("/run", tags=["simulation"])
 async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
     req["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     req["user_id"]             = current_user["user_id"]
@@ -828,7 +841,7 @@ async def run_simulation(req: dict, current_user: dict = Depends(get_current_use
 
 # ── YAML-based simulation run proxy ──────────────────────────────────────────
 
-@app.post("/run/yaml")
+@app.post("/run/yaml", tags=["simulation"])
 async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_current_user)):
     """
     Accept {"yaml_content": "<yaml string>"}, inject retailer_account_id into
@@ -870,7 +883,7 @@ async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_curre
 
 # ── Scenario validate proxy ───────────────────────────────────────────────────
 
-@app.post("/scenario/validate")
+@app.post("/scenario/validate", tags=["simulation"])
 async def validate_scenario(body: dict, current_user: dict = Depends(get_current_user)):
     body["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     try:
@@ -886,7 +899,7 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
 
 # ── Past simulation retrieval (proxy) ─────────────────────────────────────────
 
-@app.get("/simulation/{simulation_id}")
+@app.get("/simulation/{simulation_id}", tags=["simulation"])
 async def get_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -899,7 +912,7 @@ async def get_simulation(simulation_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
-@app.get("/run-config/{simulation_id}")
+@app.get("/run-config/{simulation_id}", tags=["simulation"])
 async def get_run_config(simulation_id: str, current_user: dict = Depends(get_current_user)):
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -912,7 +925,7 @@ async def get_run_config(simulation_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
-@app.delete("/simulation/{simulation_id}")
+@app.delete("/simulation/{simulation_id}", tags=["simulation"])
 async def delete_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -925,7 +938,7 @@ async def delete_simulation(simulation_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
-@app.get("/analytics/{simulation_id}/{path:path}")
+@app.get("/analytics/{simulation_id}/{path:path}", tags=["analytics"])
 async def proxy_analytics(
     simulation_id: str,
     path: str,
