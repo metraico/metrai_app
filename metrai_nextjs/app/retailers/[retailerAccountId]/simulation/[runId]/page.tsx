@@ -1067,6 +1067,8 @@ export default function SimulationResultsPage() {
 
   const xAxisProps = { angle: -45, textAnchor: 'end' as const, height: 80, tick: { fontSize: 10 } }
 
+  const yAxisTickFormatter = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()
+
   const [exportLoading, setExportLoading] = useState(false)
   const handleExport = async () => {
     setExportLoading(true)
@@ -1257,7 +1259,7 @@ export default function SimulationResultsPage() {
                           {zoom1.selectionArea()}
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis dataKey="week" {...xAxisProps} />
-                          <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                          <YAxis tickFormatter={yAxisTickFormatter} />
                           <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="primary_demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
@@ -1312,7 +1314,7 @@ export default function SimulationResultsPage() {
                       {zoom2.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis tickFormatter={yAxisTickFormatter} />
                       <Tooltip content={<StoreInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
@@ -1350,7 +1352,7 @@ export default function SimulationResultsPage() {
                       {zoom3.selectionArea('left')}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis yAxisId="left" tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis yAxisId="left" tickFormatter={yAxisTickFormatter} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
@@ -1388,7 +1390,7 @@ export default function SimulationResultsPage() {
                       {zoom4.selectionArea()}
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis dataKey="week" {...xAxisProps} />
-                      <YAxis tickFormatter={v => `${(v / 1000).toFixed(0)}K`} />
+                      <YAxis tickFormatter={yAxisTickFormatter} />
                       <Tooltip content={<DCInvTooltip />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Line dataKey="dc_on_hand" stroke="#10b981" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
@@ -1504,7 +1506,7 @@ export default function SimulationResultsPage() {
                       <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
+                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Vendor A" type="monotone" strokeWidth={2} dot={false} />
@@ -1515,7 +1517,7 @@ export default function SimulationResultsPage() {
                       <ComposedChart data={step.posSlice} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                         <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} tick={{ fontSize: 9 }} />
+                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
                         <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
                         <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                         <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
