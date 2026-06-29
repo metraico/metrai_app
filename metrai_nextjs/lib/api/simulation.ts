@@ -1,4 +1,5 @@
 import { apiClient, engineClient } from './client'
+import { formatDateUS } from '@/lib/utils'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -13,14 +14,14 @@ const CHUNK_WEEKS = 4
  * `performance` entry with schedule_id and pct: 0.
  */
 export function buildRunChunkYaml(
-  promos: { id: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
+  promos: { id: string; promo_name?: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
   chunkStart: string,
   chunkEnd: string,
   sessionId?: string,
 ): string {
   const sessionLine = sessionId ? `# Session: ${sessionId}\n` : ''
   const header = [
-    `# Chunk window: ${chunkStart} → ${chunkEnd}  (SIM, ${CHUNK_WEEKS} weeks)`,
+    `# Chunk window: ${formatDateUS(chunkStart)} → ${formatDateUS(chunkEnd)}  (SIM, ${CHUNK_WEEKS} weeks)`,
     sessionLine.trimEnd(),
     `# Edit pct for each promo: +50 = overperformed 50%, -30 = underperformed 30%, 0 = on plan`,
     '',
@@ -33,7 +34,7 @@ export function buildRunChunkYaml(
   const entries = promos.map(p =>
     [
       `  - schedule_id: "${p.id}"`,
-      `    pct: 0        # ${p.promo_group_name}  ${p.start_date} → ${p.end_date}`,
+      `    pct: 0        # ${p.promo_name ? `${p.promo_name} (${p.promo_group_name})` : p.promo_group_name}  ${formatDateUS(p.start_date)} → ${formatDateUS(p.end_date)}`,
     ].join('\n')
   ).join('\n\n')
 
@@ -239,6 +240,7 @@ export const getSessionPromoSchedules = (
 ) =>
   engineClient.get<{
     id: string
+    promo_name: string
     promo_group_name: string
     start_date: string
     end_date: string
