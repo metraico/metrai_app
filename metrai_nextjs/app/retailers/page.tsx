@@ -35,7 +35,7 @@ export default function RetailersPage() {
       })
       router.push(`/retailers/${account.retailer_account_id}`)
     } catch {
-      // Fallback: update local state only if switch-account fails
+      // Fallback: store account context locally without minting a new token
       setAuth({ retailerAccountId: account.retailer_account_id })
       router.push(`/retailers/${account.retailer_account_id}`)
     } finally {

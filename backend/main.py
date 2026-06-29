@@ -33,12 +33,25 @@ POSTGRES_DSN   = os.getenv("POSTGRES_DSN")
 JWT_SECRET     = os.getenv("JWT_SECRET", "dev-secret-change-in-production")
 
 JWT_ALGORITHM    = "HS256"
-_ACCESS_MINUTES  = 15
+_ACCESS_MINUTES  = 1440  # 24 hours
 _REFRESH_DAYS    = 7
 _RATE_WINDOW     = 900   # seconds (15 min)
 _RATE_MAX        = 5     # failed attempts before lockout
 
-app = FastAPI(title="Metrai App Backend", version="0.2.0")
+app = FastAPI(
+    title="Metrai App Backend",
+    version="0.2.0",
+    openapi_tags=[
+        {"name": "auth",        "description": "Register, login, token refresh, and logout"},
+        {"name": "accounts",    "description": "Retailer account management and account switching"},
+        {"name": "runs",        "description": "Simulation run history and YAML template generation"},
+        {"name": "entities",    "description": "Reference data — items, stores, DCs, suppliers, network mappings"},
+        {"name": "promos",      "description": "Promo catalogue read access"},
+        {"name": "simulation",  "description": "Simulation execution, lifecycle, and proxied run-config"},
+        {"name": "analytics",   "description": "Proxied analytics from the simulation engine"},
+        {"name": "system",      "description": "Health and liveness"},
+    ],
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -181,15 +194,40 @@ def _bootstrap_demo_password():
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["system"],
+    summary="Service liveness check",
+    description="Returns `{\"status\": \"ok\"}` when the backend is running. Use this as a Docker/load-balancer health probe. No authentication required.",
+)
 def health():
+    """Returns `{"status": "ok"}` when the backend is running. Use as a Docker / load-balancer health probe. No authentication required."""
     return {"status": "ok"}
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/register")
+@app.post(
+    "/auth/register",
+    tags=["auth"],
+    summary="Create a new user account",
+    description=(
+        "Registers a new user with a username, password, email, and full name. "
+        "Password must be at least 8 characters and is hashed with Argon2id before storage. "
+        "On success, returns an access token, refresh token, and the new user's ID. "
+        "The user is automatically linked to the shared demo retailer account (SALTYSNACK) on first registration. "
+        "Returns 409 if the username is already taken."
+    ),
+)
+@app.post("/register", tags=["auth"], include_in_schema=False)
 def register(body: dict):
+    """
+    Registers a new user with username, password, email, and full name.
+    Password must be at least 8 characters — stored as an Argon2id hash.
+    Returns an access token and refresh token on success.
+    The new user is automatically linked to the shared SALTYSNACK demo account.
+    Returns **409** if the username is already taken.
+    """
     username  = (body.get("username") or "").strip().lower()
     password  = body.get("password") or ""
     email     = (body.get("email") or "").strip().lower()
@@ -256,8 +294,25 @@ def register(body: dict):
     }
 
 
-@app.get("/accounts")
+@app.get(
+    "/accounts",
+    tags=["accounts"],
+    summary="List retailer accounts for the logged-in user",
+    description=(
+        "Returns all retailer accounts the authenticated user has been granted access to. "
+        "This is the first call to make after login — the response gives you the `retailer_account_id` values "
+        "needed to call `POST /switch-account` and scope your session to a specific account. "
+        "Each account includes its code, name, type (e.g. GROCERY), country, currency, and active status."
+    ),
+)
 def get_accounts(current_user: dict = Depends(get_current_user)):
+    """
+    Returns all retailer accounts the authenticated user has been granted access to.
+
+    This is typically the first call after login — use the returned `retailer_account_id`
+    values to call `POST /switch-account` and scope your session to a specific account.
+    Each account includes its code, name, type (e.g. GROCERY), country, currency, and active status.
+    """
     user_id = current_user["user_id"]
     if not POSTGRES_DSN:
         return []
@@ -285,8 +340,29 @@ def get_accounts(current_user: dict = Depends(get_current_user)):
         conn.close()
 
 
-@app.post("/accounts")
+@app.post(
+    "/accounts",
+    tags=["accounts"],
+    summary="Create a new retailer account",
+    description=(
+        "Creates a new retailer account and automatically links it to the authenticated user. "
+        "Required field: `account_name`. Optional: `account_type` (default: GROCERY), `country_code` (default: US), `currency_code` (default: USD), `region`. "
+        "The `retailer_account_code` is auto-generated from the name (e.g. 'My Store Co' → `ACCT_MY_STORE_CO`) — you do not supply it. "
+        "After creation, call `POST /switch-account` with the returned `retailer_account_id` to start using this account for simulations."
+    ),
+)
 def create_account(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Creates a new retailer account and automatically links it to the authenticated user.
+
+    **Required:** `account_name`.
+    **Optional:** `account_type` (default: GROCERY), `country_code` (default: US), `currency_code` (default: USD), `region`.
+
+    The `retailer_account_code` is **auto-generated** from the name
+    (e.g. "My Store Co" → `ACCT_MY_STORE_CO`) — do not supply it yourself.
+    After creation, call `POST /switch-account` with the returned `retailer_account_id`
+    to start using this account for simulations.
+    """
     user_id      = current_user["user_id"]
     account_name = (body.get("account_name") or "").strip()
     account_type = (body.get("account_type") or "GROCERY").strip().upper()
@@ -343,8 +419,30 @@ def create_account(body: dict, current_user: dict = Depends(get_current_user)):
     return {"retailer_account_id": new_account_id, "retailer_account_code": account_id_c, "retailer_account_name": account_name}
 
 
-@app.post("/switch-account")
+@app.post(
+    "/switch-account",
+    tags=["accounts"],
+    summary="Scope your session to a specific retailer account",
+    description=(
+        "Issues a new access + refresh token pair with the chosen `retailer_account_id` embedded in the JWT. "
+        "**This must be called after login before using any simulation, run, entity, promo, or analytics APIs** — "
+        "those endpoints read the retailer account directly from the token and return empty results (or 422) without it. "
+        "Pass the `retailer_account_id` from `GET /accounts` in the request body. "
+        "Returns 403 if the authenticated user does not have access to the requested account. "
+        "Store the returned tokens and use them for all subsequent requests."
+    ),
+)
 def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Issues a new access + refresh token pair with the chosen `retailer_account_id` embedded in the JWT.
+
+    **This must be called after login before using any simulation, run, entity, promo, or analytics APIs.**
+    Those endpoints read `retailer_account_id` directly from the token and return empty results (or errors) without it.
+
+    Pass the `retailer_account_id` from `GET /accounts` in the body.
+    Store the returned tokens and use them for all subsequent requests.
+    Returns **403** if the authenticated user does not have access to the requested account.
+    """
     user_id             = current_user["user_id"]
     retailer_account_id = (body.get("retailer_account_id") or "").strip()
     if not retailer_account_id:
@@ -376,8 +474,32 @@ def switch_account(body: dict, current_user: dict = Depends(get_current_user)):
         "retailer_account_id": retailer_account_id,
     }
 
-@app.post("/login")
+@app.post(
+    "/auth/login",
+    tags=["auth"],
+    summary="Log in and obtain tokens",
+    description=(
+        "Authenticates a user by username and password. "
+        "Returns an access token (valid 24 hours) and a refresh token (valid 7 days). "
+        "The access token is a JWT — include it as `Authorization: Bearer <token>` on all protected endpoints. "
+        "Note: the token at this stage carries no `retailer_account_id`. "
+        "You must call `POST /switch-account` after login to scope the token to a specific retailer account before using simulation or analytics APIs. "
+        "Rate-limited to 5 failed attempts per 15 minutes per username."
+    ),
+)
+@app.post("/login", tags=["auth"], include_in_schema=False)
 def login(credentials: dict):
+    """
+    Authenticates a user by username and password.
+    Returns an **access token** (valid 24 hours) and a **refresh token** (valid 7 days).
+    Include the access token as `Authorization: Bearer <token>` on all protected endpoints.
+
+    **Important:** the token at this stage carries no `retailer_account_id`.
+    Call `POST /switch-account` after login to scope the token to a specific retailer account
+    before using simulation, analytics, runs, or entity APIs.
+
+    Rate-limited to 5 failed attempts per 15 minutes per username.
+    """
     username = (credentials.get("username") or "").strip().lower()
     password = credentials.get("password") or ""
 
@@ -442,8 +564,25 @@ def login(credentials: dict):
     }
 
 
-@app.post("/refresh")
+@app.post(
+    "/auth/refresh",
+    tags=["auth"],
+    summary="Refresh an expired access token",
+    description=(
+        "Exchanges a valid refresh token for a new access token + refresh token pair (token rotation). "
+        "Use this when the access token has expired (the frontend Axios interceptor calls this automatically on 401 responses). "
+        "The old refresh token is revoked immediately after use — each refresh token is single-use. "
+        "Returns 401 if the token is expired, revoked, or invalid."
+    ),
+)
+@app.post("/refresh", tags=["auth"], include_in_schema=False)
 def refresh_token(body: dict):
+    """
+    Exchanges a valid refresh token for a new access + refresh token pair (token rotation).
+    The old refresh token is **immediately revoked** — each refresh token is single-use.
+    The frontend Axios interceptor calls this automatically on 401 responses.
+    Returns **401** if the token is expired, revoked, or not found.
+    """
     raw_rt = body.get("refresh_token", "")
     if not raw_rt:
         raise HTTPException(status_code=401, detail="Missing refresh token")
@@ -452,10 +591,18 @@ def refresh_token(body: dict):
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
+            # retailer_account_id lives on user_accounts (M:N), not users — pick the first link.
             cur.execute(
                 """
                 SELECT rt.user_id::text, rt.expires_at, rt.revoked,
-                       u.retailer_account_id::text, u.role, u.is_active
+                       (
+                         SELECT ua.retailer_account_id::text
+                         FROM user_accounts ua
+                         WHERE ua.user_id = rt.user_id
+                         ORDER BY ua.joined_at ASC
+                         LIMIT 1
+                       ) AS retailer_account_id,
+                       u.role, u.is_active
                 FROM refresh_tokens rt
                 JOIN users u ON rt.user_id = u.user_id
                 WHERE rt.token_hash = %s
@@ -470,6 +617,7 @@ def refresh_token(body: dict):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     user_id, expires_at, revoked, retailer_account_id, role, is_active = row
+    retailer_account_id = retailer_account_id or ""
 
     if revoked or not is_active:
         raise HTTPException(status_code=401, detail="Token revoked")
@@ -492,8 +640,25 @@ def refresh_token(body: dict):
     }
 
 
-@app.post("/logout")
+@app.post(
+    "/auth/logout",
+    tags=["auth"],
+    summary="Revoke the current refresh token",
+    description=(
+        "Invalidates the provided refresh token so it can no longer be used to obtain new access tokens. "
+        "Pass the refresh token in the request body as `{\"refresh_token\": \"...\"}`. "
+        "The access token itself cannot be revoked (it expires naturally after 24 hours). "
+        "Requires a valid Bearer access token in the Authorization header."
+    ),
+)
+@app.post("/logout", tags=["auth"], include_in_schema=False)
 def logout(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Revokes the provided refresh token so it can no longer be used to obtain new access tokens.
+    Pass `{"refresh_token": "..."}` in the body.
+    The access token itself cannot be revoked — it expires naturally after 24 hours.
+    Requires a valid Bearer access token in the Authorization header.
+    """
     raw_rt = body.get("refresh_token", "")
     if raw_rt:
         _revoke_refresh_token(hashlib.sha256(raw_rt.encode()).hexdigest())
@@ -502,25 +667,65 @@ def logout(body: dict, current_user: dict = Depends(get_current_user)):
 
 # ── Run history ───────────────────────────────────────────────────────────────
 
-@app.get("/runs")
-def get_runs(current_user: dict = Depends(get_current_user)):
+@app.get(
+    "/runs",
+    tags=["runs"],
+    summary="List simulation runs for the current account",
+    description=(
+        "Returns the 50 most recent simulation runs for the authenticated user's retailer account, ordered by creation date descending. "
+        "Requires a account-scoped token (call `POST /switch-account` first). "
+        "Optional query param `scenario_type`: pass `no_scenario` to filter baseline runs only, "
+        "or any other value (e.g. `promo_forecast`, `hidden_lost_sales`) to filter by scenario type. "
+        "Each run includes status, date range, seed, granularity, and whether it has been extended."
+    ),
+)
+def get_runs(
+    current_user: dict = Depends(get_current_user),
+    scenario_type: str | None = None,
+):
+    """
+    Returns the 50 most recent simulation runs for the authenticated user's retailer account, newest first.
+    Requires an account-scoped token (call `POST /switch-account` first).
+
+    **Optional query param `scenario_type`:**
+    - Omit → return all runs
+    - `no_scenario` → baseline runs only (no scenario applied)
+    - Any other value (e.g. `promo_forecast`, `hidden_lost_sales`) → filter by that scenario type
+
+    Each run includes: status, date range, seed, granularity, scenario type, and extension info.
+    """
     retailer_account_id = current_user.get("retailer_account_id") or ""
     user_id             = current_user["user_id"]
     if not POSTGRES_DSN or not retailer_account_id:
         return []
+
+    if scenario_type == "no_scenario":
+        scenario_filter = "AND scenario_type IS NULL"
+        scenario_params: tuple = ()
+    elif scenario_type:
+        scenario_filter = "AND scenario_type = %s"
+        scenario_params = (scenario_type,)
+    else:
+        scenario_filter = ""
+        scenario_params = ()
+
     conn = _pg_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT simulation_id::text, simulation_name, simulation_status,
-                       created_at, start_week, end_week, random_seed, notes
+                       created_at, start_week, end_week, random_seed, notes,
+                       COALESCE(simulation_granularity, 'weekly') AS simulation_granularity,
+                       COALESCE(scenario_type, 'no_scenario') AS scenario_type,
+                       COALESCE(is_extended, FALSE) AS is_extended,
+                       COALESCE(extension_count, 0) AS extension_count
                 FROM simulation_config
-                WHERE retailer_account_id = %s AND user_id = %s
+                WHERE retailer_account_id = %s AND user_id = %s {scenario_filter}
                 ORDER BY created_at DESC
                 LIMIT 50
                 """,
-                (retailer_account_id, user_id),
+                (retailer_account_id, user_id) + scenario_params,
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -528,7 +733,8 @@ def get_runs(current_user: dict = Depends(get_current_user)):
                 for k, v in row.items():
                     if hasattr(v, "isoformat"):
                         row[k] = v.isoformat()
-            logger.info("GET /runs — user=%s account=%s returned %d runs", user_id, retailer_account_id, len(rows))
+            logger.info("GET /runs — user=%s account=%s scenario=%s returned %d runs",
+                        user_id, retailer_account_id, scenario_type, len(rows))
             return rows
     finally:
         conn.close()
@@ -546,8 +752,27 @@ def _resolve_data_account(cur, retailer_account_id: str) -> str:
     return row[0] if row else retailer_account_id
 
 
-@app.get("/entities")
+@app.get(
+    "/entities",
+    tags=["entities"],
+    summary="Fetch all reference entities for the current account",
+    description=(
+        "Returns the full catalogue of items, stores, distribution centres, and suppliers for the authenticated retailer account. "
+        "Used by the UI to populate dropdowns, filters, and entity pickers throughout the simulation and analytics views. "
+        "If the account has no items yet, falls back to the demo account's catalogue automatically. "
+        "Requires an account-scoped token."
+    ),
+)
 def get_entities(current_user: dict = Depends(get_current_user)):
+    """
+    Returns the full reference catalogue for the authenticated retailer account:
+    **items**, **stores**, **distribution centres (DCs)**, and **suppliers**.
+
+    Used by the UI to populate dropdowns, filters, and entity pickers throughout
+    simulation setup and analytics views.
+    If the account has no items yet, automatically falls back to the demo account's catalogue.
+    Requires an account-scoped token.
+    """
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
@@ -574,104 +799,132 @@ def get_entities(current_user: dict = Depends(get_current_user)):
 
 # ── Run YAML template ────────────────────────────────────────────────────────
 
-@app.get("/run-yaml-template")
-def get_run_yaml_template(current_user: dict = Depends(get_current_user)):
-    """Generate a pre-filled entity-first YAML run config for this retailer account."""
-    import hashlib
+@app.get(
+    "/run-yaml-template",
+    tags=["runs"],
+    summary="Generate a pre-filled simulation YAML config",
+    description=(
+        "Returns a YAML string pre-populated with the retailer account's actual DCs and suppliers from the database. "
+        "Use this as the starting point for the simulation config editor — paste it into the New Simulation form. "
+        "All WoS (weeks-of-supply) and lead-week parameters are customisable via query params and will be reflected in the generated YAML. "
+        "Query params: `store_target_wos` (default 2), `store_initial_wos` (default 2), `retailer_dc_target_wos` (default 4), "
+        "`retailer_dc_initial_wos` (default 4), `supplier_dc_initial_wos` (default 4), "
+        "`retailer_dc_to_store_lead_weeks` (default 1), `supplier_dc_to_retailer_dc_lead_weeks` (default 1), "
+        "`dc_otd_rate` (default 0.95), `dc_in_full_rate` (default 0.95), `supplier_otd_rate` (default 0.95), `supplier_in_full_rate` (default 0.95). "
+        "Requires an account-scoped token."
+    ),
+)
+def get_run_yaml_template(
+    current_user: dict = Depends(get_current_user),
+    store_target_wos: int = 2,
+    store_initial_wos: int = 2,
+    retailer_dc_target_wos: int = 4,
+    retailer_dc_initial_wos: int = 4,
+    supplier_dc_initial_wos: int = 4,
+    retailer_dc_to_store_lead_weeks: int = 1,
+    supplier_dc_to_retailer_dc_lead_weeks: int = 1,
+    dc_otd_rate: float = 0.95,
+    dc_in_full_rate: float = 0.95,
+    supplier_otd_rate: float = 0.95,
+    supplier_in_full_rate: float = 0.95,
+):
+    """Pre-filled YAML template using the retailer's actual DCs and suppliers."""
+    import yaml as _yaml
 
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
 
-    conn = _pg_connect()
-    try:
-        with conn.cursor() as cur:
-            data_acct = _resolve_data_account(cur, retailer_account_id)
+    dcs: list[str] = []
+    suppliers: list[str] = []
+    if retailer_account_id:
+        conn = _pg_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT dc_code FROM distribution_centers "
+                    "WHERE retailer_account_id = %s AND COALESCE(dc_type, '') != 'SUPPLIER' ORDER BY dc_code",
+                    (retailer_account_id,),
+                )
+                dcs = [r[0] for r in cur.fetchall()]
 
-            def q(sql, params):
-                cur.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in cur.fetchall()]
+                cur.execute(
+                    "SELECT supplier_code FROM suppliers WHERE retailer_account_id = %s ORDER BY supplier_code",
+                    (retailer_account_id,),
+                )
+                suppliers = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
 
-            acct = (data_acct,)
-            supplier_dcs = q(
-                "SELECT dc_code FROM distribution_centers "
-                "WHERE retailer_account_id = %s AND dc_role = 'SUPPLIER_DC' ORDER BY dc_code", acct
-            )
-            retailer_dcs = q(
-                "SELECT dc_code FROM distribution_centers "
-                "WHERE retailer_account_id = %s AND COALESCE(dc_role, 'RETAILER_DC') = 'RETAILER_DC' ORDER BY dc_code", acct
-            )
-            stores = q(
-                "SELECT store_code FROM stores WHERE retailer_account_id = %s ORDER BY store_code", acct
-            )
-    finally:
-        conn.close()
+    template: dict = {
+        "run": {
+            "retailer_account_id":                    retailer_account_id,
+            "simulation_name":                        "New Simulation Run",
+            "notes":                                  "",
+            "start_date":                             "2024-01-01",
+            "end_date":                               "2024-12-31",
+            "seed":                                   42,
+            "store_target_wos":                       store_target_wos,
+            "store_initial_wos":                      store_initial_wos,
+            "retailer_dc_target_wos":                 retailer_dc_target_wos,
+            "retailer_dc_initial_wos":                retailer_dc_initial_wos,
+            "supplier_dc_initial_wos":                supplier_dc_initial_wos,
+            "supplier_dc_to_retailer_dc_lead_weeks":  supplier_dc_to_retailer_dc_lead_weeks,
+            "retailer_dc_to_store_lead_weeks":        retailer_dc_to_store_lead_weeks,
+            "supplier_otd_rate":                      supplier_otd_rate,
+            "supplier_in_full_rate":                  supplier_in_full_rate,
+            "dc_otd_rate":                            dc_otd_rate,
+            "dc_in_full_rate":                        dc_in_full_rate,
+        }
+    }
 
-    def _hash_f(code: str, lo: float, hi: float, step: float = 0.01) -> float:
-        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
-        steps = int((hi - lo) / step)
-        return round(lo + (h % (steps + 1)) * step, 2)
+    if dcs:
+        template["run"]["dcs"] = {
+            dc: {
+                "otd_rate":            dc_otd_rate,
+                "in_full_rate":        dc_in_full_rate,
+                "lead_weeks_to_store": retailer_dc_to_store_lead_weeks,
+                "target_wos":          retailer_dc_target_wos,
+                "initial_wos":         retailer_dc_initial_wos,
+            }
+            for dc in dcs
+        }
 
-    def _hash_i(code: str, lo: int, hi: int) -> int:
-        h = int(hashlib.md5(code.encode()).hexdigest(), 16)
-        return lo + (h % (hi - lo + 1))
+    if suppliers:
+        template["run"]["suppliers"] = {
+            sup: {
+                "otd_rate":     supplier_otd_rate,
+                "in_full_rate": supplier_in_full_rate,
+                "lead_weeks":   supplier_dc_to_retailer_dc_lead_weeks,
+                "initial_wos":  supplier_dc_initial_wos,
+            }
+            for sup in suppliers
+        }
 
-    lines = [
-        'run:',
-        '  simulation_name: "My Simulation Run"',
-        '  start_date: "2024-01-01"',
-        '  end_date:   "2026-06-30"',
-        '  seed: 42',
-        '',
-        '  store_target_wos:        2',
-        '  retailer_dc_target_wos:  4',
-        '  supplier_dc_initial_wos: 4',
-    ]
-
-    if supplier_dcs:
-        lines += ['', '  suppliers:']
-        for row in supplier_dcs:
-            code = row["dc_code"]
-            lines += [
-                f'    {code}:',
-                f'      on_time:     {_hash_f(code + "_ot", 0.88, 0.97)}',
-                f'      partial:     {_hash_f(code + "_pt", 0.03, 0.09)}',
-                f'      lead_weeks:  {_hash_i(code + "_lw", 1, 2)}',
-                f'      initial_wos: {_hash_i(code + "_iwos", 5, 8)}',
-            ]
-
-    if retailer_dcs:
-        lines += ['', '  dcs:']
-        for row in retailer_dcs:
-            code = row["dc_code"]
-            lines += [
-                f'    {code}:',
-                f'      on_time:             {_hash_f(code + "_ot", 0.90, 0.97)}',
-                f'      partial:             {_hash_f(code + "_pt", 0.03, 0.07)}',
-                f'      lead_weeks_to_store: {_hash_i(code + "_lw", 1, 2)}',
-                f'      target_wos:          {_hash_i(code + "_wos", 4, 6)}',
-                f'      initial_wos:         {_hash_i(code + "_iwos", 4, 7)}',
-            ]
-
-    if stores:
-        lines += ['', '  stores:']
-        for row in stores:
-            code = row["store_code"]
-            lines += [
-                f'    {code}:',
-                f'      target_wos:  {_hash_i(code + "_wos", 2, 3)}',
-                f'      initial_wos: {_hash_i(code + "_iwos", 2, 4)}',
-            ]
-
-    lines.append('')
-    return {"yaml": '\n'.join(lines)}
+    return {"yaml": _yaml.dump(template, default_flow_style=False, sort_keys=False, allow_unicode=True)}
 
 
 # ── Network mappings ──────────────────────────────────────────────────────────
 
-@app.get("/mappings")
+@app.get(
+    "/mappings",
+    tags=["entities"],
+    summary="Get supply-chain network mappings",
+    description=(
+        "Returns the network topology for the retailer account: which stores are served by which DCs, "
+        "which DCs are served by which supplier DCs, and which suppliers supply which items. "
+        "These mappings define how inventory flows through the supply chain during simulation. "
+        "Requires an account-scoped token."
+    ),
+)
 def get_mappings(current_user: dict = Depends(get_current_user)):
+    """
+    Returns the supply-chain network topology for the retailer account:
+    which stores are served by which DCs, which DCs are served by which supplier DCs,
+    and which suppliers supply which items.
+    These mappings define how inventory flows through the supply chain during a simulation run.
+    Requires an account-scoped token.
+    """
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
@@ -697,8 +950,26 @@ def get_mappings(current_user: dict = Depends(get_current_user)):
         conn.close()
 
 
-@app.post("/mappings")
+@app.post(
+    "/mappings",
+    tags=["entities"],
+    summary="Save supply-chain network mappings",
+    description=(
+        "Bulk-saves the network topology for the retailer account in a single transaction. "
+        "Accepts store-to-DC mappings (`store_mappings`), DC-to-DC mappings (`dc_mappings`), "
+        "item-to-supplier links (`supplier_items`), and item-to-store links (`store_items`). "
+        "All existing mappings for the account are replaced by the new set. "
+        "Requires an account-scoped token."
+    ),
+)
 def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Bulk-saves the supply-chain network topology for the retailer account in a single transaction.
+    Accepts: `store_mappings` (store → DC), `dc_mappings` (DC → DC/supplier DC),
+    `supplier_items` (supplier → item links), `store_items` (store → item links).
+    All existing mappings for the account are replaced by the new set.
+    Requires an account-scoped token.
+    """
     retailer_account_id = current_user["retailer_account_id"]   # always from JWT, never from body
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
@@ -736,8 +1007,26 @@ def save_mappings(body: dict, current_user: dict = Depends(get_current_user)):
 
 # ── Promos ────────────────────────────────────────────────────────────────────
 
-@app.get("/promos")
+@app.get(
+    "/promos",
+    tags=["promos"],
+    summary="List all promos for the current account",
+    description=(
+        "Returns the full promo catalogue for the authenticated retailer account — all promos that are not tied to a specific simulation run. "
+        "Each promo includes its name, date range, demand multiplier, promo group, and the list of items it applies to. "
+        "These are the base-level promos used when configuring a new simulation or rolling forecast. "
+        "Requires an account-scoped token."
+    ),
+)
 def get_promos(current_user: dict = Depends(get_current_user)):
+    """
+    Returns the full promo catalogue for the authenticated retailer account —
+    all promos not tied to a specific simulation run.
+
+    Each promo includes: name, date range, demand multiplier, promo group, and the items it applies to.
+    These are the base-level promos used when configuring a new simulation or rolling forecast.
+    Requires an account-scoped token.
+    """
     retailer_account_id = current_user["retailer_account_id"]
     if not POSTGRES_DSN:
         raise HTTPException(status_code=503, detail="No POSTGRES_DSN configured")
@@ -773,8 +1062,27 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 
 # ── Simulation proxy ──────────────────────────────────────────────────────────
 
-@app.post("/run")
+@app.post(
+    "/run",
+    tags=["simulation"],
+    summary="Trigger a new simulation run (JSON body)",
+    description=(
+        "Starts a new simulation by proxying the request to the simulation engine. "
+        "The `retailer_account_id` and `user_id` are injected automatically from the JWT — do not include them in the body. "
+        "Required fields: `simulation_name`, `start_date`, `end_date`, `seed`, and the supply-chain config (stores, DCs, suppliers). "
+        "Returns the completed simulation result synchronously — this call may take several seconds for large date ranges. "
+        "Requires an account-scoped token."
+    ),
+)
 async def run_simulation(req: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Starts a new simulation by proxying the request to the simulation engine (JSON body).
+    The `retailer_account_id` and `user_id` are injected automatically from the JWT — do not include them in the body.
+
+    **Required fields:** `simulation_name`, `start_date`, `end_date`, `seed`, and supply-chain config (stores, DCs, suppliers).
+    Returns the completed simulation result synchronously — may take several seconds for large date ranges.
+    Requires an account-scoped token.
+    """
     req["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     req["user_id"]             = current_user["user_id"]
     account = current_user["retailer_account_id"]
@@ -799,7 +1107,18 @@ async def run_simulation(req: dict, current_user: dict = Depends(get_current_use
 
 # ── YAML-based simulation run proxy ──────────────────────────────────────────
 
-@app.post("/run/yaml")
+@app.post(
+    "/run/yaml",
+    tags=["simulation"],
+    summary="Trigger a new simulation run (YAML body)",
+    description=(
+        "Same as `POST /run` but accepts a YAML string in `{\"yaml_content\": \"...\"}` format instead of a JSON object. "
+        "The `retailer_account_id` is automatically injected into the YAML `run:` block from the JWT before forwarding to the engine — "
+        "you do not need to include it in the YAML. "
+        "This is the endpoint used by the New Simulation page's YAML editor. "
+        "Requires an account-scoped token."
+    ),
+)
 async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_current_user)):
     """
     Accept {"yaml_content": "<yaml string>"}, inject retailer_account_id into
@@ -841,8 +1160,29 @@ async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_curre
 
 # ── Scenario validate proxy ───────────────────────────────────────────────────
 
-@app.post("/scenario/validate")
+@app.post(
+    "/scenario/validate",
+    tags=["simulation"],
+    summary="Validate a scenario YAML before running",
+    description=(
+        "Validates a scenario YAML config (e.g. a `promo_forecast` or `hidden_lost_sales` scenario) "
+        "by proxying to the simulation engine's validator. "
+        "Use this to catch schema errors in the scenario editor before triggering a full simulation run. "
+        "Returns validation errors with line-level detail if the YAML is malformed or references unknown entities. "
+        "The `retailer_account_id` is injected from the JWT automatically. "
+        "Requires an account-scoped token."
+    ),
+)
 async def validate_scenario(body: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Validates a scenario YAML config (e.g. `promo_forecast`, `hidden_lost_sales`) by proxying
+    to the simulation engine's validator.
+
+    Use this to catch schema errors in the scenario editor **before** triggering a full simulation run.
+    Returns validation errors with detail if the YAML is malformed or references unknown entities.
+    The `retailer_account_id` is injected from the JWT automatically.
+    Requires an account-scoped token.
+    """
     body["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -857,8 +1197,27 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
 
 # ── Past simulation retrieval (proxy) ─────────────────────────────────────────
 
-@app.get("/simulation/{simulation_id}")
+@app.get(
+    "/simulation/{simulation_id}",
+    tags=["simulation"],
+    summary="Fetch full simulation output",
+    description=(
+        "Retrieves the complete simulation result for a given `simulation_id`, proxied from the simulation engine. "
+        "Includes all weekly POS, store inventory, DC inventory, supplier DC inventory, and shipment data. "
+        "This data is read from ClickHouse and is only available after the background analytics write has completed "
+        "(check `GET /analytics/{simulation_id}/status` first if unsure). "
+        "Requires an account-scoped token."
+    ),
+)
 async def get_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Retrieves the complete simulation result for a given run, proxied from the simulation engine.
+    Includes all weekly POS, store inventory, DC inventory, supplier DC inventory, and shipment data
+    read from ClickHouse.
+
+    Only available after the background analytics write has completed —
+    check analytics status first if unsure. Requires an account-scoped token.
+    """
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.get(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
@@ -870,8 +1229,22 @@ async def get_simulation(simulation_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
-@app.get("/run-config/{simulation_id}")
+@app.get(
+    "/run-config/{simulation_id}",
+    tags=["simulation"],
+    summary="Fetch the YAML config used for a past run",
+    description=(
+        "Retrieves the original YAML configuration that was used to create a specific simulation run. "
+        "Useful for inspecting what parameters were set, cloning a run with minor tweaks, or debugging unexpected simulation results. "
+        "Proxied from the simulation engine. Requires an account-scoped token."
+    ),
+)
 async def get_run_config(simulation_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Retrieves the original YAML configuration used to create a specific simulation run.
+    Useful for inspecting parameters, cloning a run with minor tweaks, or debugging results.
+    Proxied from the simulation engine. Requires an account-scoped token.
+    """
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(f"{SIM_ENGINE_URL}/run-config/{simulation_id}")
@@ -883,8 +1256,22 @@ async def get_run_config(simulation_id: str, current_user: dict = Depends(get_cu
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
-@app.delete("/simulation/{simulation_id}")
+@app.delete(
+    "/simulation/{simulation_id}",
+    tags=["simulation"],
+    summary="Delete a simulation and all its analytics data",
+    description=(
+        "Permanently deletes a simulation run and all associated analytics data from both PostgreSQL and ClickHouse. "
+        "This action is irreversible — all POS, inventory, and shipment data for this run will be lost. "
+        "Proxied to the simulation engine. Requires an account-scoped token."
+    ),
+)
 async def delete_simulation(simulation_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Permanently deletes a simulation run and all associated analytics data from both PostgreSQL and ClickHouse.
+    **This action is irreversible** — all POS, inventory, and shipment data for this run will be lost.
+    Proxied to the simulation engine. Requires an account-scoped token.
+    """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.delete(f"{SIM_ENGINE_URL}/simulation/{simulation_id}")
@@ -896,14 +1283,39 @@ async def delete_simulation(simulation_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
 
 
-@app.get("/analytics/{simulation_id}/{path:path}")
+@app.get(
+    "/analytics/{simulation_id}/{path:path}",
+    tags=["analytics"],
+    summary="Proxy analytics queries to the simulation engine",
+    description=(
+        "Authenticated wildcard proxy for all analytics read endpoints on the simulation engine. "
+        "Any `GET /analytics/{simulation_id}/<sub-path>` request is forwarded to the engine with all query parameters preserved. "
+        "Common sub-paths: `summary/weekly-pos`, `summary/store-inventory`, `summary/dc-inventory`, "
+        "`detail/store-sales`, `detail/dc-inventory`, `detail/supplier-dc-inventory`. "
+        "Use this instead of calling the sim-engine directly when you need authenticated access. "
+        "Requires an account-scoped token."
+    ),
+)
 async def proxy_analytics(
     simulation_id: str,
     path: str,
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """Proxy analytics GET requests to the simulation engine, forwarding all query params."""
+    """
+    Authenticated wildcard proxy for all analytics read endpoints on the simulation engine.
+    Any `GET /analytics/{simulation_id}/<sub-path>` is forwarded with all query parameters preserved.
+
+    **Common sub-paths:**
+    - `summary/weekly-pos` — aggregated weekly POS across all stores/items
+    - `summary/store-inventory` — store-level inventory by week
+    - `summary/dc-inventory` — DC-level inventory by week
+    - `detail/store-sales` — filterable row-level store sales
+    - `detail/dc-inventory` — filterable DC inventory rows
+    - `detail/supplier-dc-inventory` — supplier DC inventory rows
+
+    Requires an account-scoped token.
+    """
     account = current_user["retailer_account_id"]
     logger.info("analytics  account=%s  sim=%s  path=%s", account, simulation_id[:8], path)
     params = dict(request.query_params)
