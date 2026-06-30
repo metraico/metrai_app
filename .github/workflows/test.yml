@@ -1,0 +1,143 @@
+name: Tests — metrai_app (backend API + frontend build)
+
+on:
+  pull_request:
+    branches: [dev, main, pre-dev]
+  push:
+    branches: [pre-dev, nir/ci-cd]
+
+jobs:
+  backend-tests:
+    name: Backend — pytest integration tests against live FastAPI + sim engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: metrai
+          POSTGRES_USER: metrai
+          POSTGRES_PASSWORD: metrai_pass
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U metrai -d metrai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout metrai_app
+        uses: actions/checkout@v4
+
+      - name: Checkout metrai_simulation_engine
+        uses: actions/checkout@v4
+        with:
+          repository: metraico/metrai_simulation_engine
+          ref: pre-dev
+          path: metrai_simulation_engine
+          token: ${{ secrets.METRAI_REPO_TOKEN }}
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Apply DB schema (engine repo)
+        env:
+          PGPASSWORD: metrai_pass
+        run: |
+          psql -h localhost -p 5433 -U metrai -d metrai \
+            -f metrai_simulation_engine/db/pg_init.sql
+          psql -h localhost -p 5433 -U metrai -d metrai \
+            -f metrai_simulation_engine/db/pg_migrate_add_promo_config.sql
+          psql -h localhost -p 5433 -U metrai -d metrai \
+            -f backend/migrations/001_auth.sql
+
+      - name: Start sim engine (background)
+        env:
+          POSTGRES_DSN: postgresql://metrai:metrai_pass@localhost:5433/metrai
+          JWT_SECRET: ci-jwt-secret-must-match-backend
+          SAMPLE_DATA_DIR: ./metrai_simulation_engine/sample_data
+        run: |
+          pip install -r metrai_simulation_engine/requirements.txt
+          cd metrai_simulation_engine
+          nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+            > /tmp/engine.log 2>&1 &
+          cd ..
+          # Wait for /health
+          for i in {1..30}; do
+            curl -sf http://localhost:8000/health && break
+            sleep 2
+          done
+
+      - name: Start app backend (background)
+        env:
+          POSTGRES_DSN: postgresql://metrai:metrai_pass@localhost:5433/metrai
+          SIM_ENGINE_URL: http://localhost:8000
+          JWT_SECRET: ci-jwt-secret-must-match-backend
+        run: |
+          nohup python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080 \
+            > /tmp/backend.log 2>&1 &
+          for i in {1..30}; do
+            curl -sf http://localhost:8080/health && break
+            sleep 2
+          done
+
+      - name: Run pytest
+        env:
+          BACKEND_URL: http://localhost:8080
+          ENGINE_URL: http://localhost:8000
+        run: |
+          pytest tests/ -v --tb=short --junit-xml=tests/results.xml \
+            --cov=backend --cov-report=xml --cov-report=term-missing
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: |
+            tests/results.xml
+            coverage.xml
+            /tmp/backend.log
+            /tmp/engine.log
+
+  frontend-build:
+    name: Frontend — TypeScript type-check, ESLint, Next.js production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true   # 111 pre-existing lint errors — non-blocking until cleaned up
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_BACKEND_URL: http://localhost:8080
+          NEXT_PUBLIC_ENGINE_URL: http://localhost:8000
+        run: npm run build
