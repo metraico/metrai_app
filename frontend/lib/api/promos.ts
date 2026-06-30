@@ -1,5 +1,5 @@
-import { engineClient } from './client'
-import type { SimulatePreviewResponse, PromoResponse, PromoGroupResponse } from './types'
+import { apiClient, engineClient } from './client'
+import type { SimulatePreviewResponse, PromoGroupResponse, PromoResponse } from './types'
 
 export const getSimulatePreview = (
   retailerAccountId: string,
@@ -23,13 +23,11 @@ export const getPromoYamlTemplate = (
     })
     .then(r => r.data)
 
-// GET /promos — full promo catalog for a retailer account
-export const getPromos = (retailerAccountId: string) =>
-  engineClient
-    .get<PromoResponse[]>('/promos', { params: { retailer_account_id: retailerAccountId } })
-    .then(r => r.data)
+// retailerAccountId unused — backend resolves it from the JWT
+export const getPromos = (_retailerAccountId?: string) =>
+  apiClient.get<PromoResponse[]>('/promos').then(r => r.data)
 
-// GET /promo-groups — all promo groups for a retailer account
+// GET /promo-groups — kept on engineClient until app-backend ports the endpoint (Phase 2)
 export const getPromoGroups = (retailerAccountId: string) =>
   engineClient
     .get<PromoGroupResponse[]>('/promo-groups', { params: { retailer_account_id: retailerAccountId } })

@@ -30,7 +30,8 @@ export const useAuthStore = create<AuthState>()(
       setAuth: (data) => set((state) => ({
         ...state,
         ...data,
-        isAuthenticated: !!data.accessToken,
+        // Only update isAuthenticated when accessToken is explicitly provided
+        isAuthenticated: 'accessToken' in data ? !!data.accessToken : state.isAuthenticated,
       })),
 
       clearAuth: () => set({

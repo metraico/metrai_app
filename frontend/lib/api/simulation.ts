@@ -1,4 +1,5 @@
-import { engineClient } from './client'
+import { apiClient, engineClient } from './client'
+import { formatDateUS } from '@/lib/utils'
 import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -13,14 +14,14 @@ const CHUNK_WEEKS = 4
  * `performance` entry with schedule_id and pct: 0.
  */
 export function buildRunChunkYaml(
-  promos: { id: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
+  promos: { id: string; promo_name?: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
   chunkStart: string,
   chunkEnd: string,
   sessionId?: string,
 ): string {
   const sessionLine = sessionId ? `# Session: ${sessionId}\n` : ''
   const header = [
-    `# Chunk window: ${chunkStart} → ${chunkEnd}  (SIM, ${CHUNK_WEEKS} weeks)`,
+    `# Chunk window: ${formatDateUS(chunkStart)} → ${formatDateUS(chunkEnd)}  (SIM, ${CHUNK_WEEKS} weeks)`,
     sessionLine.trimEnd(),
     `# Edit pct for each promo: +50 = overperformed 50%, -30 = underperformed 30%, 0 = on plan`,
     '',
@@ -33,7 +34,7 @@ export function buildRunChunkYaml(
   const entries = promos.map(p =>
     [
       `  - schedule_id: "${p.id}"`,
-      `    pct: 0        # ${p.promo_group_name}  ${p.start_date} → ${p.end_date}`,
+      `    pct: 0        # ${p.promo_name ? `${p.promo_name} (${p.promo_group_name})` : p.promo_group_name}  ${formatDateUS(p.start_date)} → ${formatDateUS(p.end_date)}`,
     ].join('\n')
   ).join('\n\n')
 
@@ -55,18 +56,14 @@ export const runSimulation = (yamlContent: string, promoYamlContent = '', scenar
 export const pollSimulationUntilDone = (result: RunYamlResponse) =>
   Promise.resolve(result)
 
-// GET /run-config/{simulation_id}
+// GET /run-config/{simulation_id} — app-backend proxies to sim-engine
 export const getRunConfig = (simulationId: string) =>
-  engineClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
+  apiClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
 
-// GET /runs?retailer_account_id=&user_id=&scenario_type=
-export const getRuns = (retailerAccountId: string, userId: string, scenarioType?: string) =>
-  engineClient.get<SimulationRun[]>('/runs', {
-    params: {
-      retailer_account_id: retailerAccountId,
-      user_id: userId,
-      ...(scenarioType ? { scenario_type: scenarioType } : {}),
-    }
+// GET /runs?scenario_type=  (retailer_account_id and user_id derived from JWT by app-backend)
+export const getRuns = (_retailerAccountId: string, _userId: string, scenarioType?: string) =>
+  apiClient.get<SimulationRun[]>('/runs', {
+    params: { ...(scenarioType ? { scenario_type: scenarioType } : {}) },
   }).then(r => r.data)
 
 // GET /run-yaml-template
@@ -86,10 +83,9 @@ export interface YamlTemplateParams {
 }
 
 export const getRunYamlTemplate = (params: YamlTemplateParams = {}) => {
-  const { retailerAccountId, ...rest } = params
-  return engineClient.get<{ yaml: string }>('/run-yaml-template', {
-    params: { ...(retailerAccountId ? { retailer_account_id: retailerAccountId } : {}), ...rest },
-  }).then(r => r.data)
+  // retailer_account_id is derived from the JWT by app-backend; drop it from params.
+  const { retailerAccountId: _ignored, ...rest } = params
+  return apiClient.get<{ yaml: string }>('/run-yaml-template', { params: rest }).then(r => r.data)
 }
 
 // GET /simulation/{simulation_id} — full ClickHouse output (available after background write)
@@ -244,6 +240,7 @@ export const getSessionPromoSchedules = (
 ) =>
   engineClient.get<{
     id: string
+    promo_name: string
     promo_group_name: string
     start_date: string
     end_date: string

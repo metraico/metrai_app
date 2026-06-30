@@ -7,6 +7,7 @@ services:
     environment:
       SIM_ENGINE_URL: "${DOCKER_SIM_ENGINE_URL:-http://metrai_api:8000}"
       POSTGRES_DSN: "${DOCKER_POSTGRES_DSN:-postgresql://metrai:metrai_pass@metrai_postgres:5432/metrai}"
+      JWT_SECRET: "${JWT_SECRET}"
     ports:
       - "8080:8000"
     networks:
@@ -23,7 +24,7 @@ services:
       context: .
       dockerfile: Dockerfile.nextjs
       args:
-        NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}"
+        NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8080}"
         NEXT_PUBLIC_ENGINE_URL: "${NEXT_PUBLIC_ENGINE_URL:-http://localhost:8000}"
     container_name: metrai_app_frontend_nextjs
     ports:
