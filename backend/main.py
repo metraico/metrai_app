@@ -742,14 +742,17 @@ def get_runs(
 
 # ── Entity catalogue ──────────────────────────────────────────────────────────
 
-def _resolve_data_account(cur, retailer_account_id: str) -> str:
-    """Return retailer_account_id to use for catalog data. Falls back to demo account if this account has no items."""
-    cur.execute("SELECT 1 FROM items WHERE retailer_account_id = %s LIMIT 1", (retailer_account_id,))
-    if cur.fetchone():
-        return retailer_account_id
+def _resolve_data_account(cur, retailer_account_id: str) -> str | None:
+    """Return retailer_account_id to use for catalog data. Falls back to demo account
+    if this account has no items, or if no retailer_account_id is set on the JWT yet
+    (e.g. fresh login before /switch-account)."""
+    if retailer_account_id:
+        cur.execute("SELECT 1 FROM items WHERE retailer_account_id = %s LIMIT 1", (retailer_account_id,))
+        if cur.fetchone():
+            return retailer_account_id
     cur.execute("SELECT retailer_account_id::text FROM items LIMIT 1")
     row = cur.fetchone()
-    return row[0] if row else retailer_account_id
+    return row[0] if row else None
 
 
 @app.get(
@@ -1180,10 +1183,25 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
 
     Use this to catch schema errors in the scenario editor **before** triggering a full simulation run.
     Returns validation errors with detail if the YAML is malformed or references unknown entities.
-    The `retailer_account_id` is injected from the JWT automatically.
+    The `retailer_account_id` is injected from the JWT automatically (with demo-account fallback,
+    so freshly registered users without seeded data can still validate against the demo catalogue).
     Requires an account-scoped token.
     """
-    body["retailer_account_id"] = current_user["retailer_account_id"]  # enforce from JWT
+    # Resolve the data account the same way /promos and /entities do — falls back to
+    # the demo account when the user's own account has no items/promos seeded yet.
+    # Without this, the engine's ScenarioResolver queries the raw JWT account and
+    # reports "Promo not found for this retailer account. Available: []".
+    raw_account_id = current_user.get("retailer_account_id") or ""
+    if POSTGRES_DSN:
+        conn = _pg_connect()
+        try:
+            with conn.cursor() as cur:
+                data_acct = _resolve_data_account(cur, raw_account_id)
+        finally:
+            conn.close()
+        body["retailer_account_id"] = data_acct or raw_account_id
+    else:
+        body["retailer_account_id"] = raw_account_id
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SIM_ENGINE_URL}/scenario/validate", json=body)

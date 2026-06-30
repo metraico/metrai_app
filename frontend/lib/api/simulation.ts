@@ -41,7 +41,7 @@ export function buildRunChunkYaml(
   return header + 'performance:\n' + entries + '\n'
 }
 
-export const engineBaseUrl: string = (process.env.NEXT_PUBLIC_ENGINE_URL as string) || 'http://localhost:8001'
+export const engineBaseUrl: string = (process.env.NEXT_PUBLIC_ENGINE_URL as string) || 'http://localhost:8000'
 
 // POST /simulate — synchronous, returns completed result inline
 export const runSimulation = (yamlContent: string, promoYamlContent = '', scenarioYamlContent = '', simulationId?: string) =>
@@ -168,50 +168,26 @@ export const createRollingSession = (
   }).then(r => r.data)
 
 // POST /simulation/{id}/rolling-session  (YAML path — used by the new YAML modal)
-export const createRollingSessionYaml = async (
+export const createRollingSessionYaml = (
   simulationId: string,
   yamlBody: string,
-): Promise<RollingForecastSession> => {
-  const baseURL = (engineClient.defaults.baseURL as string) || 'http://localhost:8001'
-  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
-  const resp = await fetch(`${baseURL}/simulation/${simulationId}/rolling-session`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/yaml',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: yamlBody,
-  })
-  if (!resp.ok) {
-    let msg = `Server error ${resp.status}`
-    try { const b = await resp.json(); msg = b?.detail ?? b?.message ?? msg } catch {}
-    throw new Error(msg)
-  }
-  return resp.json()
-}
+): Promise<RollingForecastSession> =>
+  engineClient.post<RollingForecastSession>(
+    `/simulation/${simulationId}/rolling-session`,
+    yamlBody,
+    { headers: { 'Content-Type': 'text/yaml' } },
+  ).then(r => r.data)
 
 // POST /rolling-session/{id}/run-chunk  (YAML path — used by run-chunk-modal)
-export const runRollingChunkYaml = async (
+export const runRollingChunkYaml = (
   sessionId: string,
   yamlBody: string,
-): Promise<RunChunkResponse> => {
-  const baseURL = (engineClient.defaults.baseURL as string) || 'http://localhost:8001'
-  const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null
-  const resp = await fetch(`${baseURL}/rolling-session/${sessionId}/run-chunk`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/yaml',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: yamlBody,
-  })
-  if (!resp.ok) {
-    let msg = `Server error ${resp.status}`
-    try { const b = await resp.json(); msg = b?.detail ?? b?.message ?? msg } catch {}
-    throw new Error(msg)
-  }
-  return resp.json()
-}
+): Promise<RunChunkResponse> =>
+  engineClient.post<RunChunkResponse>(
+    `/rolling-session/${sessionId}/run-chunk`,
+    yamlBody,
+    { headers: { 'Content-Type': 'text/yaml' } },
+  ).then(r => r.data)
 
 // GET /simulation/{id}/rolling-session
 export const getRollingSession = (simulationId: string) =>
