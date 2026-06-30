@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# test runner
+pytest>=8.0.0
+pytest-xdist>=3.5.0      # parallel test execution
+pytest-timeout>=2.3.0    # safety net for hung HTTP calls
+
+# coverage (optional but used by CI)
+coverage[toml]>=7.4.0
+pytest-cov>=4.1.0
