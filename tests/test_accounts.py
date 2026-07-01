@@ -210,3 +210,43 @@ def test_get_accounts_with_switched_token(authed_client: httpx.Client, backend_u
         new_accounts = resp.json()
         assert isinstance(new_accounts, list)
         assert any(a["retailer_account_id"] == account_id for a in new_accounts)
+
+
+# ---------------------------------------------------------------------------
+# 10. Cross-user isolation — user1's account must NOT appear in user2's
+#     /accounts, and user2 must NOT be able to switch into it.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.accounts
+@pytest.mark.integration
+def test_accounts_are_scoped_per_user(client: httpx.Client, random_username: str):
+    def _register_and_login(username: str) -> str:
+        r = client.post("/auth/register", json={"username": username, "password": "pw12345678"})
+        assert r.status_code in (200, 201), r.text
+        return r.json()["access_token"]
+
+    u1 = f"{random_username}_a"
+    u2 = f"{random_username}_b"
+    tok1 = _register_and_login(u1)
+    tok2 = _register_and_login(u2)
+
+    h1 = {"Authorization": f"Bearer {tok1}"}
+    h2 = {"Authorization": f"Bearer {tok2}"}
+
+    name1 = _unique_name()
+    r1 = client.post("/accounts", headers=h1, json={"account_name": name1})
+    assert r1.status_code == 200, r1.text
+    acct1_id = r1.json()["retailer_account_id"]
+
+    name2 = _unique_name()
+    r2 = client.post("/accounts", headers=h2, json={"account_name": name2})
+    assert r2.status_code == 200, r2.text
+    acct2_id = r2.json()["retailer_account_id"]
+
+    ids1 = {a["retailer_account_id"] for a in client.get("/accounts", headers=h1).json()}
+    ids2 = {a["retailer_account_id"] for a in client.get("/accounts", headers=h2).json()}
+    assert acct1_id in ids1 and acct2_id not in ids1, "user1 leaked user2's account"
+    assert acct2_id in ids2 and acct1_id not in ids2, "user2 leaked user1's account"
+
+    sw = client.post("/switch-account", headers=h2, json={"retailer_account_id": acct1_id})
+    assert sw.status_code in (403, 404), f"user2 was able to switch into user1's account: {sw.text}"
