@@ -134,7 +134,6 @@ jobs:
 
       - name: Lint
         run: npm run lint
-        continue-on-error: true   # 111 pre-existing lint errors — non-blocking until cleaned up
 
       - name: Build
         env:

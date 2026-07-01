@@ -12,7 +12,7 @@ export async function POST(
     const route = routeArray[0]
     const body = await request.json()
 
-    let backendUrl = `${BACKEND_URL}/api/auth/${route}`
+    const backendUrl = `${BACKEND_URL}/api/auth/${route}`
 
     const response = await axios.post(backendUrl, body, {
       headers: {
