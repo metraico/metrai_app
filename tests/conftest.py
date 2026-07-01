@@ -18,14 +18,51 @@ import uuid
 from typing import Iterator
 
 import httpx
+import psycopg2
 import pytest
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080")
 ENGINE_URL = os.getenv("ENGINE_URL", "http://localhost:8000")
+POSTGRES_DSN = os.getenv(
+    "POSTGRES_DSN",
+    "postgresql://metrai:metrai_pass@localhost:5433/metrai",
+)
 
 DEMO_USERNAME = "demo"
 DEMO_PASSWORD = "12345678"
+
+
+def _cleanup_test_data() -> None:
+    with psycopg2.connect(POSTGRES_DSN) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM user_accounts
+            WHERE user_id IN (SELECT user_id FROM users WHERE username LIKE 'pytest_%%')
+               OR retailer_account_id IN (
+                    SELECT retailer_account_id FROM retailer_accounts
+                    WHERE retailer_account_name LIKE 'Pytest Store %%'
+               );
+            """
+        )
+        cur.execute("DELETE FROM refresh_tokens WHERE user_id IN (SELECT user_id FROM users WHERE username LIKE 'pytest_%%');")
+        cur.execute("DELETE FROM retailer_accounts WHERE retailer_account_name LIKE 'Pytest Store %%';")
+        cur.execute("DELETE FROM users WHERE username LIKE 'pytest_%%';")
+        conn.commit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pytest_data_cleanup() -> Iterator[None]:
+    """Purge rows created by prior/current pytest runs — before and after the session."""
+    try:
+        _cleanup_test_data()
+    except Exception as e:
+        print(f"[conftest] pre-session cleanup skipped: {e}")
+    yield
+    try:
+        _cleanup_test_data()
+    except Exception as e:
+        print(f"[conftest] post-session cleanup failed: {e}")
 
 
 @pytest.fixture(scope="session")
