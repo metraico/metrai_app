@@ -42,6 +42,9 @@ app = FastAPI(
     title="Metrai App Backend",
     version="0.2.0",
     openapi_tags=[
+        {"name": "scenario: shared",           "description": "Endpoints used by every scenario type — validate, run, run/yaml, simulation retrieval, run-config, and analytics proxy"},
+        {"name": "scenario: promo_forecast",   "description": "Endpoints used by the promo-forecast scenario (superset of scenario: shared)"},
+        {"name": "scenario: hidden_lost_sales","description": "Endpoints used by the hidden-lost-sales scenario (superset of scenario: shared) including the typed reconciliation endpoint"},
         {"name": "auth",        "description": "Register, login, token refresh, and logout"},
         {"name": "accounts",    "description": "Retailer account management and account switching"},
         {"name": "runs",        "description": "Simulation run history and YAML template generation"},
@@ -1067,7 +1070,7 @@ def get_promos(current_user: dict = Depends(get_current_user)):
 
 @app.post(
     "/run",
-    tags=["simulation"],
+    tags=["simulation", "scenario: shared", "scenario: promo_forecast", "scenario: hidden_lost_sales"],
     summary="Trigger a new simulation run (JSON body)",
     description=(
         "Starts a new simulation by proxying the request to the simulation engine. "
@@ -1112,7 +1115,7 @@ async def run_simulation(req: dict, current_user: dict = Depends(get_current_use
 
 @app.post(
     "/run/yaml",
-    tags=["simulation"],
+    tags=["simulation", "scenario: shared", "scenario: promo_forecast", "scenario: hidden_lost_sales"],
     summary="Trigger a new simulation run (YAML body)",
     description=(
         "Same as `POST /run` but accepts a YAML string in `{\"yaml_content\": \"...\"}` format instead of a JSON object. "
@@ -1165,7 +1168,7 @@ async def run_simulation_yaml(body: dict, current_user: dict = Depends(get_curre
 
 @app.post(
     "/scenario/validate",
-    tags=["simulation"],
+    tags=["simulation", "scenario: shared", "scenario: promo_forecast", "scenario: hidden_lost_sales"],
     summary="Validate a scenario YAML before running",
     description=(
         "Validates a scenario YAML config (e.g. a `promo_forecast` or `hidden_lost_sales` scenario) "
@@ -1217,7 +1220,7 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
 
 @app.get(
     "/simulation/{simulation_id}",
-    tags=["simulation"],
+    tags=["simulation", "scenario: shared", "scenario: promo_forecast", "scenario: hidden_lost_sales"],
     summary="Fetch full simulation output",
     description=(
         "Retrieves the complete simulation result for a given `simulation_id`, proxied from the simulation engine. "
@@ -1249,7 +1252,7 @@ async def get_simulation(simulation_id: str, current_user: dict = Depends(get_cu
 
 @app.get(
     "/run-config/{simulation_id}",
-    tags=["simulation"],
+    tags=["simulation", "scenario: shared", "scenario: promo_forecast", "scenario: hidden_lost_sales"],
     summary="Fetch the YAML config used for a past run",
     description=(
         "Retrieves the original YAML configuration that was used to create a specific simulation run. "
@@ -1302,8 +1305,64 @@ async def delete_simulation(simulation_id: str, current_user: dict = Depends(get
 
 
 @app.get(
+    "/analytics/{simulation_id}/hidden-lost-sales",
+    tags=["analytics", "scenario: hidden_lost_sales"],
+    summary="Hidden-lost-sales reconciliation for a simulation run",
+    description=(
+        "Returns under-fulfilled shipments (`under_fulfilled_shipments`) for the simulation — rows where "
+        "`shipped_qty < ordered_qty` — alongside the disruption windows parsed from the scenario YAML "
+        "and aggregate totals (`gap_shipments`, `gap_units`). "
+        "Only meaningful for `hidden_lost_sales` scenario runs; the field will be empty for other scenario types. "
+        "Proxied from the simulation engine. Requires an account-scoped token."
+    ),
+)
+async def proxy_analytics_hidden_lost_sales(
+    simulation_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Typed proxy for the hidden-lost-sales reconciliation endpoint on the simulation engine.
+
+    Response shape::
+
+        {
+          "simulation_id": "...",
+          "retailer_account_id": "...",
+          "disruption_windows": [
+            { "supplier_dc_code": "SDC001", "item_codes": ["ITEM123"],
+              "window_start": "2025-03-01", "window_end": "2025-03-15", "mode": "stockout" }
+          ],
+          "under_fulfilled_shipments": [
+            { "shipment_week": "2025-03-03",
+              "supplier_dc_code": "SDC001", "retailer_dc_code": "RDC01",
+              "item_code": "ITEM123",
+              "ordered_qty": 240, "shipped_qty": 0, "gap": 240, "fill_rate": 0.0 }
+          ],
+          "totals": { "gap_shipments": 1, "gap_units": 240.0 }
+        }
+
+    Requires an account-scoped token.
+    """
+    account = current_user["retailer_account_id"]
+    logger.info("analytics/hidden-lost-sales  account=%s  sim=%s", account, simulation_id[:8])
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{SIM_ENGINE_URL}/analytics/{simulation_id}/hidden-lost-sales",
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Analytics request timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.get(
     "/analytics/{simulation_id}/{path:path}",
-    tags=["analytics"],
+    tags=["analytics", "scenario: shared", "scenario: promo_forecast", "scenario: hidden_lost_sales"],
     summary="Proxy analytics queries to the simulation engine",
     description=(
         "Authenticated wildcard proxy for all analytics read endpoints on the simulation engine. "

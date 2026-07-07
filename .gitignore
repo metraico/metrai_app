@@ -5,7 +5,9 @@ __pycache__/
 *.egg-info/
 .DS_Store
 .pem
+*.png
 .venv/
+.playwright-mcp/
 
 # Node / Next.js (covers frontend/, metrai_nextjs/, or any nested JS app)
 node_modules/

@@ -12,7 +12,9 @@ import {
   getAnalyticsMeta,
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
+  getHiddenLostSales,
 } from '@/lib/api/analytics'
+import type { HiddenLostSalesResponse } from '@/lib/api/analytics'
 import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules } from '@/lib/api/simulation'
 import { RollingForecastModal } from './rolling-forecast-modal'
 import { RunChunkModal } from './run-chunk-modal'
@@ -143,6 +145,25 @@ function PerformanceBadge({ pct }: { pct: number | null | undefined }) {
   )
 }
 
+// Convert an ISO week label like "2025-W25" → "Jun 2025 · 2025-W25".
+// If input is not in ISO-week form, returns it unchanged.
+function formatWeekLabel(label?: string): string {
+  if (!label) return ''
+  const m = /^(\d{4})-W(\d{1,2})$/.exec(label)
+  if (!m) return label
+  const year = parseInt(m[1], 10)
+  const week = parseInt(m[2], 10)
+  // ISO week: Monday of week 1 is the Monday of the week containing Jan 4.
+  const jan4 = new Date(Date.UTC(year, 0, 4))
+  const jan4Dow = jan4.getUTCDay() || 7  // Mon=1, Sun=7
+  const mondayW1 = new Date(jan4)
+  mondayW1.setUTCDate(jan4.getUTCDate() - (jan4Dow - 1))
+  const target = new Date(mondayW1)
+  target.setUTCDate(mondayW1.getUTCDate() + (week - 1) * 7)
+  const month = target.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })
+  return `${month} ${target.getUTCFullYear()} · ${label}`
+}
+
 function ChartTooltip({ active, payload, label, promoWeekMap }: {
   active?: boolean; payload?: any[]; label?: string
   promoWeekMap?: Record<string, { name: string; groupName: string }>
@@ -161,7 +182,7 @@ function ChartTooltip({ active, payload, label, promoWeekMap }: {
           <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
         </div>
       )}
-      <p className="mb-1 font-semibold text-charcoal-blue-700">{label}</p>
+      <p className="mb-1 font-semibold text-charcoal-blue-700">{formatWeekLabel(label)}</p>
       {payload.map((p: any) => (
         <p key={p.dataKey} className="flex justify-between gap-4" style={{ color: p.color }}>
           <span>{p.name}</span>
@@ -212,7 +233,7 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
         </div>
       )}
       <div className="mb-1.5 flex items-center justify-between gap-3">
-        <p className="font-semibold text-charcoal-blue-700">{label}</p>
+        <p className="font-semibold text-charcoal-blue-700">{formatWeekLabel(label)}</p>
         {runLabel && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">{runLabel}</span>}
       </div>
       {!isFutureOnly && (
@@ -246,7 +267,7 @@ function DCInvTooltip({ active, payload, label }: { active?: boolean; payload?: 
   const status  = onHand === 0 && onOrder > 0 ? 'in-transit' : onHand === 0 ? 'stockout' : null
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[190px]">
-      <p className="mb-2 font-semibold text-charcoal-blue-700">{label}</p>
+      <p className="mb-2 font-semibold text-charcoal-blue-700">{formatWeekLabel(label)}</p>
       <p className="flex justify-between gap-4 text-charcoal-blue-700">
         <span>On Hand</span><span className="font-medium">{onHand.toLocaleString()}</span>
       </p>
@@ -267,7 +288,7 @@ function StoreInvTooltip({ active, payload, label }: { active?: boolean; payload
   const status  = avail === 0 && onOrder > 0 ? 'in-transit' : avail === 0 ? 'stockout' : null
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
-      <p className="mb-1.5 font-semibold text-charcoal-blue-700">{label}</p>
+      <p className="mb-1.5 font-semibold text-charcoal-blue-700">{formatWeekLabel(label)}</p>
       <p className="flex justify-between gap-4 text-emerald-700"><span>Available</span><span className="font-medium">{avail.toLocaleString()}</span></p>
       <p className="flex justify-between gap-4 text-amber-600"><span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span></p>
       {status === 'stockout'   && <p className="mt-1 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
@@ -479,7 +500,7 @@ export default function SimulationResultsPage() {
   const simulationId = params.runId as string
   const { cache } = useSimulationStore()
 
-  const { setOptions, clearOptions, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand } = useFilterStore()
+  const { setOptions, clearOptions, setFilters, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand } = useFilterStore()
 
   const [pageState, setPageState] = useState<PageState>('loading')
   const [pageError, setPageError] = useState('')
@@ -532,6 +553,9 @@ export default function SimulationResultsPage() {
   const [dcInvData, setDcInvData] = useState<any[]>([])
   const [dcInvError, setDcInvError] = useState('')
   const [dcInvLoading, setDcInvLoading] = useState(false)
+
+  // HLS — Hidden Lost Sales reconciliation (only for hidden_lost_sales scenario)
+  const [hlsData, setHlsData] = useState<HiddenLostSalesResponse | null>(null)
 
 
   const [combinedPosDataForZoom, setCombinedPosDataForZoom] = useState<any[]>([])
@@ -880,6 +904,14 @@ export default function SimulationResultsPage() {
     if (rollingSession?.status === 'active') refreshRollingForecast()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
+
+  // ── Fetch HLS reconciliation data when scenario is hidden_lost_sales ────────
+  useEffect(() => {
+    if (pageState !== 'ready') return
+    const scenarioType = (runFullConfig as any)?.scenario_type
+    if (scenarioType !== 'hidden_lost_sales') return
+    getHiddenLostSales(simulationId).then(setHlsData).catch(() => null)
+  }, [pageState, runFullConfig, simulationId])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -1416,6 +1448,68 @@ export default function SimulationResultsPage() {
               />
 
             </div>
+
+            {/* Hidden Lost Sales — Under-fulfilled Shipments */}
+            {hlsData && hlsData.under_fulfilled_shipments.length > 0 && (
+              <div className="mt-4 rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
+                <div className="mb-3">
+                  <h3 className="text-sm font-bold text-charcoal-blue-950">Hidden Lost Sales — Affected Items</h3>
+                </div>
+
+                {/* Affected items — chips from disruption YAML. Click to filter charts. */}
+                {hlsData.disruption_windows.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                      {hlsData.disruption_windows.flatMap((w) => {
+                        const codes = w.item_codes
+                        if (codes === 'all' || (typeof codes === 'string' && codes === 'all')) {
+                          return [{ key: `all-${w.supplier_dc_code}`, code: null, desc: `All items on ${w.supplier_dc_code}` }]
+                        }
+                        const arr = Array.isArray(codes) ? codes : []
+                        return arr.map((c) => ({ key: `${w.supplier_dc_code}-${c}`, code: c, desc: '' }))
+                      }).filter((chip, idx, arr) => arr.findIndex(x => x.key === chip.key) === idx)
+                        .map((chip) => {
+                          if (chip.code === null) {
+                            return (
+                              <span key={chip.key} className="rounded-full border border-charcoal-blue-300 bg-charcoal-blue-50 px-2.5 py-1 text-[11px] font-semibold text-charcoal-blue-700">
+                                {chip.desc}
+                              </span>
+                            )
+                          }
+                          const match = (meta?.items_meta ?? []).find((m: any) => m.item_code === chip.code)
+                          const label = match?.item_description || match?.item_name || chip.code
+                          const isSelected = !!match && globalItem === match.item_id
+                          const clickable = !!match
+                          return (
+                            <button
+                              key={chip.key}
+                              type="button"
+                              disabled={!clickable}
+                              onClick={() => {
+                                if (!match) return
+                                setFilters({ globalItem: isSelected ? '' : match.item_id })
+                              }}
+                              className={`rounded-full border px-2.5 py-1 text-left text-[11px] font-semibold transition-colors ${
+                                isSelected
+                                  ? 'border-majorelle-blue-500 bg-majorelle-blue-500 text-white'
+                                  : clickable
+                                    ? 'border-charcoal-blue-300 bg-white text-charcoal-blue-700 hover:border-majorelle-blue-400 hover:bg-majorelle-blue-50 cursor-pointer'
+                                    : 'border-charcoal-blue-200 bg-charcoal-blue-50 text-charcoal-blue-400 cursor-default'
+                              }`}
+                              title={label}
+                            >
+                              <span className="font-mono">{chip.code}</span>
+                              {label && label !== chip.code && (
+                                <span className={`ml-1.5 font-normal ${isSelected ? 'text-white/90' : 'text-charcoal-blue-500'}`}>{label}</span>
+                              )}
+                            </button>
+                          )
+                        })}
+                  </div>
+                )}
+
+              </div>
+            )}
+
           </>
         )}
 

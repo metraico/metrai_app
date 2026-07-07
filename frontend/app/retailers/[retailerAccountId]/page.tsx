@@ -26,7 +26,7 @@ export default function RetailerLandingPage() {
         {allCards.map((card) => {
           const Icon = card.icon
           const { isPlain } = card
-          const isReady = isPlain || card.id === 'promo_forecast'
+          const isReady = isPlain || card.id === 'promo_forecast' || card.id === 'hidden_lost_sales'
 
           return (
             <div

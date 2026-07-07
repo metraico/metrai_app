@@ -131,6 +131,41 @@ export const getSummaryUpstreamInventory = (simulationId: string, filters?: Supp
     .get<UpstreamInventoryResponse>(`/analytics/${simulationId}/summary/upstream-inventory`, { params: filters })
     .then(r => r.data)
 
+// ── Hidden Lost Sales ─────────────────────────────────────────────────────────
+
+export interface HiddenLostSalesDisruptionWindow {
+  supplier_dc_code: string
+  item_codes: string[] | 'all'
+  window_start: string
+  window_end: string
+  mode: string
+}
+
+export interface HiddenLostSalesShipment {
+  shipment_week: string
+  supplier_dc_code: string
+  retailer_dc_code: string
+  item_code: string
+  ordered_qty: number
+  shipped_qty: number
+  gap: number
+  fill_rate: number
+}
+
+export interface HiddenLostSalesResponse {
+  simulation_id: string
+  retailer_account_id: string
+  disruption_windows: HiddenLostSalesDisruptionWindow[]
+  under_fulfilled_shipments: HiddenLostSalesShipment[]
+  totals: { gap_shipments: number; gap_units: number }
+}
+
+// GET /analytics/{simulation_id}/hidden-lost-sales
+export const getHiddenLostSales = (simulationId: string) =>
+  engineClient
+    .get<HiddenLostSalesResponse>(`/analytics/${simulationId}/hidden-lost-sales`)
+    .then(r => r.data)
+
 // ── Compat aliases (old names used in run page) ───────────────────────────────
 export const getSupplyChainSales = getSupplierSales
 export const getUpstreamInventory = getDCInventory
