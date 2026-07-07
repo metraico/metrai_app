@@ -905,13 +905,20 @@ export default function SimulationResultsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
-  // ── Fetch HLS reconciliation data when scenario is hidden_lost_sales ────────
+  // ── Fetch HLS reconciliation data ─────────────────────────────────────────
+  // Fires as soon as simulationId is known. For non-HLS runs the response has
+  // an empty under_fulfilled_shipments array and disruption_windows, so the
+  // section renders nothing. Not gated on pageState / runFullConfig to avoid
+  // a race where the section shows only after refresh (previously the effect
+  // depended on runFullConfig arriving before pageState=ready).
   useEffect(() => {
-    if (pageState !== 'ready') return
-    const scenarioType = (runFullConfig as any)?.scenario_type
-    if (scenarioType !== 'hidden_lost_sales') return
-    getHiddenLostSales(simulationId).then(setHlsData).catch(() => null)
-  }, [pageState, runFullConfig, simulationId])
+    if (!simulationId) return
+    let cancelled = false
+    getHiddenLostSales(simulationId)
+      .then((d) => { if (!cancelled) setHlsData(d) })
+      .catch(() => null)
+    return () => { cancelled = true }
+  }, [simulationId])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -1374,7 +1381,7 @@ export default function SimulationResultsPage() {
               {/* Chart 3 — Supply Chain Shipments */}
               <ChartShell
                 title="Supply Chain Shipments"
-                subtitle="Supplier DC → Retailer DC ordered vs shipped and fill rate"
+                subtitle="Retailer DC's weekly orders to its supplier DC and what actually shipped. Fill Rate = Shipped ÷ Ordered on this leg (not manufacturer → supplier)."
                 error={shipError} loading={shipLoading}
                 isZoomed={zoom3.isZoomed} onZoomReset={zoom3.resetZoom}
                 chart={(h) => (
@@ -1450,7 +1457,7 @@ export default function SimulationResultsPage() {
             </div>
 
             {/* Hidden Lost Sales — Under-fulfilled Shipments */}
-            {hlsData && hlsData.under_fulfilled_shipments.length > 0 && (
+            {hlsData && hlsData.disruption_windows.length > 0 && (
               <div className="mt-4 rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
                 <div className="mb-3">
                   <h3 className="text-sm font-bold text-charcoal-blue-950">Hidden Lost Sales — Affected Items</h3>
