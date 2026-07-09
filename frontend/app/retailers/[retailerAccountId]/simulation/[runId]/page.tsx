@@ -1882,7 +1882,10 @@ export default function SimulationResultsPage() {
                   //  • else: original posData row
                   const src: any = useMergedSources ? (isAfterAnchor ? post ?? pre : pre ?? post) : (post ?? pre ?? { week })
                   const origForecast = src.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(week) : undefined
-                  const baseForecast = src.run_type === 'base' ? baseForecastMap.get(week) : undefined
+                  // base_forecast only applies pre-anchor. Post-anchor on branch views, the tooltip
+                  // must surface the branch-specific planner_forecast (branch_forecast_qty) — otherwise
+                  // Reactive and Adaptive would both fall through to the same shared baseForecastMap.
+                  const baseForecast = src.run_type === 'base' && !isAfterAnchor ? baseForecastMap.get(week) : undefined
                   // Legacy pre-run behavior: cut historical bars past anchor when branch hasn't run.
                   const legacyCut = !useMergedSources && showBranchForecastTail && stockoutEndWeek && week > stockoutEndWeek
                   // On branch views POST-anchor, the purple "Demand" bar represents the
