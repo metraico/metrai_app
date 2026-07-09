@@ -2141,8 +2141,21 @@ export default function SimulationResultsPage() {
             return weeks.map(w => (w > (stockoutEndWeek as string) ? (c.get(w) ?? p.get(w)) : (p.get(w) ?? c.get(w))) as T)
           }
           // Aggregate reactive planner_forecast rows by week for the tooltip overlay.
+          // Honor the current sidebar filters so this number matches the filtered POS bars.
+          // Item/store filter directly; category/subcategory/brand via items_meta lookup.
+          const itemsMeta = (meta?.items_meta ?? []) as any[]
+          const allowedItemIds = (globalCategory || globalSubcategory || globalBrand)
+            ? new Set(itemsMeta.filter(m =>
+                (!globalCategory || m.category === globalCategory) &&
+                (!globalSubcategory || m.subcategory === globalSubcategory) &&
+                (!globalBrand || m.brand === globalBrand)
+              ).map(m => m.item_id))
+            : null
           const reactiveForecastByWeek = new Map<string, number>()
           for (const r of branchForecastRows) {
+            if (globalItem && r.item_id !== globalItem) continue
+            if (globalStore && r.store_id !== globalStore) continue
+            if (allowedItemIds && !allowedItemIds.has(r.item_id)) continue
             const wk = r.forecast_week
             reactiveForecastByWeek.set(wk, (reactiveForecastByWeek.get(wk) ?? 0) + (r.planner_forecast ?? 0))
           }
@@ -2154,11 +2167,18 @@ export default function SimulationResultsPage() {
               const plannerForecast = !isAfterAnchor ? null
                 : branch === 'reactive' ? (reactiveForecastByWeek.get(d.week) ?? null)
                 : d.demand_qty
+              // Pre-anchor forecast: use baseForecastMap (weekly_demand) if available, else fall
+              // back to the row's demand_qty since base_forecast == base_demand for HLS pre-anchor.
+              const preAnchorForecast = isAfterAnchor ? null
+                : (baseForecastMap.get(d.week) ?? d.demand_qty ?? null)
               return {
                 ...d,
                 on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
                 on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
-                // Feed the tooltip resolver — post-anchor shows as "Future Demand".
+                // Tooltip resolver picks these up:
+                //   pre-anchor  → base_forecast_qty → "Forecasted Demand"
+                //   post-anchor → branch_forecast_qty → "Future Demand"
+                base_forecast_qty: preAnchorForecast,
                 branch_forecast_qty: plannerForecast,
               }
             })
