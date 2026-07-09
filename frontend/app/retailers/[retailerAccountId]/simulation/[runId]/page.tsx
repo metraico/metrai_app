@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
 import * as yaml from 'js-yaml'
@@ -195,9 +195,10 @@ function ChartTooltip({ active, payload, label, promoWeekMap }: {
   )
 }
 
-function POSTooltip({ active, payload, label, promoWeekMap }: {
+function POSTooltip({ active, payload, label, promoWeekMap, hideActual }: {
   active?: boolean; payload?: any[]; label?: string
   promoWeekMap?: Record<string, { name: string; groupName: string }>
+  hideActual?: boolean
 }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload ?? {}
@@ -213,11 +214,28 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
   const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
   const branchForecast = d.branch_forecast_qty != null ? Number(d.branch_forecast_qty) : null
   const originalForecast = d.original_forecast_qty != null ? Number(d.original_forecast_qty) : null
+  const baseForecast = d.base_forecast_qty != null ? Number(d.base_forecast_qty) : null
+  // On branch views post-anchor, `primary_demand_qty` IS the planner forecast (dampened for Reactive,
+  // baseline for Adaptive) — surface it as "Planner Demand" and pair with Actual Demand below.
+  const isPlannerBar = d.actual_demand_qty != null && d.primary_demand_qty != null
+  const plannerBarValue = isPlannerBar ? Number(d.primary_demand_qty) : null
+  // Universal forecast-value resolution — label depends on which source produced it.
+  const forecastedDemand =
+    plannerBarValue != null ? { value: plannerBarValue, label: 'Planner Demand' }
+    : originalForecast != null ? { value: originalForecast, label: 'Forecasted Demand' }
+    : baseForecast != null ? { value: baseForecast, label: 'Forecasted Demand' }
+    : forecast != null ? { value: forecast, label: 'Future Demand' }
+    : branchForecast != null ? { value: branchForecast, label: 'Future Demand' }
+    : null
   const fillRate = actualDemand > 0 ? (sales / actualDemand) * 100 : null
   const runType = d.run_type
   const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
-  // On a branch view past the stockout anchor, primary_demand_qty is nulled so demand is 0;
-  // treat those weeks as future-only when a branch forecast is present.
+  // Branch-view marker: `actual_demand_qty` is set only on branch views past the
+  // anchor, when the purple bar is the planner FORECAST (not raw actual). In that
+  // case we show a separate "Actual Demand" row with the raw actual.
+  const branchActual = d.actual_demand_qty != null ? Number(d.actual_demand_qty) : null
+  const isBranchForecastBar = branchActual != null
+  // Legacy pre-run branch-tail path (primary_demand_qty nulled, branch_forecast_qty carries value):
   const isBranchTail = d.primary_demand_qty == null && branchForecast != null
   const isFutureOnly = (demand === 0 && forecast != null) || isBranchTail
   // Computed performance for rolling_chunk weeks: actual demand vs original forecast
@@ -240,40 +258,34 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
         <p className="font-semibold text-charcoal-blue-700">{formatWeekLabel(label)}</p>
         {runLabel && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">{runLabel}</span>}
       </div>
+      <div className="mb-1.5 space-y-0.5">
+        {forecastedDemand != null && (
+          <p className={`flex justify-between gap-4 ${forecastedDemand.label === 'Future Demand' ? 'text-cyan-600' : 'text-violet-700'}`}>
+            <span>{forecastedDemand.label}</span>
+            <span className="font-medium">{Math.round(forecastedDemand.value).toLocaleString()}</span>
+          </p>
+        )}
+        {(() => {
+          // Post-anchor on a completed branch: `actual_demand_qty` (branchActual) is the branch child's realized demand.
+          // Pre-anchor and non-branch: `demand_qty` (actualDemand) is the authoritative actual.
+          // hideActual only fires when a branch is *selected but not yet run* — we suppress parent-leaked values then.
+          const shown = branchActual != null ? branchActual : (hideActual ? null : (actualDemand > 0 ? actualDemand : null))
+          if (shown == null) return null
+          return (
+            <p className="flex justify-between gap-4 text-charcoal-blue-600">
+              <span>Actual Demand</span>
+              <span className="font-medium">{Math.round(shown).toLocaleString()}</span>
+            </p>
+          )
+        })()}
+      </div>
       {!isFutureOnly && (
         <>
           <div className="mb-1.5 space-y-0.5">
-            <p className="flex justify-between gap-4 text-violet-700"><span>Demand</span><span className="font-medium">{demand.toLocaleString()}</span></p>
             <p className="flex justify-between gap-4 text-emerald-700"><span>Sales</span><span className="font-medium">{sales.toLocaleString()}</span></p>
             <p className="flex justify-between gap-4 text-red-600"><span>Lost Sales</span><span className="font-medium">{lost.toLocaleString()}</span></p>
           </div>
         </>
-      )}
-      {originalForecast != null && runType === 'rolling_chunk' && (
-        <div className="border-t border-charcoal-blue-100 pt-1.5 mt-1">
-          <p className="flex justify-between gap-4 text-charcoal-blue-500"><span>Actual Demand</span><span className="font-medium">{actualDemand.toLocaleString()}</span></p>
-        </div>
-      )}
-      {forecast != null && (
-        <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
-          <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{forecast.toLocaleString()}</span></p>
-        </div>
-      )}
-      {branchForecast != null && forecast == null && (
-        <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
-          <p className="flex justify-between gap-4 text-cyan-600">
-            <span>{isBranchTail ? 'Future Demand' : 'Planner Forecast'}</span>
-            <span className="font-medium">{branchForecast.toLocaleString()}</span>
-          </p>
-          {!isBranchTail && actualDemand > 0 && (
-            <p className="flex justify-between gap-4 text-charcoal-blue-400 text-[10px]">
-              <span>Forecast vs Actual</span>
-              <span className="font-medium">
-                {branchForecast > 0 ? `${((branchForecast / actualDemand - 1) * 100).toFixed(1)}%` : '—'}
-              </span>
-            </p>
-          )}
-        </div>
       )}
     </div>
   )
@@ -582,6 +594,10 @@ export default function SimulationResultsPage() {
   // show main-line's history to the LEFT of Forecast Start even after the branch has run
   // (analyticsSimId then points at the branch child which only has post-anchor rows).
   const [parentPosData, setParentPosData] = useState<any[]>([])
+  const [parentStoreInvData, setParentStoreInvData] = useState<any[]>([])
+  const [parentShipData, setParentShipData] = useState<any[]>([])
+  const [parentDcInvData, setParentDcInvData] = useState<any[]>([])
+  const [parentPosLoading, setParentPosLoading] = useState(false)
   // HLS — branch simulation execution state
   const [runBranchesInFlight, setRunBranchesInFlight] = useState(false)
   const [runBranchesError, setRunBranchesError] = useState('')
@@ -668,10 +684,27 @@ export default function SimulationResultsPage() {
 
 
   const [combinedPosDataForZoom, setCombinedPosDataForZoom] = useState<any[]>([])
+  // On branch views (post-run) the child sim only carries post-anchor rows. Merge in the parent's
+  // pre-anchor context so Store Inventory / Shipments / DC Inventory show a full timeline.
+  const branchIsCompletedForMerge = selectedBranchRun?.simulation_status === 'COMPLETED'
+  const useBranchMerge = selectedBranch !== 'base' && branchIsCompletedForMerge && !!stockoutEndWeek
+  const mergeWithParent = <T extends { week: string }>(child: T[], parent: T[]): T[] => {
+    if (!useBranchMerge || parent.length === 0) return child
+    const parentByWeek = new Map(parent.map(d => [d.week, d]))
+    const childByWeek = new Map(child.map(d => [d.week, d]))
+    const weeks = [...new Set([...parentByWeek.keys(), ...childByWeek.keys()])].sort()
+    return weeks.map(w => {
+      const isAfterAnchor = w > (stockoutEndWeek as string)
+      return (isAfterAnchor ? (childByWeek.get(w) ?? parentByWeek.get(w)) : (parentByWeek.get(w) ?? childByWeek.get(w))) as T
+    })
+  }
+  const mergedStoreInvData = useMemo(() => mergeWithParent(storeInvData, parentStoreInvData), [storeInvData, parentStoreInvData, useBranchMerge, stockoutEndWeek])
+  const mergedShipData = useMemo(() => mergeWithParent(shipData, parentShipData), [shipData, parentShipData, useBranchMerge, stockoutEndWeek])
+  const mergedDcInvData = useMemo(() => mergeWithParent(dcInvData, parentDcInvData), [dcInvData, parentDcInvData, useBranchMerge, stockoutEndWeek])
   const zoom1 = useChartZoom(combinedPosDataForZoom)
-  const zoom2 = useChartZoom(storeInvData)
-  const zoom3 = useChartZoom(shipData)
-  const zoom4 = useChartZoom(dcInvData)
+  const zoom2 = useChartZoom(mergedStoreInvData)
+  const zoom3 = useChartZoom(mergedShipData)
+  const zoom4 = useChartZoom(mergedDcInvData)
 
   // Keep zoom1 data in sync with posData + rollingForecastData so zoom covers future weeks too
   useEffect(() => {
@@ -900,7 +933,11 @@ export default function SimulationResultsPage() {
 
   // ── Fetch base simulation forecasted demand from weekly_demand ────────────
   useEffect(() => {
-    const baseWeeks = posData.filter(d => d.run_type === 'base')
+    // On branch views the child sim only exposes post-anchor rows, so posData has no base weeks.
+    // Prefer parentPosData in that case — the base forecast we need is the parent's, since pre-anchor
+    // context on the branch is sourced from the parent.
+    const sourceRows = selectedBranch !== 'base' && parentPosData.length > 0 ? parentPosData : posData
+    const baseWeeks = sourceRows.filter((d: any) => d.run_type === 'base')
     if (baseWeeks.length === 0 || !runFullConfig) return
     const seed = (runFullConfig as any)?.random_seed ?? 42
     const retailerAccountId = params.retailerAccountId as string
@@ -920,7 +957,7 @@ export default function SimulationResultsPage() {
         setBaseForecastMap(m)
       })
       .catch(() => null)
-  }, [posData, runFullConfig, params.retailerAccountId,
+  }, [posData, parentPosData, selectedBranch, runFullConfig, params.retailerAccountId,
       globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
@@ -1128,7 +1165,11 @@ export default function SimulationResultsPage() {
   // history entirely. Honors the item/store/category filter so the parent's slice
   // matches the branch's slice.
   useEffect(() => {
-    if (selectedBranch === 'base') { setParentPosData([]); return }
+    if (selectedBranch === 'base') {
+      setParentPosData([]); setParentStoreInvData([]); setParentShipData([]); setParentDcInvData([])
+      setParentPosLoading(false)
+      return
+    }
     if (!isHls || !simulationId) return
     let cancelled = false
     const filters = {
@@ -1138,13 +1179,42 @@ export default function SimulationResultsPage() {
       subcategory: globalSubcategory || undefined,
       brand: globalBrand || undefined,
     }
+    // Shipments have their own filter shape (no category/subcategory/brand)
+    const shipFilters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      supplier_dc_id: globalSdc || undefined,
+      retailer_dc_id: globalRdc || undefined,
+    }
+    // DC inventory filters (retailer/supplier DC scoping)
+    const dcFilters = {
+      item_id: globalItem || undefined,
+      supplier_dc_id: globalSdc || undefined,
+      retailer_dc_id: globalRdc || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
     const anyFilter = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
-    getSummaryStoreSales(simulationId, anyFilter ? filters : undefined)
-      .then(data => { if (!cancelled) setParentPosData(aggPOS(data.weekly_pos ?? [])) })
-      .catch(() => { if (!cancelled) setParentPosData([]) })
+    const anyShipFilter = !!(globalItem || globalStore || globalSdc || globalRdc)
+    const anyDcFilter = !!(globalItem || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
+    setParentPosLoading(true)
+    Promise.all([
+      getSummaryStoreSales(simulationId, anyFilter ? filters : undefined).catch(() => ({ weekly_pos: [] })),
+      getSummaryStoreInventory(simulationId, anyFilter ? filters : undefined).catch(() => ({ store_inventory: [] })),
+      getSummarySupplyChainSales(simulationId, anyShipFilter ? shipFilters : undefined).catch(() => ({ weekly_shipments: [] })),
+      getSummaryUpstreamInventory(simulationId, anyDcFilter ? dcFilters : undefined).catch(() => ({ dc_inventory: [], supplier_dc_inventory: [] })),
+    ]).then(([pos, storeInv, ship, upstream]) => {
+      if (cancelled) return
+      setParentPosData(aggPOS((pos as any).weekly_pos ?? []))
+      setParentStoreInvData(aggStoreInv((storeInv as any).store_inventory ?? []))
+      setParentShipData(aggShipments((ship as any).weekly_shipments ?? []))
+      setParentDcInvData(aggDCInv((upstream as any).dc_inventory ?? [], (upstream as any).supplier_dc_inventory ?? []))
+      setParentPosLoading(false)
+    })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simulationId, selectedBranch, isHls, globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
+  }, [simulationId, selectedBranch, isHls, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -1685,10 +1755,21 @@ export default function SimulationResultsPage() {
                 // horizon extends a full year past the stockout, but the demo should stay within the
                 // user's original simulation window.
                 const runEndIsoWeek = runEndWeek ? toIsoWeek(runEndWeek) : null
+                // Build item metadata lookup once so we can filter branch_forecast rows by
+                // category / subcategory / brand — none of which are on the row itself.
+                const itemsMetaById = new Map<string, any>((meta?.items_meta ?? []).map((m: any) => [m.item_id, m]))
                 if (selectedBranch !== 'adaptive') {
                   for (const r of branchForecastRows) {
                     if (affectedItemCodes && !affectedItemCodes.has(r.item_code)) continue
                     if (globalItem && r.item_id !== globalItem) continue
+                    if (globalStore && r.store_id !== globalStore) continue
+                    if (globalCategory || globalSubcategory || globalBrand) {
+                      const im = itemsMetaById.get(r.item_id)
+                      if (!im) continue
+                      if (globalCategory && im.category !== globalCategory) continue
+                      if (globalSubcategory && im.subcategory !== globalSubcategory) continue
+                      if (globalBrand && im.brand !== globalBrand) continue
+                    }
                     if (!r.forecast_week) continue
                     // Backend already returns ISO week ("2025-W29"); only pass through toIsoWeek for YYYY-MM-DD.
                     const w = /^\d{4}-W\d{2}$/.test(r.forecast_week) ? r.forecast_week : toIsoWeek(r.forecast_week)
@@ -1724,22 +1805,41 @@ export default function SimulationResultsPage() {
                   const baseForecast = src.run_type === 'base' ? baseForecastMap.get(week) : undefined
                   // Legacy pre-run behavior: cut historical bars past anchor when branch hasn't run.
                   const legacyCut = !useMergedSources && showBranchForecastTail && stockoutEndWeek && week > stockoutEndWeek
+                  // On branch views POST-anchor, the purple "Demand" bar represents the
+                  // planner FORECAST (dampened for Reactive, baseline for Adaptive) — the
+                  // number the planner ordered against. Raw actual demand moves to the
+                  // tooltip as "Actual Demand". Pre-anchor and Main-line: unchanged.
+                  const onBranchView = selectedBranch !== 'base'
+                  const isPlannerBar = onBranchView && isAfterAnchor
+                  const plannerValue = selectedBranch === 'adaptive'
+                    ? (pre?.demand_qty ?? src.demand_qty ?? null)
+                    : (branchForecastByWeek.get(week) ?? null)
                   return {
                     ...src,
                     week,
                     forecast_qty: forecastByWeek.get(week),
                     original_forecast_qty: origForecast,
                     base_forecast_qty: baseForecast,
-                    primary_demand_qty: legacyCut ? null : (origForecast ?? baseForecast ?? src.demand_qty),
+                    primary_demand_qty: legacyCut
+                      ? null
+                      : isPlannerBar
+                        ? plannerValue
+                        : (origForecast ?? baseForecast ?? src.demand_qty),
                     sales_qty: legacyCut ? null : src.sales_qty,
                     stockout_qty: legacyCut ? null : src.stockout_qty,
-                    // Planner forecast overlay (right of anchor only). Reactive = dampened
-                    // planner_forecast from branch_forecast; Adaptive = parent's demand for
-                    // that week (baseline forecast, no dampening).
-                    branch_forecast_qty: isAfterAnchor && selectedBranch !== 'base'
-                      ? (selectedBranch === 'adaptive'
-                          ? (pre?.demand_qty ?? src.demand_qty ?? null)
-                          : (branchForecastByWeek.get(week) ?? null))
+                    // Raw actual demand preserved for tooltip (labeled "Actual Demand"
+                    // when it diverges from the planner forecast shown as the purple bar).
+                    // Only expose actual demand when the branch child has actually run.
+                    // On pre-run compare views, src falls back to the parent's row, so
+                    // src.demand_qty would leak the parent's demand as "branch actual".
+                    actual_demand_qty: isAfterAnchor && onBranchView && branchIsCompleted
+                      ? (post?.demand_qty ?? null)
+                      : null,
+                    // Cyan branch forecast overlay is redundant now that the purple bar
+                    // shows planner forecast post-anchor. Keep it only for the pre-run
+                    // legacy path (when we can't put values into primary_demand_qty).
+                    branch_forecast_qty: legacyCut && isAfterAnchor && onBranchView
+                      ? plannerValue
                       : null,
                   }
                 })
@@ -1752,7 +1852,14 @@ export default function SimulationResultsPage() {
                 const branchForecastOnlyWeeks = showBranchForecastTail
                   ? [...branchForecastByWeek.entries()]
                       .filter(([w]) => !posWeeks.has(w) && !forecastOnlyWeeksAlready.has(w) && !!stockoutEndWeek && w > stockoutEndWeek)
-                      .map(([w, v]) => ({ week: w, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: null, branch_forecast_qty: v }))
+                      .map(([w, v]) => ({
+                        week: w, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0,
+                        is_promo_week: 0, promo_name: '', forecast_qty: null,
+                        // Purple planner-forecast bar (post-anchor synthetic rows). No cyan overlay.
+                        primary_demand_qty: v,
+                        actual_demand_qty: null,
+                        branch_forecast_qty: null,
+                      }))
                   : []
                 const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks, ...branchForecastOnlyWeeks].sort((a, b) => a.week.localeCompare(b.week))
 
@@ -1760,7 +1867,7 @@ export default function SimulationResultsPage() {
                   <ChartShell
                     title="POS — Store Sales"
                     subtitle="Weekly demand, sales and lost sales across all stores"
-                    error={posError} loading={posLoading}
+                    error={posError} loading={posLoading || (selectedBranch !== 'base' && parentPosLoading)}
                     isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
                     chart={(h) => (
                       <ResponsiveContainer width="100%" height={h}>
@@ -1778,7 +1885,7 @@ export default function SimulationResultsPage() {
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis dataKey="week" {...xAxisProps} />
                           <YAxis tickFormatter={yAxisTickFormatter} />
-                          <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                          <Tooltip content={<POSTooltip hideActual={selectedBranch !== 'base' && !branchIsCompleted} promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="primary_demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
                             {combinedPosData.map((d, i) => {
@@ -1804,7 +1911,7 @@ export default function SimulationResultsPage() {
                           {rollingForecastData.length > 0 && (
                             <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Future Demand" barSize={10} />
                           )}
-                          {showBranchForecastTail && branchTailColor && (
+                          {showBranchForecastTail && branchTailColor && selectedBranchRun?.simulation_status !== 'COMPLETED' && (
                             <Bar dataKey="branch_forecast_qty" fill={branchTailColor} fillOpacity={0.45} name="Future Demand" barSize={10} />
                           )}
                           {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
@@ -1828,7 +1935,7 @@ export default function SimulationResultsPage() {
               <ChartShell
                 title="Store Inventory"
                 subtitle="Weekly on-hand, available and on-order inventory at stores"
-                error={storeInvError} loading={storeInvLoading}
+                error={storeInvError} loading={storeInvLoading || (selectedBranch !== 'base' && parentPosLoading)}
                 isZoomed={zoom2.isZoomed} onZoomReset={zoom2.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
@@ -1862,7 +1969,7 @@ export default function SimulationResultsPage() {
               <ChartShell
                 title="Supply Chain Shipments"
                 subtitle="Retailer DC's weekly orders to its supplier DC and what actually shipped. Fill Rate = Shipped ÷ Ordered on this leg (not manufacturer → supplier)."
-                error={shipError} loading={shipLoading}
+                error={shipError} loading={shipLoading || (selectedBranch !== 'base' && parentPosLoading)}
                 isZoomed={zoom3.isZoomed} onZoomReset={zoom3.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
@@ -1884,10 +1991,10 @@ export default function SimulationResultsPage() {
                       <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
-                        {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
+                        {cutForBranch(zoom3.displayData).map((d, i) => <Cell key={i} fill={extensionStartWeek && d.week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
                       </Bar>
                       <Bar yAxisId="left" dataKey="shipped_qty" fill="#ec4899" name="Shipped" barSize={10}>
-                        {shipData.map((_, i) => <Cell key={i} fill={extensionStartWeek && shipData[i].week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
+                        {cutForBranch(zoom3.displayData).map((d, i) => <Cell key={i} fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f9a8d4' : '#ec4899'} />)}
                       </Bar>
                       {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
                         <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
@@ -1910,7 +2017,7 @@ export default function SimulationResultsPage() {
               <ChartShell
                 title="DC Inventory"
                 subtitle="Weekly inventory at Retailer DCs"
-                error={dcInvError} loading={dcInvLoading}
+                error={dcInvError} loading={dcInvLoading || (selectedBranch !== 'base' && parentPosLoading)}
                 isZoomed={zoom4.isZoomed} onZoomReset={zoom4.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
