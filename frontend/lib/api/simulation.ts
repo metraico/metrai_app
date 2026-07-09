@@ -1,6 +1,6 @@
 import { apiClient, engineClient } from './client'
 import { formatDateUS } from '@/lib/utils'
-import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
+import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest, BranchForecastResponse, BranchForecastRow } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // YAML body helpers — shared by rolling-forecast-modal and run-chunk-modal
@@ -207,6 +207,49 @@ export const recalculateRollingDemand = (sessionId: string, req: RecalculateDema
 // DELETE /rolling-session/{id}
 export const abandonRollingSession = (sessionId: string) =>
   engineClient.delete<{ abandoned: string }>(`/rolling-session/${sessionId}`).then(r => r.data)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HLS Branching  (app-backend routes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /simulate/{parent_simulation_id}/branch/forecast — fires reactive + adaptive in parallel
+export const generateBranchForecasts = (
+  parentSimulationId: string,
+  itemCodes?: string[],
+): Promise<{ reactive: BranchForecastResponse; adaptive: BranchForecastResponse }> => {
+  const body = (branch_type: 'reactive' | 'adaptive') =>
+    itemCodes && itemCodes.length > 0
+      ? { branch_type, item_codes: itemCodes }
+      : { branch_type }
+  return Promise.all([
+    apiClient.post<BranchForecastResponse>(
+      `/simulate/${parentSimulationId}/branch/forecast`,
+      body('reactive'),
+    ).then(r => r.data),
+    apiClient.post<BranchForecastResponse>(
+      `/simulate/${parentSimulationId}/branch/forecast`,
+      body('adaptive'),
+    ).then(r => r.data),
+  ]).then(([reactive, adaptive]) => ({ reactive, adaptive }))
+}
+
+// POST /simulate/{id}/branch/run — runs reactive + adaptive branches in parallel
+export const runBranches = (
+  reactiveId: string,
+  adaptiveId: string,
+): Promise<void> =>
+  Promise.all([
+    apiClient.post(`/simulate/${reactiveId}/branch/run`),
+    apiClient.post(`/simulate/${adaptiveId}/branch/run`),
+  ]).then(() => undefined)
+
+// GET /branch-forecast/{simulation_id}
+export const getBranchForecast = (simulationId: string) =>
+  apiClient
+    .get<{ simulation_id: string; rows: BranchForecastRow[]; count: number }>(
+      `/branch-forecast/${simulationId}`,
+    )
+    .then(r => r.data.rows ?? [])
 
 // GET /rolling-session/{id}/promo-schedules — promo groups active in a date range
 export const getSessionPromoSchedules = (

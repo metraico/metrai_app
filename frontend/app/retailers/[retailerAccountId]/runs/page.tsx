@@ -102,7 +102,7 @@ function RunsPageInner() {
 
         {error && <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-700">{error}</div>}
 
-        {!loading && !error && runs.length === 0 && (
+        {!loading && !error && runs.filter(r => !r.parent_simulation_id).length === 0 && (
           <div className="rounded-xl border border-charcoal-blue-200 bg-white p-12 text-center shadow-sm">
             <Zap size={36} className="mx-auto mb-3 text-majorelle-blue-300" />
             <h2 className="text-lg font-black text-charcoal-blue-950">No simulation runs yet</h2>
@@ -116,9 +116,9 @@ function RunsPageInner() {
           </div>
         )}
 
-        {!loading && !error && runs.length > 0 && (
+        {!loading && !error && runs.filter(r => !r.parent_simulation_id).length > 0 && (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {runs.map((run) => (
+            {runs.filter(r => !r.parent_simulation_id).map((run) => (
               <div
                 key={run.simulation_id}
                 onClick={() => run.simulation_status === 'COMPLETED' && router.push(`/retailers/${retailerAccountId}/simulation/${run.simulation_id}`)}

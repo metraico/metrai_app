@@ -722,7 +722,9 @@ def get_runs(
                        COALESCE(simulation_granularity, 'weekly') AS simulation_granularity,
                        COALESCE(scenario_type, 'no_scenario') AS scenario_type,
                        COALESCE(is_extended, FALSE) AS is_extended,
-                       COALESCE(extension_count, 0) AS extension_count
+                       COALESCE(extension_count, 0) AS extension_count,
+                       parent_simulation_id::text AS parent_simulation_id,
+                       branch_type
                 FROM simulation_config
                 WHERE retailer_account_id = %s AND user_id = %s {scenario_filter}
                 ORDER BY created_at DESC
@@ -1208,6 +1210,135 @@ async def validate_scenario(body: dict, current_user: dict = Depends(get_current
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(f"{SIM_ENGINE_URL}/scenario/validate", json=body)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+# ── HLS branching proxies ─────────────────────────────────────────────────────
+
+def _derive_base_run_weeks(cur, parent_id: str) -> int:
+    """Return the length (in weeks) of the parent base run from simulation_config.
+    Falls back to 4 if start/end can't be parsed. ISO week strings like 'YYYY-Www'."""
+    cur.execute(
+        "SELECT start_week, end_week FROM simulation_config WHERE simulation_id = %s",
+        (parent_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Parent simulation {parent_id} not found")
+    start_week, end_week = row
+    try:
+        from datetime import date as _date
+        def _monday(s: str) -> _date:
+            s = str(s)
+            if "-W" in s:
+                y, w = s.split("-W")
+                return _date.fromisocalendar(int(y), int(w), 1)
+            return _date.fromisoformat(s)
+        weeks = max(1, (_monday(end_week) - _monday(start_week)).days // 7 + 1)
+        return int(weeks)
+    except Exception:
+        return 4
+
+
+@app.post(
+    "/simulate/{parent_id}/branch/forecast",
+    tags=["simulation", "scenario: hidden_lost_sales"],
+    summary="Generate the planner forecast for an HLS branch child (reactive or adaptive)",
+    description=(
+        "Creates a child simulation_config row and, for reactive branches, persists a "
+        "dampened planner_forecast to metrai.branch_forecast. The branch length is derived "
+        "from the parent base run's start_week/end_week span. Proxied to the simulation engine. "
+        "Requires an account-scoped token."
+    ),
+)
+async def create_branch_forecast(
+    parent_id: str,
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    branch_type = (body or {}).get("branch_type")
+    if branch_type not in ("reactive", "adaptive"):
+        raise HTTPException(status_code=422, detail="branch_type must be 'reactive' or 'adaptive'")
+    item_codes = (body or {}).get("item_codes") or None
+    if item_codes is not None and (not isinstance(item_codes, list) or not all(isinstance(c, str) for c in item_codes)):
+        raise HTTPException(status_code=422, detail="item_codes must be a list of strings if provided")
+    account = current_user["retailer_account_id"]
+
+    if not POSTGRES_DSN:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    conn = _pg_connect()
+    try:
+        with conn.cursor() as cur:
+            weeks = _derive_base_run_weeks(cur, parent_id)
+    finally:
+        conn.close()
+
+    engine_body: dict = {
+        "parent_simulation_id": parent_id,
+        "branch_type":          branch_type,
+        "weeks":                weeks,
+    }
+    if item_codes:
+        engine_body["item_codes"] = item_codes
+    logger.info("branch/forecast  account=%s  parent=%s  type=%s  weeks=%d",
+                account, parent_id, branch_type, weeks)
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            resp = await client.post(f"{SIM_ENGINE_URL}/simulate/branch/forecast", json=engine_body)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Branch forecast generation timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.post(
+    "/simulate/{branch_id}/branch/run",
+    tags=["simulation", "scenario: hidden_lost_sales"],
+    summary="Run the simulation for an HLS branch child",
+    description=(
+        "Executes the simulation for a branch child created by /simulate/{parent_id}/branch/forecast. "
+        "Proxied to the simulation engine. Requires an account-scoped token."
+    ),
+)
+async def run_branch(branch_id: str, current_user: dict = Depends(get_current_user)):
+    account = current_user["retailer_account_id"]
+    logger.info("branch/run  account=%s  branch=%s", account, branch_id)
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            resp = await client.post(f"{SIM_ENGINE_URL}/simulate/branch/{branch_id}/run")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Simulation engine is not reachable")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Branch simulation timed out")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.get(
+    "/branch-forecast/{simulation_id}",
+    tags=["simulation", "scenario: hidden_lost_sales"],
+    summary="Fetch persisted planner_forecast rows for a branch child",
+    description=(
+        "Returns rows from metrai.branch_forecast for the given (reactive) branch child "
+        "simulation_id, for preview rendering. Adaptive children return an empty list. "
+        "Proxied from the simulation engine. Requires an account-scoped token."
+    ),
+)
+async def get_branch_forecast(simulation_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(f"{SIM_ENGINE_URL}/branch-forecast/{simulation_id}")
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:

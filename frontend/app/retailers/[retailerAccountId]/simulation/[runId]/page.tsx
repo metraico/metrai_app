@@ -15,12 +15,12 @@ import {
   getHiddenLostSales,
 } from '@/lib/api/analytics'
 import type { HiddenLostSalesResponse } from '@/lib/api/analytics'
-import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules } from '@/lib/api/simulation'
+import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules, getRuns, generateBranchForecasts, runBranches, getBranchForecast } from '@/lib/api/simulation'
 import { RollingForecastModal } from './rolling-forecast-modal'
 import { RunChunkModal } from './run-chunk-modal'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
-import type { AnalyticsMeta, SimulationSummary, RollingForecastSession } from '@/lib/api/types'
+import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
 import { toIsoWeek } from '@/lib/utils'
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
@@ -211,11 +211,15 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
   const lost = Number(d.stockout_qty ?? 0)
   const revenue = Number(d.sales_amount ?? 0)
   const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
+  const branchForecast = d.branch_forecast_qty != null ? Number(d.branch_forecast_qty) : null
   const originalForecast = d.original_forecast_qty != null ? Number(d.original_forecast_qty) : null
   const fillRate = actualDemand > 0 ? (sales / actualDemand) * 100 : null
   const runType = d.run_type
   const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
-  const isFutureOnly = demand === 0 && forecast != null
+  // On a branch view past the stockout anchor, primary_demand_qty is nulled so demand is 0;
+  // treat those weeks as future-only when a branch forecast is present.
+  const isBranchTail = d.primary_demand_qty == null && branchForecast != null
+  const isFutureOnly = (demand === 0 && forecast != null) || isBranchTail
   // Computed performance for rolling_chunk weeks: actual demand vs original forecast
   const computedPerfPct = runType === 'rolling_chunk' && originalForecast && originalForecast > 0
     ? ((actualDemand - originalForecast) / originalForecast) * 100
@@ -253,6 +257,11 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
       {forecast != null && (
         <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
           <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{forecast.toLocaleString()}</span></p>
+        </div>
+      )}
+      {branchForecast != null && forecast == null && (
+        <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
+          <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{branchForecast.toLocaleString()}</span></p>
         </div>
       )}
     </div>
@@ -556,6 +565,84 @@ export default function SimulationResultsPage() {
 
   // HLS — Hidden Lost Sales reconciliation (only for hidden_lost_sales scenario)
   const [hlsData, setHlsData] = useState<HiddenLostSalesResponse | null>(null)
+  // HLS — per-branch planner forecast rows (rendered as post-stockout future-demand tail)
+  const [branchForecastRows, setBranchForecastRows] = useState<BranchForecastRow[]>([])
+  // HLS — branch simulation execution state
+  const [runBranchesInFlight, setRunBranchesInFlight] = useState(false)
+  const [runBranchesError, setRunBranchesError] = useState('')
+
+  // HLS branching state
+  const [allRuns, setAllRuns] = useState<SimulationRun[]>([])
+  const [selectedBranch, setSelectedBranch] = useState<'base' | 'reactive' | 'adaptive'>('base')
+  const [compareModalOpen, setCompareModalOpen] = useState(false)
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareError, setCompareError] = useState('')
+  const [branchPreview, setBranchPreview] = useState<{
+    reactive: BranchForecastResponse
+    adaptive: BranchForecastResponse
+    rows: BranchForecastRow[]
+  } | null>(null)
+
+  const currentRun = allRuns.find(r => r.simulation_id === simulationId) || null
+  const bothBranchesComplete =
+    !!(allRuns.find(r => r.parent_simulation_id === simulationId && r.branch_type === 'reactive')?.simulation_status === 'COMPLETED'
+      && allRuns.find(r => r.parent_simulation_id === simulationId && r.branch_type === 'adaptive')?.simulation_status === 'COMPLETED')
+  const scenarioType = currentRun?.scenario_type
+    ?? ((runFullConfig as any)?.scenario?.scenario_type as string | undefined)
+    ?? ((runFullConfig as any)?.scenario_type as string | undefined)
+  const childBranches = allRuns.filter(r => r.parent_simulation_id === simulationId)
+  const reactiveChild = childBranches.find(r => r.branch_type === 'reactive') || null
+  const adaptiveChild = childBranches.find(r => r.branch_type === 'adaptive') || null
+  const hasBranches = childBranches.length > 0
+  const isHls = scenarioType === 'hidden_lost_sales' || (hlsData !== null && hlsData.disruption_windows.length > 0)
+  const showCompareButton = isHls && !hasBranches && currentRun?.branch_type == null && !currentRun?.parent_simulation_id
+  // Selected-branch sim id (may be a not-yet-run child); used to know which branch is active.
+  const selectedBranchSimId =
+    selectedBranch === 'reactive' && reactiveChild ? reactiveChild.simulation_id
+    : selectedBranch === 'adaptive' && adaptiveChild ? adaptiveChild.simulation_id
+    : null
+  // Effective sim id we can actually pull analytics from. Falls back to the parent when
+  // the branch child hasn't been run yet — otherwise every filter refetch would 409.
+  const selectedBranchRun = selectedBranchSimId ? allRuns.find(r => r.simulation_id === selectedBranchSimId) : null
+  const analyticsSimId =
+    selectedBranchSimId && selectedBranchRun?.simulation_status === 'COMPLETED'
+      ? selectedBranchSimId
+      : simulationId
+
+  // Anchor for the branch forecast tail: last week of the (last) stockout disruption window.
+  const stockoutEndWeek = (() => {
+    if (!hlsData || hlsData.disruption_windows.length === 0) return null
+    const last = hlsData.disruption_windows
+      .map(w => w.window_end)
+      .filter(Boolean)
+      .sort()
+      .slice(-1)[0]
+    return last ? toIsoWeek(last) : null
+  })()
+  const branchTailColor =
+    selectedBranch === 'adaptive' ? '#06b6d4'
+    : selectedBranch === 'reactive' ? '#ef4444'
+    : null
+  const showBranchForecastTail = selectedBranch !== 'base' && !!stockoutEndWeek && branchForecastRows.length > 0
+  // When a branch view is selected but its child sim hasn't been run, the non-POS charts fall back
+  // to the parent's data — which is misleading past the stockout anchor. Cut those charts at the
+  // anchor until the branch sim completes.
+  const selectedBranchIsUnrun =
+    selectedBranch !== 'base' && !!selectedBranchSimId && selectedBranchRun?.simulation_status !== 'COMPLETED'
+  const hideBranchAnalyticsPastAnchor = selectedBranchIsUnrun && !!stockoutEndWeek
+  const cutForBranch = <T extends { week: string }>(arr: T[]): T[] =>
+    hideBranchAnalyticsPastAnchor && stockoutEndWeek ? arr.filter(d => d.week <= stockoutEndWeek) : arr
+  // Union of item_codes across disruption windows. `null` = no filter (either
+  // no disruption data yet, or any window scopes to 'all' items).
+  const affectedItemCodes: Set<string> | null = (() => {
+    if (!hlsData || hlsData.disruption_windows.length === 0) return null
+    const codes = new Set<string>()
+    for (const w of hlsData.disruption_windows) {
+      if (w.item_codes === 'all' || (typeof w.item_codes === 'string' && w.item_codes === 'all')) return null
+      if (Array.isArray(w.item_codes)) for (const c of w.item_codes) codes.add(c)
+    }
+    return codes.size > 0 ? codes : null
+  })()
 
 
   const [combinedPosDataForZoom, setCombinedPosDataForZoom] = useState<any[]>([])
@@ -603,6 +690,36 @@ export default function SimulationResultsPage() {
   // ── Initial load ──────────────────────────────────────────────────────────
 
   const loadSummary = useCallback(async () => {
+    // When a non-base branch is selected, always fetch fresh from the branch's simulation_id.
+    if (analyticsSimId !== simulationId) {
+      // Skip if the selected branch hasn't run yet — the child sim has no analytics.
+      // Keep the parent's data on screen; the branch-forecast overlay renders on top.
+      const childRun = allRuns.find(r => r.simulation_id === analyticsSimId)
+      if (childRun && childRun.simulation_status !== 'COMPLETED') {
+        setPageState('ready')
+        return
+      }
+      try {
+        const [metaData, storeSales, storeInv, supplyChain, upstream] = await Promise.all([
+          getAnalyticsMeta(analyticsSimId),
+          getSummaryStoreSales(analyticsSimId),
+          getSummaryStoreInventory(analyticsSimId),
+          getSummarySupplyChainSales(analyticsSimId),
+          getSummaryUpstreamInventory(analyticsSimId),
+        ])
+        setMeta(metaData)
+        setPosData(aggPOS(storeSales.weekly_pos ?? []))
+        setStoreInvData(aggStoreInv(storeInv.store_inventory ?? []))
+        setShipData(aggShipments(supplyChain.weekly_shipments ?? []))
+        setDcInvData(aggDCInv(upstream.dc_inventory ?? [], upstream.supplier_dc_inventory ?? []))
+        setKpis(computeKPIs(storeSales.weekly_pos ?? [], supplyChain.weekly_shipments ?? []))
+        setPageState('ready')
+      } catch (err: unknown) {
+        setPageError(err instanceof Error ? err.message : 'Failed to load analytics')
+        setPageState('error')
+      }
+      return
+    }
     if (cache?.simulationId === simulationId && cache.summary) {
       // Check if the cache is stale: if the summary only contains base/null run_type rows,
       // rolling_chunk and extension weeks are absent. Bust the cache so fresh data is fetched.
@@ -638,7 +755,7 @@ export default function SimulationResultsPage() {
       setPageError(err instanceof Error ? err.message : 'Failed to load analytics')
       setPageState('error')
     }
-  }, [simulationId, cache, applySummary])
+  }, [simulationId, analyticsSimId, cache, applySummary, allRuns])
 
 
 
@@ -783,17 +900,17 @@ export default function SimulationResultsPage() {
     setPosLoading(true); setPosError('')
     try {
       const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
-      const data = await getStoreSales(simulationId, p)
+      const data = await getStoreSales(analyticsSimId, p)
       setPosData(aggPOS(data.weekly_pos ?? []))
     } catch (e: any) { setPosError(e?.message ?? 'Failed') }
     finally { setPosLoading(false) }
-  }, [simulationId])
+  }, [analyticsSimId])
 
   const fetchStoreInvFiltered = useCallback(async (itemId: string, storeId: string, category: string, subcategory: string, brand: string) => {
     setStoreInvLoading(true); setStoreInvError('')
     try {
       const p = { item_id: itemId || undefined, store_id: storeId || undefined, category: category || undefined, subcategory: subcategory || undefined, brand: brand || undefined }
-      const data = await getStoreInventory(simulationId, p)
+      const data = await getStoreInventory(analyticsSimId, p)
       const rows = aggStoreInv(data.store_inventory ?? [])
       setStoreInvData(rows)
       if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
@@ -801,12 +918,12 @@ export default function SimulationResultsPage() {
       }
     } catch (e: any) { setStoreInvError(e?.message ?? 'Failed') }
     finally { setStoreInvLoading(false) }
-  }, [simulationId])
+  }, [analyticsSimId])
 
   const fetchShipFiltered = useCallback(async (itemId: string, sdcId: string, rdcId: string, category: string, subcategory: string, brand: string) => {
     setShipLoading(true); setShipError('')
     try {
-      const data = await getSupplierSales(simulationId, {
+      const data = await getSupplierSales(analyticsSimId, {
         item_id:          itemId || undefined,
         supplier_dc_id:   sdcId  || undefined,
         retailer_dc_id:   rdcId  || undefined,
@@ -817,12 +934,12 @@ export default function SimulationResultsPage() {
       setShipData(aggShipments(data.weekly_shipments ?? []))
     } catch (e: any) { setShipError(e?.message ?? 'Failed') }
     finally { setShipLoading(false) }
-  }, [simulationId])
+  }, [analyticsSimId])
 
   const fetchDCInvFiltered = useCallback(async (itemId: string, rdcId: string, sdcId: string, category: string, subcategory: string, brand: string) => {
     setDcInvLoading(true); setDcInvError('')
     try {
-      const data = await getDCInventory(simulationId, {
+      const data = await getDCInventory(analyticsSimId, {
         item_id:        itemId || undefined,
         dc_id:          rdcId  || undefined,
         supplier_dc_id: sdcId  || undefined,
@@ -837,7 +954,7 @@ export default function SimulationResultsPage() {
       }
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
     finally { setDcInvLoading(false) }
-  }, [simulationId])
+  }, [analyticsSimId])
 
   const resetToSummary = useCallback((chart: 'pos' | 'inv' | 'ship' | 'dc') => {
     const cachedPos = cache?.summary?.weekly_pos ?? []
@@ -905,6 +1022,25 @@ export default function SimulationResultsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
+  // ── Coordinate branch selector with the affected-items filter ────────────
+  // Switching to Reactive/Adaptive auto-picks the first affected item (branch
+  // forecast is scoped to those items, so historical bars must be too).
+  // Switching back to Main-line clears the filter only if it's currently on an
+  // affected item — a manually-picked non-affected item is preserved.
+  useEffect(() => {
+    const items = meta?.items_meta ?? []
+    if (!affectedItemCodes || affectedItemCodes.size === 0 || items.length === 0) return
+    const affectedIds = items.filter((m: any) => affectedItemCodes.has(m.item_code)).map((m: any) => m.item_id)
+    if (affectedIds.length === 0) return
+    if (selectedBranch === 'base') {
+      if (globalItem && affectedIds.includes(globalItem)) setFilters({ globalItem: '' })
+      return
+    }
+    if (globalItem && affectedIds.includes(globalItem)) return
+    setFilters({ globalItem: affectedIds[0] })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBranch, hlsData, meta])
+
   // ── Fetch HLS reconciliation data ─────────────────────────────────────────
   // Fires as soon as simulationId is known. For non-HLS runs the response has
   // an empty under_fulfilled_shipments array and disruption_windows, so the
@@ -912,13 +1048,29 @@ export default function SimulationResultsPage() {
   // a race where the section shows only after refresh (previously the effect
   // depended on runFullConfig arriving before pageState=ready).
   useEffect(() => {
-    if (!simulationId) return
+    if (!analyticsSimId) return
     let cancelled = false
-    getHiddenLostSales(simulationId)
+    getHiddenLostSales(analyticsSimId)
       .then((d) => { if (!cancelled) setHlsData(d) })
       .catch(() => null)
     return () => { cancelled = true }
-  }, [simulationId])
+  }, [analyticsSimId])
+
+  // ── Fetch per-branch planner forecast rows for the post-stockout tail ─────
+  // Always fetch from the REACTIVE child: those rows carry both `planner_forecast`
+  // (dampened) and `base_demand` (baseline), which we use for Reactive and Adaptive
+  // overlays respectively. The Adaptive child has no rows written by the backend.
+  useEffect(() => {
+    if (selectedBranch === 'base' || !reactiveChild) {
+      setBranchForecastRows([])
+      return
+    }
+    let cancelled = false
+    getBranchForecast(reactiveChild.simulation_id)
+      .then(rows => { if (!cancelled) setBranchForecastRows(rows) })
+      .catch(() => { if (!cancelled) setBranchForecastRows([]) })
+    return () => { cancelled = true }
+  }, [reactiveChild, selectedBranch])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -962,6 +1114,22 @@ export default function SimulationResultsPage() {
     checkStatus()
     return () => { cancelled = true; clearTimeout(timer) }
   }, [simulationId, loadSummary, cache])
+
+  // Fetch runs list to detect siblings/branches for the current simulation
+  useEffect(() => {
+    const retId = params.retailerAccountId as string
+    if (!retId) return
+    let cancelled = false
+    getRuns(retId, '').then(rs => { if (!cancelled) setAllRuns(rs) }).catch(() => null)
+    return () => { cancelled = true }
+  }, [params.retailerAccountId, simulationId])
+
+  // When branch selection changes, refetch analytics for the newly selected sim id
+  useEffect(() => {
+    if (pageState !== 'ready') return
+    loadSummary()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyticsSimId])
 
   // Auto-hide the READY banner after 5s
   useEffect(() => {
@@ -1166,6 +1334,15 @@ export default function SimulationResultsPage() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-black tracking-tight text-charcoal-blue-950">{simName}</h1>
+              {hasBranches && (
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                  selectedBranch === 'reactive' ? 'bg-rose-100 text-rose-700'
+                  : selectedBranch === 'adaptive' ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-charcoal-blue-100 text-charcoal-blue-700'
+                }`}>
+                  {selectedBranch === 'base' ? 'Main-line' : selectedBranch === 'reactive' ? 'Reactive' : 'Adaptive'}
+                </span>
+              )}
               <button
                 onClick={() => setYamlModalOpen(true)}
                 title="View run YAML config"
@@ -1181,7 +1358,95 @@ export default function SimulationResultsPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {pageState === 'ready' && !rollingSession && (
+            {pageState === 'ready' && hasBranches && (() => {
+              const branchOpts: Array<{ v: 'base' | 'reactive' | 'adaptive'; label: string; activeCls: string; enabled: boolean }> = [
+                { v: 'base',     label: 'Main-line', activeCls: 'bg-charcoal-blue-900 text-white shadow',      enabled: true },
+                { v: 'reactive', label: 'Reactive',  activeCls: 'bg-rose-500 text-white shadow',               enabled: !!reactiveChild },
+                { v: 'adaptive', label: 'Adaptive',  activeCls: 'bg-emerald-500 text-white shadow',            enabled: !!adaptiveChild },
+              ]
+              const helper =
+                selectedBranch === 'reactive' ? '↑ Full correction based on avg historical performance'
+                : selectedBranch === 'adaptive' ? 'Base forecast — no dampening applied'
+                : 'Showing main-line simulation data'
+              return (
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-charcoal-blue-500">Branch view:</span>
+                  <div className="inline-flex items-center rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-0.5">
+                    {branchOpts.map(opt => {
+                      const active = selectedBranch === opt.v
+                      return (
+                        <button
+                          key={opt.v}
+                          disabled={!opt.enabled}
+                          onClick={() => opt.enabled && setSelectedBranch(opt.v)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                            active
+                              ? opt.activeCls
+                              : opt.enabled
+                                ? 'text-charcoal-blue-600 hover:bg-white'
+                                : 'text-charcoal-blue-300 cursor-not-allowed'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <span className={`text-[11px] font-medium ${
+                    selectedBranch === 'reactive' ? 'text-rose-600'
+                    : selectedBranch === 'adaptive' ? 'text-emerald-600'
+                    : 'text-charcoal-blue-400'
+                  }`}>
+                    {helper}
+                  </span>
+                </div>
+              )
+            })()}
+            {pageState === 'ready' && showCompareButton && (
+              <button
+                onClick={() => { setCompareModalOpen(true); setBranchPreview(null); setCompareError(''); }}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-rose-400 px-4 py-2 text-xs font-bold text-rose-600 transition-all hover:bg-rose-50"
+              >
+                <ChevronRight size={13} /> Compare Reactive vs Adaptive
+              </button>
+            )}
+            {pageState === 'ready' && isHls && hasBranches && !bothBranchesComplete && (
+              <button
+                onClick={async () => {
+                  if (!reactiveChild || !adaptiveChild) return
+                  setRunBranchesInFlight(true); setRunBranchesError('')
+                  try {
+                    await runBranches(reactiveChild.simulation_id, adaptiveChild.simulation_id)
+                    const retId = params.retailerAccountId as string
+                    // Poll runs list until both children COMPLETED (or FAILED)
+                    const done = (rs: SimulationRun[]) => {
+                      const rc = rs.find(r => r.parent_simulation_id === simulationId && r.branch_type === 'reactive')
+                      const ac = rs.find(r => r.parent_simulation_id === simulationId && r.branch_type === 'adaptive')
+                      return rc && ac && ['COMPLETED', 'FAILED'].includes(rc.simulation_status) && ['COMPLETED', 'FAILED'].includes(ac.simulation_status)
+                    }
+                    for (let i = 0; i < 60; i++) {
+                      const rs = await getRuns(retId, '').catch(() => [] as SimulationRun[])
+                      setAllRuns(rs)
+                      if (done(rs)) break
+                      await new Promise(r => setTimeout(r, 4000))
+                    }
+                    // Refresh analytics for whichever branch is currently selected
+                    if (selectedBranch !== 'base') loadSummary()
+                  } catch (e: any) {
+                    setRunBranchesError(e?.message ?? 'Failed to launch branch simulations')
+                  } finally {
+                    setRunBranchesInFlight(false)
+                  }
+                }}
+                disabled={runBranchesInFlight}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-majorelle-blue-500 px-4 py-2 text-xs font-bold text-majorelle-blue-600 transition-all hover:bg-majorelle-blue-50 disabled:opacity-60"
+                title={runBranchesError || undefined}
+              >
+                {runBranchesInFlight ? <Loader2 size={13} className="animate-spin" /> : <ChevronRight size={13} />}
+                {runBranchesInFlight ? 'Simulating branches…' : 'Run Simulation for Future Demand'}
+              </button>
+            )}
+            {pageState === 'ready' && !rollingSession && !isHls && (
               <button
                 onClick={() => setShowRollingModal(true)}
                 className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
@@ -1189,7 +1454,7 @@ export default function SimulationResultsPage() {
                 <ChevronRight size={13} /> Rolling Forecast
               </button>
             )}
-            {pageState === 'ready' && rollingSession?.status === 'active' && (
+            {pageState === 'ready' && rollingSession?.status === 'active' && !isHls && (
               <button
                 onClick={() => setShowRollingModal(true)}
                 className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
@@ -1197,7 +1462,7 @@ export default function SimulationResultsPage() {
                 <ChevronRight size={13} /> Edit Setup
               </button>
             )}
-            {pageState === 'ready' && rollingSession?.status === 'active' && rollingForecastData.length > 0 && (
+            {pageState === 'ready' && rollingSession?.status === 'active' && rollingForecastData.length > 0 && !isHls && (
               <button
                 onClick={() => setShowRunChunkModal(true)}
                 className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600"
@@ -1261,6 +1526,61 @@ export default function SimulationResultsPage() {
               <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
 
+            {/* Hidden Lost Sales — Affected Items (moved up so users see disrupted items before scanning charts) */}
+            {hlsData && hlsData.disruption_windows.length > 0 && (
+              <div className="mb-5 rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
+                <div className="mb-3">
+                  <h3 className="text-sm font-bold text-charcoal-blue-950">Hidden Lost Sales — Affected Items</h3>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                    {hlsData.disruption_windows.flatMap((w) => {
+                      const codes = w.item_codes
+                      if (codes === 'all' || (typeof codes === 'string' && codes === 'all')) {
+                        return [{ key: `all-${w.supplier_dc_code}`, code: null, desc: `All items on ${w.supplier_dc_code}` }]
+                      }
+                      const arr = Array.isArray(codes) ? codes : []
+                      return arr.map((c) => ({ key: `${w.supplier_dc_code}-${c}`, code: c, desc: '' }))
+                    }).filter((chip, idx, arr) => arr.findIndex(x => x.key === chip.key) === idx)
+                      .map((chip) => {
+                        if (chip.code === null) {
+                          return (
+                            <span key={chip.key} className="rounded-full border border-charcoal-blue-300 bg-charcoal-blue-50 px-2.5 py-1 text-[11px] font-semibold text-charcoal-blue-700">
+                              {chip.desc}
+                            </span>
+                          )
+                        }
+                        const match = (meta?.items_meta ?? []).find((m: any) => m.item_code === chip.code)
+                        const label = match?.item_description || match?.item_name || chip.code
+                        const isSelected = !!match && globalItem === match.item_id
+                        const clickable = !!match
+                        return (
+                          <button
+                            key={chip.key}
+                            type="button"
+                            disabled={!clickable}
+                            onClick={() => {
+                              if (!match) return
+                              setFilters({ globalItem: isSelected ? '' : match.item_id })
+                            }}
+                            className={`rounded-full border px-2.5 py-1 text-left text-[11px] font-semibold transition-colors ${
+                              isSelected
+                                ? 'border-majorelle-blue-500 bg-majorelle-blue-500 text-white'
+                                : clickable
+                                  ? 'border-charcoal-blue-300 bg-white text-charcoal-blue-700 hover:border-majorelle-blue-400 hover:bg-majorelle-blue-50 cursor-pointer'
+                                  : 'border-charcoal-blue-200 bg-charcoal-blue-50 text-charcoal-blue-400 cursor-default'
+                            }`}
+                            title={label}
+                          >
+                            <span className="font-mono">{chip.code}</span>
+                            {label && label !== chip.code && (
+                              <span className={`ml-1.5 font-normal ${isSelected ? 'text-white/90' : 'text-charcoal-blue-500'}`}>{label}</span>
+                            )}
+                          </button>
+                        )
+                      })}
+                </div>
+              </div>
+            )}
 
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
@@ -1268,22 +1588,49 @@ export default function SimulationResultsPage() {
               {(() => {
                 // Merge simulated posData with rolling forecast data for unrun weeks
                 const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
+                // Aggregate branch planner forecast rows by week, restricted to affected items.
+                // Reactive uses planner_forecast (dampened); Adaptive uses base_demand (baseline).
+                const branchForecastByWeek = new Map<string, number>()
+                for (const r of branchForecastRows) {
+                  if (affectedItemCodes && !affectedItemCodes.has(r.item_code)) continue
+                  if (!r.forecast_week) continue
+                  // Backend already returns ISO week ("2025-W29"); only pass through toIsoWeek for YYYY-MM-DD.
+                  const w = /^\d{4}-W\d{2}$/.test(r.forecast_week) ? r.forecast_week : toIsoWeek(r.forecast_week)
+                  if (!w || w.includes('NaN')) continue
+                  const val = selectedBranch === 'adaptive' ? (r.base_demand ?? 0) : (r.planner_forecast ?? 0)
+                  branchForecastByWeek.set(w, (branchForecastByWeek.get(w) ?? 0) + val)
+                }
                 // rollingBaseStartWeek, rollingForecastStartWeek, chunkAreas are hoisted to component level
                 const mergedPosData = posData.map(d => {
                   const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
                   const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
+                  // Hard-cut behavior: on a branch view, weeks strictly AFTER the stockout end
+                  // show only Future Demand (branch_forecast_qty). Weeks at/before the anchor show
+                  // only historical bars. No overlap.
+                  const afterAnchor = showBranchForecastTail && stockoutEndWeek && d.week > stockoutEndWeek
                   return {
                     ...d,
                     forecast_qty: forecastByWeek.get(d.week),
                     original_forecast_qty: origForecast,
                     base_forecast_qty: baseForecast,
-                    primary_demand_qty: origForecast ?? baseForecast ?? d.demand_qty,
+                    primary_demand_qty: afterAnchor ? null : (origForecast ?? baseForecast ?? d.demand_qty),
+                    sales_qty: afterAnchor ? null : d.sales_qty,
+                    stockout_qty: afterAnchor ? null : d.stockout_qty,
+                    branch_forecast_qty: afterAnchor ? branchForecastByWeek.get(d.week) ?? null : null,
                   }
                 })
                 const forecastOnlyWeeks = rollingForecastData
                   .filter(r => !posData.some(d => d.week === r.week))
-                  .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty }))
-                const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks].sort((a, b) => a.week.localeCompare(b.week))
+                  .map(r => ({ week: r.week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: r.forecast_qty, branch_forecast_qty: null }))
+                // Extend branch forecast tail past the last posData week (mirrors forecastOnlyWeeks above).
+                const posWeeks = new Set(posData.map(d => d.week))
+                const forecastOnlyWeeksAlready = new Set(forecastOnlyWeeks.map(r => r.week))
+                const branchForecastOnlyWeeks = showBranchForecastTail
+                  ? [...branchForecastByWeek.entries()]
+                      .filter(([w]) => !posWeeks.has(w) && !forecastOnlyWeeksAlready.has(w) && !!stockoutEndWeek && w > stockoutEndWeek)
+                      .map(([w, v]) => ({ week: w, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0, is_promo_week: 0, promo_name: '', forecast_qty: null, branch_forecast_qty: v }))
+                  : []
+                const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks, ...branchForecastOnlyWeeks].sort((a, b) => a.week.localeCompare(b.week))
 
                 return (
                   <ChartShell
@@ -1333,12 +1680,18 @@ export default function SimulationResultsPage() {
                           {rollingForecastData.length > 0 && (
                             <Bar dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Future Demand" barSize={10} />
                           )}
+                          {showBranchForecastTail && branchTailColor && (
+                            <Bar dataKey="branch_forecast_qty" fill={branchTailColor} fillOpacity={0.45} name="Future Demand" barSize={10} />
+                          )}
                           {extensionStartWeek && !rollingBaseStartWeek && !rollingForecastStartWeek && (
                             <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
                           )}
                           {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
                           {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                             <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                          )}
+                          {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
+                            <ReferenceLine x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                           )}
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -1355,7 +1708,7 @@ export default function SimulationResultsPage() {
                 isZoomed={zoom2.isZoomed} onZoomReset={zoom2.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom2.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
+                    <ComposedChart data={cutForBranch(zoom2.displayData)} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
                       onMouseDown={zoom2.onMouseDown} onMouseMove={zoom2.onMouseMove} onMouseUp={zoom2.onMouseUp}
                       style={{ cursor: zoom2.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
                       {zoom2.selectionArea()}
@@ -1373,6 +1726,9 @@ export default function SimulationResultsPage() {
                       {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                         <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                       )}
+                      {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
+                        <ReferenceLine x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
@@ -1386,10 +1742,10 @@ export default function SimulationResultsPage() {
                 isZoomed={zoom3.isZoomed} onZoomReset={zoom3.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom3.displayData} margin={{ top: 5, right: 40, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
+                    <ComposedChart data={cutForBranch(zoom3.displayData)} margin={{ top: 5, right: 40, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
                       onMouseDown={zoom3.onMouseDown} onMouseMove={zoom3.onMouseMove} onMouseUp={zoom3.onMouseUp}
                       style={{ cursor: zoom3.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
-                      {zoom3.displayData.filter(d => d.is_promo_week).map(d => (
+                      {cutForBranch(zoom3.displayData).filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} yAxisId="left" x1={d.week} x2={d.week}
                           fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
@@ -1416,6 +1772,9 @@ export default function SimulationResultsPage() {
                       {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                         <ReferenceLine yAxisId="left" x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                       )}
+                      {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
+                        <ReferenceLine yAxisId="left" x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                      )}
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
                     </ComposedChart>
@@ -1431,7 +1790,7 @@ export default function SimulationResultsPage() {
                 isZoomed={zoom4.isZoomed} onZoomReset={zoom4.resetZoom}
                 chart={(h) => (
                   <ResponsiveContainer width="100%" height={h}>
-                    <ComposedChart data={zoom4.displayData} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
+                    <ComposedChart data={cutForBranch(zoom4.displayData)} margin={{ top: 5, right: 20, left: 0, bottom: 20 }}
                       onMouseDown={zoom4.onMouseDown} onMouseMove={zoom4.onMouseMove} onMouseUp={zoom4.onMouseUp}
                       style={{ cursor: zoom4.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
                       {zoom4.selectionArea()}
@@ -1449,73 +1808,15 @@ export default function SimulationResultsPage() {
                       {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                         <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                       )}
+                      {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
+                        <ReferenceLine x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                 )}
               />
 
             </div>
-
-            {/* Hidden Lost Sales — Under-fulfilled Shipments */}
-            {hlsData && hlsData.disruption_windows.length > 0 && (
-              <div className="mt-4 rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
-                <div className="mb-3">
-                  <h3 className="text-sm font-bold text-charcoal-blue-950">Hidden Lost Sales — Affected Items</h3>
-                </div>
-
-                {/* Affected items — chips from disruption YAML. Click to filter charts. */}
-                {hlsData.disruption_windows.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                      {hlsData.disruption_windows.flatMap((w) => {
-                        const codes = w.item_codes
-                        if (codes === 'all' || (typeof codes === 'string' && codes === 'all')) {
-                          return [{ key: `all-${w.supplier_dc_code}`, code: null, desc: `All items on ${w.supplier_dc_code}` }]
-                        }
-                        const arr = Array.isArray(codes) ? codes : []
-                        return arr.map((c) => ({ key: `${w.supplier_dc_code}-${c}`, code: c, desc: '' }))
-                      }).filter((chip, idx, arr) => arr.findIndex(x => x.key === chip.key) === idx)
-                        .map((chip) => {
-                          if (chip.code === null) {
-                            return (
-                              <span key={chip.key} className="rounded-full border border-charcoal-blue-300 bg-charcoal-blue-50 px-2.5 py-1 text-[11px] font-semibold text-charcoal-blue-700">
-                                {chip.desc}
-                              </span>
-                            )
-                          }
-                          const match = (meta?.items_meta ?? []).find((m: any) => m.item_code === chip.code)
-                          const label = match?.item_description || match?.item_name || chip.code
-                          const isSelected = !!match && globalItem === match.item_id
-                          const clickable = !!match
-                          return (
-                            <button
-                              key={chip.key}
-                              type="button"
-                              disabled={!clickable}
-                              onClick={() => {
-                                if (!match) return
-                                setFilters({ globalItem: isSelected ? '' : match.item_id })
-                              }}
-                              className={`rounded-full border px-2.5 py-1 text-left text-[11px] font-semibold transition-colors ${
-                                isSelected
-                                  ? 'border-majorelle-blue-500 bg-majorelle-blue-500 text-white'
-                                  : clickable
-                                    ? 'border-charcoal-blue-300 bg-white text-charcoal-blue-700 hover:border-majorelle-blue-400 hover:bg-majorelle-blue-50 cursor-pointer'
-                                    : 'border-charcoal-blue-200 bg-charcoal-blue-50 text-charcoal-blue-400 cursor-default'
-                              }`}
-                              title={label}
-                            >
-                              <span className="font-mono">{chip.code}</span>
-                              {label && label !== chip.code && (
-                                <span className={`ml-1.5 font-normal ${isSelected ? 'text-white/90' : 'text-charcoal-blue-500'}`}>{label}</span>
-                              )}
-                            </button>
-                          )
-                        })}
-                  </div>
-                )}
-
-              </div>
-            )}
 
           </>
         )}
@@ -1805,6 +2106,55 @@ export default function SimulationResultsPage() {
             </div>
           )}
         </ChartModal>
+      )
+    })()}
+
+    {compareModalOpen && (() => {
+      const startCompare = async () => {
+        setCompareLoading(true); setCompareError('')
+        try {
+          const codes = affectedItemCodes ? [...affectedItemCodes] : undefined
+          const res = await generateBranchForecasts(simulationId, codes)
+          const rows = await getBranchForecast(res.reactive.simulation_id).catch(() => [] as BranchForecastRow[])
+          setBranchPreview({ reactive: res.reactive, adaptive: res.adaptive, rows })
+          const retId = params.retailerAccountId as string
+          const rs = await getRuns(retId, '').catch(() => [])
+          setAllRuns(rs)
+          setCompareModalOpen(false)
+        } catch (e: any) {
+          setCompareError(e?.message ?? 'Failed to generate branch forecasts')
+        } finally {
+          setCompareLoading(false)
+        }
+      }
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6" onClick={() => !compareLoading && setCompareModalOpen(false)}>
+          <div className="w-full max-w-md rounded-xl border border-charcoal-blue-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="p-5">
+              <h3 className="text-sm font-bold text-charcoal-blue-950">Start Compare</h3>
+              <p className="mt-1 text-xs text-charcoal-blue-500">
+                Generate the Reactive and Adaptive planner forecasts for this run. You&apos;ll then be able to switch between them and see their future demand on the POS chart, and run the branch simulations from the toolbar.
+              </p>
+              {compareError && <div className="mt-3"><ChartError message={compareError} /></div>}
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setCompareModalOpen(false)}
+                  disabled={compareLoading}
+                  className="rounded-xl border border-charcoal-blue-200 px-4 py-2 text-xs font-semibold text-charcoal-blue-600 hover:bg-charcoal-blue-50 disabled:opacity-50"
+                >Cancel</button>
+                <button
+                  onClick={startCompare}
+                  disabled={compareLoading}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white hover:bg-majorelle-blue-600 disabled:opacity-60"
+                >
+                  {compareLoading ? <Loader2 size={13} className="animate-spin" /> : <ChevronRight size={13} />}
+                  Start Compare
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )
     })()}
     </>
