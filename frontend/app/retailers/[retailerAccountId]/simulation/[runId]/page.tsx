@@ -2140,9 +2140,9 @@ export default function SimulationResultsPage() {
             const weeks = [...new Set([...p.keys(), ...c.keys()])].sort()
             return weeks.map(w => (w > (stockoutEndWeek as string) ? (c.get(w) ?? p.get(w)) : (p.get(w) ?? c.get(w))) as T)
           }
-          // Aggregate reactive planner_forecast rows by week for the tooltip overlay.
-          // Honor the current sidebar filters so this number matches the filtered POS bars.
-          // Item/store filter directly; category/subcategory/brand via items_meta lookup.
+          // Reactive planner_forecast covers affected items only (Adaptive reuses base for the rest).
+          // Compute the per-week delta between planner_forecast and base_demand across the filtered
+          // affected slice; Reactive future demand = Adaptive future demand + this delta.
           const itemsMeta = (meta?.items_meta ?? []) as any[]
           const allowedItemIds = (globalCategory || globalSubcategory || globalBrand)
             ? new Set(itemsMeta.filter(m =>
@@ -2151,28 +2151,40 @@ export default function SimulationResultsPage() {
                 (!globalBrand || m.brand === globalBrand)
               ).map(m => m.item_id))
             : null
-          const reactiveForecastByWeek = new Map<string, number>()
+          const reactiveDeltaByWeek = new Map<string, number>()
           for (const r of branchForecastRows) {
             if (globalItem && r.item_id !== globalItem) continue
             if (globalStore && r.store_id !== globalStore) continue
             if (allowedItemIds && !allowedItemIds.has(r.item_id)) continue
             const wk = r.forecast_week
-            reactiveForecastByWeek.set(wk, (reactiveForecastByWeek.get(wk) ?? 0) + (r.planner_forecast ?? 0))
+            const delta = (r.planner_forecast ?? 0) - (r.base_demand ?? 0)
+            reactiveDeltaByWeek.set(wk, (reactiveDeltaByWeek.get(wk) ?? 0) + delta)
           }
+          // Adaptive's future demand at each week (its own realized demand, filtered), used
+          // both for the Adaptive tooltip and as the base for Reactive = Adaptive + delta.
+          const adaptiveDemandByWeek = new Map<string, number>(
+            cmpAdaptivePos.map((d: any) => [d.week, Number(d.demand_qty ?? 0)])
+          )
           const buildCombined = (pos: any[], inv: any[], branch: 'reactive' | 'adaptive') => {
             const invByWeek = new Map(inv.map((d: any) => [d.week, d]))
             return pos.map((d: any) => {
               const isAfterAnchor = !!stockoutEndWeek && d.week > stockoutEndWeek
-              // Post-anchor planner forecast: dampened rows for Reactive, base demand for Adaptive.
+              const adaptiveDemand = adaptiveDemandByWeek.get(d.week) ?? Number(d.demand_qty ?? 0)
+              // Post-anchor planner forecast:
+              //   Adaptive → base demand = its own realized demand (undampened forecast)
+              //   Reactive → Adaptive base + delta from affected items' dampened rows
               const plannerForecast = !isAfterAnchor ? null
-                : branch === 'reactive' ? (reactiveForecastByWeek.get(d.week) ?? null)
-                : d.demand_qty
+                : branch === 'reactive' ? adaptiveDemand + (reactiveDeltaByWeek.get(d.week) ?? 0)
+                : adaptiveDemand
               // Pre-anchor forecast: use baseForecastMap (weekly_demand) if available, else fall
               // back to the row's demand_qty since base_forecast == base_demand for HLS pre-anchor.
               const preAnchorForecast = isAfterAnchor ? null
                 : (baseForecastMap.get(d.week) ?? d.demand_qty ?? null)
               return {
                 ...d,
+                // Set primary_demand_qty so POSTooltip doesn't treat post-anchor rows as
+                // "future only" (which would hide Sales/Lost Sales rows).
+                primary_demand_qty: d.demand_qty,
                 on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
                 on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
                 // Tooltip resolver picks these up:
