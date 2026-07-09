@@ -701,6 +701,13 @@ export default function SimulationResultsPage() {
   const mergedStoreInvData = useMemo(() => mergeWithParent(storeInvData, parentStoreInvData), [storeInvData, parentStoreInvData, useBranchMerge, stockoutEndWeek])
   const mergedShipData = useMemo(() => mergeWithParent(shipData, parentShipData), [shipData, parentShipData, useBranchMerge, stockoutEndWeek])
   const mergedDcInvData = useMemo(() => mergeWithParent(dcInvData, parentDcInvData), [dcInvData, parentDcInvData, useBranchMerge, stockoutEndWeek])
+  // On branch views, override the KPI cards with numbers computed from the merged arrays so the
+  // top-of-page totals reflect parent-pre-anchor + child-post-anchor over the current filter slice.
+  const mergedPosForKpi = useMemo(() => mergeWithParent(posData, parentPosData), [posData, parentPosData, useBranchMerge, stockoutEndWeek])
+  const branchKpis = useMemo(
+    () => computeKPIs(mergedPosForKpi, mergedShipData),
+    [mergedPosForKpi, mergedShipData]
+  )
   const zoom1 = useChartZoom(combinedPosDataForZoom)
   const zoom2 = useChartZoom(mergedStoreInvData)
   const zoom3 = useChartZoom(mergedShipData)
@@ -727,6 +734,7 @@ export default function SimulationResultsPage() {
   }, [posData, rollingForecastData, rollingForecastSnapshot, baseForecastMap])
 
   const [kpis, setKpis] = useState({ totalSales: 0, totalRevenue: 0, fillRate: 0, stockoutRate: 0 })
+  const displayKpis = selectedBranch !== 'base' ? branchKpis : kpis
 
   // ── Apply inline summary data ─────────────────────────────────────────────
 
@@ -1670,10 +1678,10 @@ export default function SimulationResultsPage() {
           <>
             {/* KPIs */}
             <div className="mb-5 grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-              <KPICard label="Total Sales (units)" value={kpis.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
-              <KPICard label="Total Revenue" value={`$${(kpis.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
-              <KPICard label="Avg Fill Rate" value={`${kpis.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
-              <KPICard label="Stockout Rate" value={`${kpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
+              <KPICard label="Total Sales (units)" value={displayKpis.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
+              <KPICard label="Total Revenue" value={`$${(displayKpis.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
+              <KPICard label="Avg Fill Rate" value={`${displayKpis.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
+              <KPICard label="Stockout Rate" value={`${displayKpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
 
             {/* Hidden Lost Sales — Affected Items (moved up so users see disrupted items before scanning charts) */}
