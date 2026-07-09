@@ -2145,6 +2145,7 @@ export default function SimulationResultsPage() {
             return pos.map((d: any) => ({
               ...d,
               on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
+              on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
             }))
           }
           const rPosMerged = mergeAt(cmpReactivePos, parentPosData)
@@ -2158,17 +2159,23 @@ export default function SimulationResultsPage() {
           const rChart = buildCombined(rPosMerged, rInvMerged)
           const aChart = buildCombined(aPosMerged, aInvMerged)
 
+          const Kpi = ({ label, value }: { label: string; value: string }) => (
+            <div className="flex flex-col rounded-md border border-charcoal-blue-100 bg-charcoal-blue-50 px-2.5 py-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-charcoal-blue-400">{label}</span>
+              <span className="text-xs font-bold text-charcoal-blue-900">{value}</span>
+            </div>
+          )
           const Section = ({ title, accent, kpi, data }: { title: string; accent: string; kpi: typeof rKpi; data: any[] }) => (
             <div className="mb-4 rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center gap-2">
+              <div className="mb-2 flex items-center gap-2">
                 <span className={`h-2.5 w-2.5 rounded-full ${accent}`} />
                 <h3 className="text-sm font-black uppercase tracking-widest text-charcoal-blue-950">{title}</h3>
               </div>
-              <div className="mb-4 grid gap-3 grid-cols-2 lg:grid-cols-4">
-                <KPICard label="Total Sales (units)" value={kpi.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
-                <KPICard label="Total Revenue" value={`$${(kpi.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
-                <KPICard label="Avg Fill Rate" value={`${kpi.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
-                <KPICard label="Stockout Rate" value={`${kpi.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
+              <div className="mb-3 grid gap-2 grid-cols-2 sm:grid-cols-4">
+                <Kpi label="Total Sales" value={kpi.totalSales.toLocaleString()} />
+                <Kpi label="Total Revenue" value={`$${(kpi.totalRevenue / 1000).toFixed(1)}K`} />
+                <Kpi label="Avg Fill Rate" value={`${kpi.fillRate.toFixed(1)}%`} />
+                <Kpi label="Stockout Rate" value={`${kpi.stockoutRate.toFixed(1)}%`} />
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <ComposedChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}>
@@ -2181,7 +2188,8 @@ export default function SimulationResultsPage() {
                   <Bar yAxisId="left" dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={8} />
                   <Bar yAxisId="left" dataKey="sales_qty" fill="#10b981" name="Sales" barSize={8} />
                   <Bar yAxisId="left" dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={8} />
-                  <Line yAxisId="right" dataKey="on_hand_quantity" stroke="#0891b2" name="Store On-Hand" type="monotone" strokeWidth={2} dot={false} />
+                  <Line yAxisId="right" dataKey="on_hand_quantity" stroke="#10b981" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
+                  <Line yAxisId="right" dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
                   {stockoutEndWeek && <ReferenceLine yAxisId="left" x={stockoutEndWeek} stroke="#06b6d4" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#06b6d4' }} />}
                 </ComposedChart>
               </ResponsiveContainer>
@@ -2197,6 +2205,44 @@ export default function SimulationResultsPage() {
           }
           return (
             <div>
+              {hlsData && hlsData.disruption_windows.length > 0 && (
+                <div className="mb-4 rounded-xl border border-charcoal-blue-200 bg-white p-3 shadow-sm">
+                  <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-charcoal-blue-500">Filter by affected item</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {hlsData.disruption_windows.flatMap((w) => {
+                      const codes = w.item_codes
+                      const arr = Array.isArray(codes) ? codes : []
+                      return arr.map((c) => ({ key: `${w.supplier_dc_code}-${c}`, code: c }))
+                    }).filter((chip, idx, arr) => arr.findIndex(x => x.key === chip.key) === idx).map((chip) => {
+                      const match = (meta?.items_meta ?? []).find((m: any) => m.item_code === chip.code)
+                      const label = match?.item_description || match?.item_name || chip.code
+                      const isSelected = !!match && globalItem === match.item_id
+                      const clickable = !!match
+                      return (
+                        <button
+                          key={chip.key}
+                          type="button"
+                          disabled={!clickable}
+                          onClick={() => match && setFilters({ globalItem: isSelected ? '' : match.item_id })}
+                          className={`rounded-full border px-2.5 py-1 text-left text-[11px] font-semibold transition-colors ${
+                            isSelected
+                              ? 'border-majorelle-blue-500 bg-majorelle-blue-500 text-white'
+                              : clickable
+                                ? 'border-charcoal-blue-300 bg-white text-charcoal-blue-700 hover:border-majorelle-blue-400 hover:bg-majorelle-blue-50 cursor-pointer'
+                                : 'border-charcoal-blue-200 bg-charcoal-blue-50 text-charcoal-blue-400 cursor-default'
+                          }`}
+                          title={label}
+                        >
+                          <span className="font-mono">{chip.code}</span>
+                          {label && label !== chip.code && (
+                            <span className={`ml-1.5 font-normal ${isSelected ? 'text-white/90' : 'text-charcoal-blue-500'}`}>{label}</span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <Section title="Adaptive" accent="bg-emerald-500" kpi={aKpi} data={aChart} />
               <Section title="Reactive" accent="bg-rose-500" kpi={rKpi} data={rChart} />
             </div>
