@@ -224,8 +224,8 @@ function POSTooltip({ active, payload, label, promoWeekMap, hideActual }: {
     plannerBarValue != null ? { value: plannerBarValue, label: 'Planner Demand' }
     : originalForecast != null ? { value: originalForecast, label: 'Forecasted Demand' }
     : baseForecast != null ? { value: baseForecast, label: 'Forecasted Demand' }
-    : forecast != null ? { value: forecast, label: 'Future Demand' }
-    : branchForecast != null ? { value: branchForecast, label: 'Future Demand' }
+    : forecast != null ? { value: forecast, label: 'Forecasted Demand' }
+    : branchForecast != null ? { value: branchForecast, label: 'Forecasted Demand' }
     : null
   const fillRate = actualDemand > 0 ? (sales / actualDemand) * 100 : null
   const runType = d.run_type
@@ -260,7 +260,7 @@ function POSTooltip({ active, payload, label, promoWeekMap, hideActual }: {
       </div>
       <div className="mb-1.5 space-y-0.5">
         {forecastedDemand != null && (
-          <p className={`flex justify-between gap-4 ${forecastedDemand.label === 'Future Demand' ? 'text-cyan-600' : 'text-violet-700'}`}>
+          <p className="flex justify-between gap-4 text-violet-700">
             <span>{forecastedDemand.label}</span>
             <span className="font-medium">{Math.round(forecastedDemand.value).toLocaleString()}</span>
           </p>
@@ -2189,7 +2189,7 @@ export default function SimulationResultsPage() {
                 on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
                 // Tooltip resolver picks these up:
                 //   pre-anchor  → base_forecast_qty → "Forecasted Demand"
-                //   post-anchor → branch_forecast_qty → "Future Demand"
+                //   post-anchor → branch_forecast_qty → "Forecasted Demand"
                 base_forecast_qty: preAnchorForecast,
                 branch_forecast_qty: plannerForecast,
               }
