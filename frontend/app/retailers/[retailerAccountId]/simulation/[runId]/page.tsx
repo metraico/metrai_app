@@ -1574,50 +1574,6 @@ export default function SimulationResultsPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {pageState === 'ready' && hasBranches && (() => {
-              const branchOpts: Array<{ v: 'base' | 'reactive' | 'adaptive'; label: string; activeCls: string; enabled: boolean }> = [
-                { v: 'base',     label: 'Main-line', activeCls: 'bg-charcoal-blue-900 text-white shadow',      enabled: true },
-                { v: 'reactive', label: 'Reactive',  activeCls: 'bg-rose-500 text-white shadow',               enabled: !!reactiveChild },
-                { v: 'adaptive', label: 'Adaptive',  activeCls: 'bg-emerald-500 text-white shadow',            enabled: !!adaptiveChild },
-              ]
-              const helper =
-                selectedBranch === 'reactive' ? '↑ Full correction based on avg historical performance'
-                : selectedBranch === 'adaptive' ? 'Base forecast — no dampening applied'
-                : 'Showing main-line simulation data'
-              return (
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-semibold text-charcoal-blue-500">Branch view:</span>
-                  <div className="inline-flex items-center rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-0.5">
-                    {branchOpts.map(opt => {
-                      const active = selectedBranch === opt.v
-                      return (
-                        <button
-                          key={opt.v}
-                          disabled={!opt.enabled}
-                          onClick={() => opt.enabled && setSelectedBranch(opt.v)}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-                            active
-                              ? opt.activeCls
-                              : opt.enabled
-                                ? 'text-charcoal-blue-600 hover:bg-white'
-                                : 'text-charcoal-blue-300 cursor-not-allowed'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <span className={`text-[11px] font-medium ${
-                    selectedBranch === 'reactive' ? 'text-rose-600'
-                    : selectedBranch === 'adaptive' ? 'text-emerald-600'
-                    : 'text-charcoal-blue-400'
-                  }`}>
-                    {helper}
-                  </span>
-                </div>
-              )
-            })()}
             {pageState === 'ready' && showCompareButton && (
               <button
                 onClick={() => { setCompareModalOpen(true); setBranchPreview(null); setCompareError(''); }}
@@ -1815,6 +1771,51 @@ export default function SimulationResultsPage() {
                 </div>
               </div>
             )}
+
+            {hasBranches && (() => {
+              const branchOpts: Array<{ v: 'base' | 'reactive' | 'adaptive'; label: string; activeCls: string; enabled: boolean }> = [
+                { v: 'base',     label: 'Main-line', activeCls: 'bg-charcoal-blue-900 text-white shadow',      enabled: true },
+                { v: 'reactive', label: 'Reactive',  activeCls: 'bg-rose-500 text-white shadow',               enabled: !!reactiveChild },
+                { v: 'adaptive', label: 'Adaptive',  activeCls: 'bg-emerald-500 text-white shadow',            enabled: !!adaptiveChild },
+              ]
+              const helper =
+                selectedBranch === 'reactive' ? '↑ Full correction based on avg historical performance'
+                : selectedBranch === 'adaptive' ? 'Base forecast — no dampening applied'
+                : 'Showing main-line simulation data'
+              return (
+                <div className="mb-5 flex items-center gap-3 rounded-xl border border-charcoal-blue-200 bg-white px-4 py-2 shadow-sm">
+                  <span className="text-xs font-semibold text-charcoal-blue-500">Branch view:</span>
+                  <div className="inline-flex items-center rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-0.5">
+                    {branchOpts.map(opt => {
+                      const active = selectedBranch === opt.v
+                      return (
+                        <button
+                          key={opt.v}
+                          disabled={!opt.enabled}
+                          onClick={() => opt.enabled && setSelectedBranch(opt.v)}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                            active
+                              ? opt.activeCls
+                              : opt.enabled
+                                ? 'text-charcoal-blue-600 hover:bg-white'
+                                : 'text-charcoal-blue-300 cursor-not-allowed'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <span className={`text-[11px] font-medium ${
+                    selectedBranch === 'reactive' ? 'text-rose-600'
+                    : selectedBranch === 'adaptive' ? 'text-emerald-600'
+                    : 'text-charcoal-blue-400'
+                  }`}>
+                    {helper}
+                  </span>
+                </div>
+              )
+            })()}
 
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
