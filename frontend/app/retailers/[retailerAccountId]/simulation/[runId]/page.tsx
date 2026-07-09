@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode, Lock } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
@@ -551,7 +551,14 @@ export default function SimulationResultsPage() {
   const [runEndWeek, setRunEndWeek] = useState<string>('')
   const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
-  const [narrativeStep, setNarrativeStep] = useState(0)
+  // ── Comparison tab (Reactive vs Adaptive) ─────────────────────────────────
+  const [cmpReactivePos, setCmpReactivePos] = useState<any[]>([])
+  const [cmpReactiveInv, setCmpReactiveInv] = useState<any[]>([])
+  const [cmpReactiveShip, setCmpReactiveShip] = useState<any[]>([])
+  const [cmpAdaptivePos, setCmpAdaptivePos] = useState<any[]>([])
+  const [cmpAdaptiveInv, setCmpAdaptiveInv] = useState<any[]>([])
+  const [cmpAdaptiveShip, setCmpAdaptiveShip] = useState<any[]>([])
+  const [cmpLoading, setCmpLoading] = useState(false)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
   const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const analyticsStatusRef = useRef<'PENDING' | 'READY' | 'FAILED' | null>(null)
@@ -625,6 +632,9 @@ export default function SimulationResultsPage() {
   const reactiveChild = childBranches.find(r => r.branch_type === 'reactive') || null
   const adaptiveChild = childBranches.find(r => r.branch_type === 'adaptive') || null
   const hasBranches = childBranches.length > 0
+  const bothBranchesCompleted =
+    reactiveChild?.simulation_status === 'COMPLETED' &&
+    adaptiveChild?.simulation_status === 'COMPLETED'
   const isHls = scenarioType === 'hidden_lost_sales' || (hlsData !== null && hlsData.disruption_windows.length > 0)
   const showCompareButton = isHls && !hasBranches && currentRun?.branch_type == null && !currentRun?.parent_simulation_id
   // Selected-branch sim id (may be a not-yet-run child); used to know which branch is active.
@@ -1173,7 +1183,9 @@ export default function SimulationResultsPage() {
   // history entirely. Honors the item/store/category filter so the parent's slice
   // matches the branch's slice.
   useEffect(() => {
-    if (selectedBranch === 'base') {
+    // Parent slices are needed on branch views AND on the Comparison tab (which merges both branches
+    // with the parent's pre-anchor context). Bail on Main-line dashboard where they're unused.
+    if (selectedBranch === 'base' && activeTab !== 'comparison') {
       setParentPosData([]); setParentStoreInvData([]); setParentShipData([]); setParentDcInvData([])
       setParentPosLoading(false)
       return
@@ -1222,7 +1234,53 @@ export default function SimulationResultsPage() {
     })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simulationId, selectedBranch, isHls, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
+  }, [simulationId, selectedBranch, activeTab, isHls, globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
+
+  // ── Fetch both branches' POS+StoreInv for the Comparison tab ──────────────
+  // Only when both branch children are COMPLETED and the tab is active. Honors the current filter.
+  useEffect(() => {
+    if (activeTab !== 'comparison') return
+    if (!bothBranchesCompleted || !reactiveChild || !adaptiveChild) return
+    let cancelled = false
+    const filters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
+    const shipFilters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      supplier_dc_id: globalSdc || undefined,
+      retailer_dc_id: globalRdc || undefined,
+    }
+    const anyFilter = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
+    const anyShipFilter = !!(globalItem || globalStore || globalSdc || globalRdc)
+    const f = anyFilter ? filters : undefined
+    const sf = anyShipFilter ? shipFilters : undefined
+    setCmpLoading(true)
+    Promise.all([
+      getSummaryStoreSales(reactiveChild.simulation_id, f).catch(() => ({ weekly_pos: [] })),
+      getSummaryStoreInventory(reactiveChild.simulation_id, f).catch(() => ({ store_inventory: [] })),
+      getSummarySupplyChainSales(reactiveChild.simulation_id, sf).catch(() => ({ weekly_shipments: [] })),
+      getSummaryStoreSales(adaptiveChild.simulation_id, f).catch(() => ({ weekly_pos: [] })),
+      getSummaryStoreInventory(adaptiveChild.simulation_id, f).catch(() => ({ store_inventory: [] })),
+      getSummarySupplyChainSales(adaptiveChild.simulation_id, sf).catch(() => ({ weekly_shipments: [] })),
+    ]).then(([rPos, rInv, rShip, aPos, aInv, aShip]) => {
+      if (cancelled) return
+      setCmpReactivePos(aggPOS((rPos as any).weekly_pos ?? []))
+      setCmpReactiveInv(aggStoreInv((rInv as any).store_inventory ?? []))
+      setCmpReactiveShip(aggShipments((rShip as any).weekly_shipments ?? []))
+      setCmpAdaptivePos(aggPOS((aPos as any).weekly_pos ?? []))
+      setCmpAdaptiveInv(aggStoreInv((aInv as any).store_inventory ?? []))
+      setCmpAdaptiveShip(aggShipments((aShip as any).weekly_shipments ?? []))
+      setCmpLoading(false)
+    })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, bothBranchesCompleted, reactiveChild?.simulation_id, adaptiveChild?.simulation_id,
+      globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -1661,17 +1719,30 @@ export default function SimulationResultsPage() {
 
         {/* Tabs */}
         <div className="mb-5 flex gap-2 border-b border-charcoal-blue-200">
-          {['dashboard', 'narrative'].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`px-3 py-2 text-xs font-semibold transition-all border-b-2 capitalize ${
-                activeTab === tab
-                  ? 'border-majorelle-blue-500 text-majorelle-blue-600'
-                  : 'border-transparent text-charcoal-blue-400 hover:text-charcoal-blue-950'
-              }`}
-            >
-              {tab === 'dashboard' ? 'Data Dashboard' : 'Guided Narrative'}
-            </button>
-          ))}
+          <button onClick={() => setActiveTab('dashboard')}
+            className={`px-3 py-2 text-xs font-semibold transition-all border-b-2 ${
+              activeTab === 'dashboard'
+                ? 'border-majorelle-blue-500 text-majorelle-blue-600'
+                : 'border-transparent text-charcoal-blue-400 hover:text-charcoal-blue-950'
+            }`}
+          >
+            Data Dashboard
+          </button>
+          <button
+            onClick={() => bothBranchesCompleted && setActiveTab('comparison')}
+            disabled={!bothBranchesCompleted}
+            title={bothBranchesCompleted ? '' : 'Run Compare Reactive vs Adaptive to unlock'}
+            className={`inline-flex items-center gap-1 px-3 py-2 text-xs font-semibold transition-all border-b-2 ${
+              activeTab === 'comparison'
+                ? 'border-majorelle-blue-500 text-majorelle-blue-600'
+                : bothBranchesCompleted
+                  ? 'border-transparent text-charcoal-blue-400 hover:text-charcoal-blue-950'
+                  : 'border-transparent text-charcoal-blue-300 cursor-not-allowed'
+            }`}
+          >
+            Comparison
+            {!bothBranchesCompleted && <Lock size={11} />}
+          </button>
         </div>
 
         {activeTab === 'dashboard' && (
@@ -2060,171 +2131,78 @@ export default function SimulationResultsPage() {
           </>
         )}
 
-        {activeTab === 'narrative' && (() => {
-          const third = Math.ceil(posData.length / 3)
-          const steps = [
-            {
-              label: 'The Baseline',
-              weekRange: `${posData[0]?.week ?? '—'} – ${posData[third - 1]?.week ?? '—'}`,
-              description: 'Stable demand history. All supply chain nodes operating within target weeks-of-supply.',
-              posSlice: posData.slice(0, third),
-              invSlice: storeInvData.slice(0, third),
-              shipSlice: shipData.slice(0, third),
-              kpis: [
-                { label: 'Avg Weekly Sales', value: posData.slice(0, third).length ? `${Math.round(posData.slice(0, third).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
-                { label: 'Avg Fill Rate', value: shipData.slice(0, third).length ? `${(shipData.slice(0, third).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
-                { label: 'Peak On-Hand', value: storeInvData.slice(0, third).length ? `${Math.max(...storeInvData.slice(0, third).map((r: any) => r.on_hand_quantity)).toLocaleString()}` : '—' },
-              ],
-              narrative: 'The simulation opens with all supply chain nodes operating smoothly. Store inventory levels are well above target, the retailer DC is shipping full replenishment orders, and the supplier is fulfilling close to 100% of DC orders. Demand is steady with predictable weekly patterns — this baseline period establishes the "healthy state" benchmark for the rest of the run.',
-              finding: 'When the system starts healthy, the replenishment logic performs exactly as designed. This period confirms the model is calibrated correctly.',
-              findingColor: 'border-emerald-300 bg-emerald-50 text-emerald-800',
-            },
-            {
-              label: 'The Constraint Emerges',
-              weekRange: `${posData[third]?.week ?? '—'} – ${posData[third * 2 - 1]?.week ?? '—'}`,
-              description: 'Supplier fill rate begins to fall. Retailer DC inventory declines below target WOS.',
-              posSlice: posData.slice(third, third * 2),
-              invSlice: storeInvData.slice(third, third * 2),
-              shipSlice: shipData.slice(third, third * 2),
-              kpis: [
-                { label: 'Avg Weekly Sales', value: posData.slice(third, third * 2).length ? `${Math.round(posData.slice(third, third * 2).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
-                { label: 'Avg Fill Rate', value: shipData.slice(third, third * 2).length ? `${(shipData.slice(third, third * 2).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
-                { label: 'DC On-Hand Drop', value: storeInvData.slice(third, third * 2).length ? `${Math.round((1 - storeInvData[third * 2 - 1]?.on_hand_quantity / (storeInvData[third]?.on_hand_quantity || 1)) * 100)}%` : '—' },
-              ],
-              narrative: 'Midway through the simulation, supplier fill rates begin to deteriorate. The retailer DC can no longer replenish its full ordered quantity, and on-hand inventory at the DC starts declining. Stores begin experiencing isolated stockouts — initially masked in the aggregate data but visible when filtered by individual store. The replenishment engine responds by ordering more, but the supplier cannot keep up.',
-              finding: 'A drop in fill rate at the supplier level takes 3–4 weeks to visibly impact store shelves. This lag is the window where intervention is possible before lost sales cascade.',
-              findingColor: 'border-amber-300 bg-amber-50 text-amber-800',
-            },
-            {
-              label: 'Vendor Comparison',
-              weekRange: `${shipData[0]?.week ?? '—'} – ${shipData[shipData.length - 1]?.week ?? '—'}`,
-              description: 'Retailer DC vs Supplier DC — who absorbed the pressure and who passed it on.',
-              posSlice: dcInvData,
-              invSlice: storeInvData,
-              shipSlice: shipData,
-              kpis: [
-                { label: 'Total Ordered', value: shipData.length ? `${Math.round(shipData.reduce((s: number, r: any) => s + r.ordered_qty, 0) / 1000).toLocaleString()}K` : '—' },
-                { label: 'Total Shipped', value: shipData.length ? `${Math.round(shipData.reduce((s: number, r: any) => s + r.shipped_qty, 0) / 1000).toLocaleString()}K` : '—' },
-                { label: 'Overall Fill Rate', value: shipData.length ? `${(shipData.reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / shipData.length * 100).toFixed(1)}%` : '—' },
-                { label: 'Unfulfilled Units', value: shipData.length ? `${Math.round((shipData.reduce((s: number, r: any) => s + r.ordered_qty, 0) - shipData.reduce((s: number, r: any) => s + r.shipped_qty, 0)) / 1000).toLocaleString()}K` : '—' },
-              ],
-              narrative: 'Comparing inventory levels at the Retailer DC and Supplier DC reveals a clear divergence. The Supplier DC maintains high on-hand inventory throughout the run, while the Retailer DC is persistently depleted. This pattern indicates the supplier is holding inventory upstream rather than releasing it — the bottleneck is not production capacity but allocation and order fulfillment policy at the vendor level.',
-              finding: 'When the Supplier DC holds inventory while the Retailer DC starves, the issue is vendor allocation policy — not a supply shortage. Escalating fill rate SLAs or shifting to vendor-managed inventory would address the root cause.',
-              findingColor: 'border-majorelle-blue-200 bg-majorelle-blue-50 text-majorelle-blue-800',
-            },
-          ]
+        {activeTab === 'comparison' && (() => {
+          // Merge parent's pre-anchor rows with each branch child's post-anchor rows at the anchor.
+          const mergeAt = <T extends { week: string }>(child: T[], parent: T[]): T[] => {
+            if (!stockoutEndWeek || parent.length === 0) return child
+            const p = new Map(parent.map(d => [d.week, d]))
+            const c = new Map(child.map(d => [d.week, d]))
+            const weeks = [...new Set([...p.keys(), ...c.keys()])].sort()
+            return weeks.map(w => (w > (stockoutEndWeek as string) ? (c.get(w) ?? p.get(w)) : (p.get(w) ?? c.get(w))) as T)
+          }
+          const buildCombined = (pos: any[], inv: any[]) => {
+            const invByWeek = new Map(inv.map((d: any) => [d.week, d]))
+            return pos.map((d: any) => ({
+              ...d,
+              on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
+            }))
+          }
+          const rPosMerged = mergeAt(cmpReactivePos, parentPosData)
+          const rInvMerged = mergeAt(cmpReactiveInv, parentStoreInvData)
+          const rShipMerged = mergeAt(cmpReactiveShip, parentShipData)
+          const aPosMerged = mergeAt(cmpAdaptivePos, parentPosData)
+          const aInvMerged = mergeAt(cmpAdaptiveInv, parentStoreInvData)
+          const aShipMerged = mergeAt(cmpAdaptiveShip, parentShipData)
+          const rKpi = computeKPIs(rPosMerged, rShipMerged)
+          const aKpi = computeKPIs(aPosMerged, aShipMerged)
+          const rChart = buildCombined(rPosMerged, rInvMerged)
+          const aChart = buildCombined(aPosMerged, aInvMerged)
 
-          const step = steps[narrativeStep]
+          const Section = ({ title, accent, kpi, data }: { title: string; accent: string; kpi: typeof rKpi; data: any[] }) => (
+            <div className="mb-4 rounded-xl border border-charcoal-blue-200 bg-white p-4 shadow-sm">
+              <div className="mb-3 flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 rounded-full ${accent}`} />
+                <h3 className="text-sm font-black uppercase tracking-widest text-charcoal-blue-950">{title}</h3>
+              </div>
+              <div className="mb-4 grid gap-3 grid-cols-2 lg:grid-cols-4">
+                <KPICard label="Total Sales (units)" value={kpi.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
+                <KPICard label="Total Revenue" value={`$${(kpi.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
+                <KPICard label="Avg Fill Rate" value={`${kpi.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
+                <KPICard label="Stockout Rate" value={`${kpi.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
+              </div>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="week" {...xAxisProps} />
+                  <YAxis yAxisId="left" tickFormatter={yAxisTickFormatter} />
+                  <YAxis yAxisId="right" orientation="right" tickFormatter={yAxisTickFormatter} />
+                  <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                  <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+                  <Bar yAxisId="left" dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={8} />
+                  <Bar yAxisId="left" dataKey="sales_qty" fill="#10b981" name="Sales" barSize={8} />
+                  <Bar yAxisId="left" dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={8} />
+                  <Line yAxisId="right" dataKey="on_hand_quantity" stroke="#0891b2" name="Store On-Hand" type="monotone" strokeWidth={2} dot={false} />
+                  {stockoutEndWeek && <ReferenceLine yAxisId="left" x={stockoutEndWeek} stroke="#06b6d4" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#06b6d4' }} />}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )
 
+          if (cmpLoading || (cmpReactivePos.length === 0 && cmpAdaptivePos.length === 0)) {
+            return (
+              <div className="flex items-center justify-center rounded-xl border border-charcoal-blue-200 bg-white py-24">
+                <Loader2 size={20} className="animate-spin text-majorelle-blue-500" />
+              </div>
+            )
+          }
           return (
             <div>
-              {/* Step progress */}
-              <div className="mb-6 flex items-center gap-0">
-                {steps.map((s, i) => (
-                  <div key={i} className="flex flex-1 items-center">
-                    <button
-                      onClick={() => setNarrativeStep(i)}
-                      className="flex flex-shrink-0 flex-col items-center gap-1"
-                    >
-                      <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-all ${
-                        i < narrativeStep ? 'bg-emerald-500 text-white' : i === narrativeStep ? 'bg-majorelle-blue-500 text-white' : 'bg-charcoal-blue-100 text-charcoal-blue-400'
-                      }`}>
-                        {i < narrativeStep ? '✓' : i + 1}
-                      </div>
-                      <span className={`text-[10px] font-semibold whitespace-nowrap ${i === narrativeStep ? 'text-majorelle-blue-600' : 'text-charcoal-blue-400'}`}>{s.label}</span>
-                    </button>
-                    {i < steps.length - 1 && (
-                      <div className={`mx-2 mb-4 h-px flex-1 ${i < narrativeStep ? 'bg-emerald-400' : 'bg-charcoal-blue-200'}`} />
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Step content */}
-              <div className="rounded-xl border border-charcoal-blue-200 bg-white p-5 shadow-sm">
-                <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Step {narrativeStep + 1} of {steps.length}</p>
-                <h2 className="text-lg font-black tracking-tight text-charcoal-blue-950">{step.label}</h2>
-                <p className="mb-4 mt-0.5 text-xs text-charcoal-blue-400">{step.weekRange} — {step.description}</p>
-
-                {/* Chart */}
-                <div className="mb-4 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 p-3">
-                  <ResponsiveContainer width="100%" height={220}>
-                    {narrativeStep === 2 ? (
-                      <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
-                        <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Vendor A" type="monotone" strokeWidth={2} dot={false} />
-                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Vendor B" type="monotone" strokeWidth={2} dot={false} />
-                        <Bar dataKey="ordered_qty" yAxisId={undefined} fill="transparent" />
-                      </ComposedChart>
-                    ) : (
-                      <ComposedChart data={step.posSlice} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
-                        <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
-                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
-                        </Bar>
-                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
-                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
-                        </Bar>
-                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
-                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
-                        </Bar>
-                        {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
-                      </ComposedChart>
-                    )}
-                  </ResponsiveContainer>
-                </div>
-
-                {/* KPI row */}
-                <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {step.kpis.map((kpi, i) => (
-                    <div key={i} className="rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 px-3 py-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-charcoal-blue-400">{kpi.label}</p>
-                      <p className="mt-0.5 text-sm font-black text-charcoal-blue-950">{kpi.value}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Narrative text */}
-                <p className="mb-3 text-xs leading-relaxed text-charcoal-blue-700">{step.narrative}</p>
-
-                {/* Key finding */}
-                <div className={`rounded-lg border px-3 py-2.5 ${step.findingColor}`}>
-                  <span className="mr-1 text-[10px] font-black uppercase tracking-wide">Key finding:</span>
-                  <span className="text-[11px] leading-relaxed">{step.finding}</span>
-                </div>
-              </div>
-
-              {/* Navigation */}
-              <div className="mt-4 flex items-center justify-between">
-                <button
-                  onClick={() => setNarrativeStep(s => Math.max(0, s - 1))}
-                  disabled={narrativeStep === 0}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-charcoal-blue-200 bg-white px-4 py-2 text-xs font-bold text-charcoal-blue-600 transition hover:bg-charcoal-blue-50 disabled:opacity-30"
-                >
-                  <ChevronLeft size={14} /> Previous
-                </button>
-                <span className="text-xs text-charcoal-blue-400">{narrativeStep + 1} / {steps.length}</span>
-                <button
-                  onClick={() => setNarrativeStep(s => Math.min(steps.length - 1, s + 1))}
-                  disabled={narrativeStep === steps.length - 1}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition hover:bg-majorelle-blue-600 disabled:opacity-30"
-                >
-                  Next <ChevronRight size={14} />
-                </button>
-              </div>
+              <Section title="Adaptive" accent="bg-emerald-500" kpi={aKpi} data={aChart} />
+              <Section title="Reactive" accent="bg-rose-500" kpi={rKpi} data={rChart} />
             </div>
           )
         })()}
+
       </div>
     </div>
 
