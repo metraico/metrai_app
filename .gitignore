@@ -6,3 +6,12 @@ __pycache__/
 .DS_Store
 .pem
 .venv/
+
+# node / next build artifacts (incl. the stray metrai_nextjs scratch project)
+node_modules/
+.next/
+/metrai_nextjs/
+
+# local scratch / debug API-response dumps (ad-hoc test outputs, not source)
+/frontend/race*.json
+/frontend/rw*.json

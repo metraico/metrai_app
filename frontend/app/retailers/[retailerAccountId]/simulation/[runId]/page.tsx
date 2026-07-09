@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronRight, FileCode, Lock } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
@@ -13,9 +13,10 @@ import {
   getStoreSales, getStoreInventory, getSupplierSales, getDCInventory,
   getSummaryStoreSales, getSummaryStoreInventory, getSummarySupplyChainSales, getSummaryUpstreamInventory,
 } from '@/lib/api/analytics'
-import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules } from '@/lib/api/simulation'
+import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules, generateBranches } from '@/lib/api/simulation'
 import { RollingForecastModal } from './rolling-forecast-modal'
 import { RunChunkModal } from './run-chunk-modal'
+import { computeBranchOverrideRows, branchOverridesFromRows } from './branch-overrides'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession } from '@/lib/api/types'
@@ -46,8 +47,8 @@ function aggPOS(pos: any[]) {
       promoName: c.promoName || (r.promo_name ?? ''),
       promoGroupName: nextGroup,
       // keep the most specific run_type seen for this week (rolling_chunk > extension > base)
-      runType: r.run_type === 'rolling_chunk' ? 'rolling_chunk'
-             : r.run_type === 'extension' && c.runType !== 'rolling_chunk' ? 'extension'
+      runType: (r.run_type === 'rolling_chunk' || r.run_type === 'rolling_reactive' || r.run_type === 'rolling_adaptive') ? r.run_type
+             : r.run_type === 'extension' && c.runType === 'base' ? 'extension'
              : c.runType,
     })
   }
@@ -118,6 +119,50 @@ function aggDCInv(dc: any[], _sup: any[]) {
     dc_on_hand:  dcOnHand.get(w)  ?? 0,
     dc_on_order: dcOnOrder.get(w) ?? 0,
   }))
+}
+
+// Merge one branch's aggregated POS rows with its aggregated Store-Inventory rows plus its
+// forecast maps into a single per-week array for the Comparison tab's combined chart.
+// Mirrors the dashboard's inline `combinedPosData` construction (POS side) and joins the
+// Store-Inventory series by week. `futureMap` = week→forecast_qty for unrun/future weeks;
+// `snapMap` = week→this branch's own recorded forecast for already-completed rolling weeks
+// (drives `primary_demand_qty`/`original_forecast_qty`, same as the dashboard).
+function buildCombinedSeries(
+  posRows: any[],
+  invRows: any[],
+  futureMap: Map<string, number>,
+  snapMap: Map<string, number>,
+) {
+  const invByWeek = new Map(invRows.map(r => [r.week, r]))
+  const merged = posRows.map(d => {
+    const isRolling = d.run_type === 'rolling_chunk' || d.run_type === 'rolling_reactive' || d.run_type === 'rolling_adaptive'
+    const origForecast = isRolling ? snapMap.get(d.week) : undefined
+    const inv = invByWeek.get(d.week)
+    return {
+      ...d,
+      forecast_qty: futureMap.get(d.week),
+      original_forecast_qty: origForecast,
+      primary_demand_qty: origForecast ?? d.demand_qty,
+      available_quantity: inv?.available_quantity ?? 0,
+      on_order_quantity:  inv?.on_order_quantity  ?? 0,
+      on_hand_quantity:   inv?.on_hand_quantity   ?? 0,
+    }
+  })
+  // Future-only weeks: present in the forecast map but not yet simulated in posRows.
+  const futureOnly = [...futureMap.entries()]
+    .filter(([week]) => !posRows.some(d => d.week === week))
+    .map(([week, forecast_qty]) => {
+      const inv = invByWeek.get(week)
+      return {
+        week, demand_qty: 0, sales_qty: 0, stockout_qty: 0, sales_amount: 0,
+        is_promo_week: 0, promo_name: '', promo_group_name: '', run_type: '',
+        forecast_qty, primary_demand_qty: 0,
+        available_quantity: inv?.available_quantity ?? 0,
+        on_order_quantity:  inv?.on_order_quantity  ?? 0,
+        on_hand_quantity:   inv?.on_hand_quantity   ?? 0,
+      }
+    })
+  return [...merged, ...futureOnly].sort((a, b) => a.week.localeCompare(b.week))
 }
 
 function computeKPIs(pos: any[], shipments: any[]) {
@@ -195,7 +240,9 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
   const runType = d.run_type
   const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
   const isFutureOnly = demand === 0 && forecast != null
-  // Computed performance for rolling_chunk weeks: actual demand vs original forecast
+  // Computed performance for rolling_chunk weeks: actual demand vs THIS branch's own
+  // forecast (Reactive and Adaptive show different %, since each is judged against what
+  // it itself predicted, not a shared original plan).
   const computedPerfPct = runType === 'rolling_chunk' && originalForecast && originalForecast > 0
     ? ((actualDemand - originalForecast) / originalForecast) * 100
     : null
@@ -272,6 +319,80 @@ function StoreInvTooltip({ active, payload, label }: { active?: boolean; payload
       <p className="flex justify-between gap-4 text-amber-600"><span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span></p>
       {status === 'stockout'   && <p className="mt-1 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
       {status === 'in-transit' && <p className="mt-1 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
+    </div>
+  )
+}
+
+// Combined tooltip for the Comparison tab — the POS tooltip contents (top) followed by the
+// Store Inventory tooltip contents (bottom), both intact/field-for-field from the two
+// existing tooltips, since each merged row now carries both sets of fields.
+function ComparisonTooltip({ active, payload, label, promoWeekMap }: {
+  active?: boolean; payload?: any[]; label?: string
+  promoWeekMap?: Record<string, { name: string; groupName: string }>
+}) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload ?? {}
+  // POS block (mirrors POSTooltip)
+  const promoGroupName = d.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
+  const promoName = d.promo_name || promoWeekMap?.[label ?? '']?.name || ''
+  const promoLabel = promoGroupName || promoName || 'Promo week'
+  const isPromo = d.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
+  const demand = Number(d.primary_demand_qty ?? d.demand_qty ?? 0)
+  const actualDemand = Number(d.demand_qty ?? 0)
+  const sales = Number(d.sales_qty ?? 0)
+  const lost = Number(d.stockout_qty ?? 0)
+  const forecast = d.forecast_qty != null ? Number(d.forecast_qty) : null
+  const originalForecast = d.original_forecast_qty != null ? Number(d.original_forecast_qty) : null
+  const runType = d.run_type
+  const runLabel = runType === 'rolling_chunk' ? 'Rolling Chunk' : runType === 'extension' ? 'Extension' : null
+  const isFutureOnly = demand === 0 && forecast != null
+  const computedPerfPct = runType === 'rolling_chunk' && originalForecast && originalForecast > 0
+    ? ((actualDemand - originalForecast) / originalForecast) * 100
+    : null
+  // Inventory block (mirrors StoreInvTooltip)
+  const avail   = Number(d.available_quantity ?? 0)
+  const onOrder = Number(d.on_order_quantity  ?? 0)
+  const invStatus = avail === 0 && onOrder > 0 ? 'in-transit' : avail === 0 ? 'stockout' : null
+
+  return (
+    <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[190px]">
+      {isPromo && (
+        <div className="mb-2 rounded-md bg-violet-50 px-2 py-1">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
+            <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+          </div>
+          <PerformanceBadge pct={computedPerfPct} />
+        </div>
+      )}
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <p className="font-semibold text-charcoal-blue-700">{label}</p>
+        {runLabel && <span className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600">{runLabel}</span>}
+      </div>
+      {!isFutureOnly && (
+        <div className="mb-1.5 space-y-0.5">
+          <p className="flex justify-between gap-4 text-violet-700"><span>Demand</span><span className="font-medium">{demand.toLocaleString()}</span></p>
+          <p className="flex justify-between gap-4 text-emerald-700"><span>Sales</span><span className="font-medium">{sales.toLocaleString()}</span></p>
+          <p className="flex justify-between gap-4 text-red-600"><span>Lost Sales</span><span className="font-medium">{lost.toLocaleString()}</span></p>
+        </div>
+      )}
+      {originalForecast != null && runType === 'rolling_chunk' && (
+        <div className="border-t border-charcoal-blue-100 pt-1.5 mt-1">
+          <p className="flex justify-between gap-4 text-charcoal-blue-500"><span>Actual Demand</span><span className="font-medium">{actualDemand.toLocaleString()}</span></p>
+        </div>
+      )}
+      {forecast != null && (
+        <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
+          <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{forecast.toLocaleString()}</span></p>
+        </div>
+      )}
+      {/* Store Inventory block */}
+      <div className="border-t border-charcoal-blue-100 pt-1.5 mt-1">
+        <p className="flex justify-between gap-4 text-emerald-700"><span>Available</span><span className="font-medium">{avail.toLocaleString()}</span></p>
+        <p className="flex justify-between gap-4 text-amber-600"><span>On Order</span><span className="font-medium">{onOrder.toLocaleString()}</span></p>
+        {invStatus === 'stockout'   && <p className="mt-1 text-red-500 font-semibold">⚠ Stockout — nothing on order</p>}
+        {invStatus === 'in-transit' && <p className="mt-1 text-amber-500 font-semibold">↑ Stockout — replenishment incoming</p>}
+      </div>
     </div>
   )
 }
@@ -486,9 +607,12 @@ export default function SimulationResultsPage() {
   const [simName, setSimName] = useState('Simulation Results')
   const [showRollingModal, setShowRollingModal] = useState(false)
   const [showRunChunkModal, setShowRunChunkModal] = useState(false)
+  // True while branches are being auto-generated right after the first main-line "Run Weeks".
+  const [autoBranching, setAutoBranching] = useState(false)
   const [rollingSession, setRollingSession] = useState<RollingForecastSession | null>(null)
   const [rollingForecastData, setRollingForecastData] = useState<{ week: string; forecast_qty: number }[]>([])
-  // Snapshot accumulates original forecast per week across chunk completions — never shrinks
+  // Snapshot accumulates each active view's OWN forecast per week across chunk completions
+  // (branch-specific when viewing Reactive/Adaptive, shared when viewing Main-line) — never shrinks
   const [rollingForecastSnapshot, setRollingForecastSnapshot] = useState<Map<string, number>>(new Map())
   // Pre-simulation forecasted demand for base simulation weeks (from weekly_demand)
   const [baseForecastMap, setBaseForecastMap] = useState<Map<string, number>>(new Map())
@@ -498,7 +622,14 @@ export default function SimulationResultsPage() {
   const [runEndWeek, setRunEndWeek] = useState<string>('')
   const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
-  const [narrativeStep, setNarrativeStep] = useState(0)
+  const [activeBranchView, setActiveBranchView] = useState<'reactive' | 'adaptive' | null>(null)
+  // Comparison tab — merged POS + Store Inventory series per branch
+  const [reactiveSeries, setReactiveSeries] = useState<any[]>([])
+  const [adaptiveSeries, setAdaptiveSeries] = useState<any[]>([])
+  const [comparisonLoading, setComparisonLoading] = useState(false)
+  const [comparisonError, setComparisonError] = useState('')
+  // Fires the one-time auto-navigate to the Comparison tab when branches first appear.
+  const autoNavigatedComparisonRef = useRef(false)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
   const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const analyticsStatusRef = useRef<'PENDING' | 'READY' | 'FAILED' | null>(null)
@@ -509,12 +640,26 @@ export default function SimulationResultsPage() {
   const [posData, setPosData] = useState<any[]>([])
   // Derive extensionStartWeek from posData so chart styling works for sims that have extension data
   const extensionStartWeek = posData.find(d => d.run_type === 'extension')?.week ?? null
-  // Rolling forecast reference lines — shared across all 4 charts
-  const _sortedChunks = (rollingSession?.chunks ?? []).slice().sort((a, b) => a.chunk_number - b.chunk_number)
+  // Rolling forecast reference lines — shared across all 4 charts. Filtered per
+  // activeBranchView (same pattern as chunksForView below) so the "Chunk N End" line
+  // advances with whichever timeline is being viewed, instead of staying frozen at
+  // main-line's single pre-fork chunk once branches take over.
+  const _chunksForView = (rollingSession?.chunks ?? []).filter(c =>
+    activeBranchView ? c.branch_type === activeBranchView : !c.branch_type)
+  const _sortedChunks = _chunksForView.slice().sort((a, b) => (a.chunk_number ?? 0) - (b.chunk_number ?? 0))
   const rollingBaseStartWeek = rollingSession ? toIsoWeek(_sortedChunks[0]?.start_week ?? runEndWeek ?? '') : null
-  const _lastCompletedChunk = (rollingSession?.chunks ?? []).filter(c => c.status === 'completed').slice(-1)[0]
+  const _lastCompletedChunk = _chunksForView.filter(c => c.status === 'completed').slice(-1)[0]
   const rollingForecastStartWeek = _lastCompletedChunk ? toIsoWeek(_lastCompletedChunk.end_week) : null
-  const chunkAreas = (rollingSession?.chunks ?? []).filter(c => c.status === 'completed').map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
+  const chunkAreas = _chunksForView.filter(c => c.status === 'completed').map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
+  // Branches are persistent child simulations, tracked generically in session.branches
+  // (branch_key is an open string, not just 'reactive'/'adaptive'). hasBranches is true
+  // once forked (demand-ready stage) so the toggle appears immediately after "Run Both
+  // Branches", before "Run Weeks". The per-branch simulation_id used for chart fetches is
+  // derived inside refreshRollingForecast (from the freshly fetched session + activeBranchView).
+  const hasBranches = !!(
+    rollingSession?.branches?.some(b => b.branch_key === 'reactive') &&
+    rollingSession?.branches?.some(b => b.branch_key === 'adaptive')
+  )
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
 
@@ -539,6 +684,8 @@ export default function SimulationResultsPage() {
   const zoom2 = useChartZoom(storeInvData)
   const zoom3 = useChartZoom(shipData)
   const zoom4 = useChartZoom(dcInvData)
+  const zoomCmpA = useChartZoom(adaptiveSeries)   // Comparison — Adaptive panel
+  const zoomCmpB = useChartZoom(reactiveSeries)   // Comparison — Reactive panel
 
   // Keep zoom1 data in sync with posData + rollingForecastData so zoom covers future weeks too
   useEffect(() => {
@@ -626,6 +773,11 @@ export default function SimulationResultsPage() {
     try {
       const session = await getRollingSession(simulationId)
       setRollingSession(session)
+      // Clear stale entries up front — this Map is populated by merging (`prev => ...`)
+      // across two async fetches below, so any key NOT covered by the upcoming fetches
+      // (e.g. left over from a previously selected branch/filter combo) would otherwise
+      // persist forever, silently showing a different branch's/filter's demand.
+      setRollingForecastSnapshot(new Map())
       // Fetch promo performance pcts for tooltip display
       getSessionPromoSchedules(session.session_id).then(schedules => {
         const map: Record<string, number | null> = {}
@@ -634,6 +786,11 @@ export default function SimulationResultsPage() {
         }
         setPromoGroupPerfMap(map)
       }).catch(() => null)
+      // Which simulation to read from: base for main-line, the child sim for a branch view.
+      const _branchSimId = activeBranchView
+        ? (session.branches ?? []).find(b => b.branch_key === activeBranchView)?.child_simulation_id ?? null
+        : null
+      const _activeSimId = _branchSimId ?? simulationId
       // If chunks have run, the cache is stale — re-fetch all charts from backend with current filters
       if (session.chunks && session.chunks.length > 0) {
         const activeFilters = {
@@ -651,28 +808,81 @@ export default function SimulationResultsPage() {
           subcategory: globalSubcategory || undefined,
           brand: globalBrand || undefined,
         }
-        getSummaryStoreSales(simulationId, activeFilters)
-          .then(s => setPosData(aggPOS(s.weekly_pos ?? [])))
-          .catch(() => null)
-        getSummaryStoreInventory(simulationId, activeFilters)
-          .then(s => setStoreInvData(aggStoreInv(s.store_inventory ?? [])))
-          .catch(() => null)
-        getSummarySupplyChainSales(simulationId, shipFilters)
-          .then(s => setShipData(aggShipments(s.weekly_shipments ?? [])))
-          .catch(() => null)
-        getDCInventory(simulationId, {
+        const dcFilters = {
           item_id:        globalItem || undefined,
           dc_id:          globalRdc  || undefined,
           supplier_dc_id: globalSdc  || undefined,
           category:       globalCategory    || undefined,
           subcategory:    globalSubcategory || undefined,
           brand:          globalBrand       || undefined,
-        }).then(s => setDcInvData(aggDCInv(s.dc_inventory ?? [], s.supplier_dc_inventory ?? [])))
-          .catch(() => null)
+        }
+        if (_branchSimId) {
+          // Branch view (Reactive/Adaptive): the branch's own child simulation only holds
+          // data from the rolling-forecast start onward (it re-simulates from there). Prepend
+          // the FROZEN pre-forecast history from the main-line so the branch charts span the
+          // same full timeline as Main-line — the two only diverge from Forecast Start on.
+          // `mergeFrozen` keeps main-line weeks strictly before the branch's own earliest
+          // week (no overlap, regardless of exact fork week), then appends the branch data.
+          const mergeFrozen = <T extends { week: string }>(mainRows: T[], branchRows: T[]): T[] => {
+            const cutoff = branchRows.length ? branchRows.map(r => r.week).sort()[0] : null
+            const hist = cutoff ? mainRows.filter(r => r.week < cutoff) : mainRows
+            return [...hist, ...branchRows].sort((a, b) => a.week.localeCompare(b.week))
+          }
+          Promise.all([getSummaryStoreSales(simulationId, activeFilters), getSummaryStoreSales(_branchSimId, activeFilters)])
+            .then(([m, b]) => setPosData(mergeFrozen(aggPOS(m.weekly_pos ?? []), aggPOS(b.weekly_pos ?? []))))
+            .catch(() => null)
+          Promise.all([getSummaryStoreInventory(simulationId, activeFilters), getSummaryStoreInventory(_branchSimId, activeFilters)])
+            .then(([m, b]) => setStoreInvData(mergeFrozen(aggStoreInv(m.store_inventory ?? []), aggStoreInv(b.store_inventory ?? []))))
+            .catch(() => null)
+          Promise.all([getSummarySupplyChainSales(simulationId, shipFilters), getSummarySupplyChainSales(_branchSimId, shipFilters)])
+            .then(([m, b]) => setShipData(mergeFrozen(aggShipments(m.weekly_shipments ?? []), aggShipments(b.weekly_shipments ?? []))))
+            .catch(() => null)
+          Promise.all([getDCInventory(simulationId, dcFilters), getDCInventory(_branchSimId, dcFilters)])
+            .then(([m, b]) => setDcInvData(mergeFrozen(
+              aggDCInv(m.dc_inventory ?? [], m.supplier_dc_inventory ?? []),
+              aggDCInv(b.dc_inventory ?? [], b.supplier_dc_inventory ?? []))))
+            .catch(() => null)
+        } else {
+          getSummaryStoreSales(_activeSimId, activeFilters)
+            .then(s => setPosData(aggPOS(s.weekly_pos ?? [])))
+            .catch(() => null)
+          getSummaryStoreInventory(_activeSimId, activeFilters)
+            .then(s => setStoreInvData(aggStoreInv(s.store_inventory ?? [])))
+            .catch(() => null)
+          getSummarySupplyChainSales(_activeSimId, shipFilters)
+            .then(s => setShipData(aggShipments(s.weekly_shipments ?? [])))
+            .catch(() => null)
+          getDCInventory(_activeSimId, dcFilters)
+            .then(s => setDcInvData(aggDCInv(s.dc_inventory ?? [], s.supplier_dc_inventory ?? [])))
+            .catch(() => null)
+        }
       }
       if (session.status === 'active') {
-        const futureStartWeek = session.current_completed_week
-          ? toIsoWeek(new Date(new Date(session.current_completed_week + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
+        // Per-view "own last completed week" — NOT the shared session.current_completed_week,
+        // which advances whenever ANY branch's Run Weeks completes. Using the shared cursor
+        // for every view caused a gap: Main-line's forecast overlay would skip straight to
+        // wherever Reactive/Adaptive had advanced to, even though Main-line's own progress
+        // (and its own weekly_pos data) stopped earlier. Each view must resume its forecast
+        // from where IT last actually completed a chunk.
+        const chunksForView = (session.chunks ?? []).filter(c => c.status === 'completed'
+          && (activeBranchView ? c.branch_type === activeBranchView : !c.branch_type))
+        let ownLastCompletedWeek: string | null = null
+        if (chunksForView.length > 0) {
+          ownLastCompletedWeek = [...chunksForView].sort((a, b) => (a.end_week < b.end_week ? -1 : 1))
+            .slice(-1)[0].end_week
+        } else {
+          // A branch that's been forked (has a demand_ready chunk) but hasn't completed its
+          // first Run Weeks cycle yet has no completed chunk of its own. Fall back to the most
+          // recent completed chunk of ANY type — numerically identical to this branch's fork
+          // point, since a branch always forks exactly where the prior progress left off.
+          const anyCompleted = (session.chunks ?? []).filter(c => c.status === 'completed')
+          if (anyCompleted.length > 0) {
+            ownLastCompletedWeek = [...anyCompleted].sort((a, b) => (a.end_week < b.end_week ? -1 : 1))
+              .slice(-1)[0].end_week
+          }
+        }
+        const futureStartWeek = ownLastCompletedWeek
+          ? toIsoWeek(new Date(new Date(ownLastCompletedWeek + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
           : toIsoWeek(runEndWeek)
         const endWeek = toIsoWeek(session.total_end_date)
         const seed = (runFullConfig as any)?.random_seed ?? 42
@@ -683,8 +893,10 @@ export default function SimulationResultsPage() {
           subcategory: globalSubcategory || undefined,
           brand: globalBrand || undefined,
         }
-        // Fetch future demand (for the forecast line/bar)
-        getDemandWeeklyTotals(session.retailer_account_id, futureStartWeek, endWeek, seed, filters)
+        // Fetch future demand (for the forecast line/bar). For a branch view, read that
+        // branch's isolated demand curve; for main-line, the shared curve (undefined).
+        const _demandSimId = _branchSimId ?? undefined
+        getDemandWeeklyTotals(session.retailer_account_id, futureStartWeek, endWeek, seed, filters, _demandSimId)
           .then(rows => {
             const mapped = rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))
             setRollingForecastData(mapped)
@@ -696,15 +908,27 @@ export default function SimulationResultsPage() {
           })
           .catch(() => null)
 
-        // Backfill snapshot with original forecast for already-completed chunk weeks.
-        // weekly_demand retains the pre-run forecast even after chunks execute, so this
-        // gives us the original prediction to compare against actual demand in the tooltip.
-        const completedChunks = (session.chunks ?? []).filter(c => c.status === 'completed')
-        if (completedChunks.length > 0) {
-          const sorted = [...completedChunks].sort((a, b) => a.chunk_number - b.chunk_number)
-          const snapshotStartWeek = toIsoWeek(sorted[0].start_week)
-          const snapshotEndWeek = toIsoWeek(session.current_completed_week!)
-          getDemandWeeklyTotals(session.retailer_account_id, snapshotStartWeek, snapshotEndWeek, seed, filters)
+        // Backfill snapshot with THIS BRANCH'S OWN forecast for already-completed chunk
+        // weeks — the performance badge and the "Demand" tooltip row compare actual demand
+        // against what THIS branch specifically predicted (e.g. Reactive's own ×4.0-driven
+        // forecast vs Adaptive's own ×2.75-driven forecast), not a shared original plan.
+        // Always up through THIS view's own last completed week (not the shared session
+        // cursor) — otherwise this would query weeks a view never actually ran.
+        // Anchor the backfill start at the EARLIEST completed chunk of ANY type (mainline's
+        // pre-fork chunks included) — not just chunksForView's own start. A branch's own
+        // chunks only begin at its fork point, so anchoring there left every pre-fork week
+        // (run under mainline, before this branch existed) without a snapshot entry at all;
+        // the "Demand" bar then fell through to d.demand_qty, which is fragile to unrelated
+        // base-sim fetches racing in. The branch's own demand curve resolves identically to
+        // baseline for pre-fork weeks anyway (copied verbatim at fork time), so it's safe to
+        // fetch the full range from a single branch-scoped call.
+        const anyCompletedSorted = [...(session.chunks ?? [])]
+          .filter(c => c.status === 'completed')
+          .sort((a, b) => (a.start_week < b.start_week ? -1 : 1))
+        if (anyCompletedSorted.length > 0 && ownLastCompletedWeek) {
+          const snapshotStartWeek = toIsoWeek(anyCompletedSorted[0].start_week)
+          const snapshotEndWeek = toIsoWeek(ownLastCompletedWeek)
+          getDemandWeeklyTotals(session.retailer_account_id, snapshotStartWeek, snapshotEndWeek, seed, filters, _demandSimId)
             .then(rows => {
               setRollingForecastSnapshot(prev => {
                 const next = new Map(prev)
@@ -720,13 +944,134 @@ export default function SimulationResultsPage() {
     } catch {
       // 404 = no active session, that's fine
     }
-  }, [simulationId, runEndWeek, runFullConfig,
+  }, [simulationId, runEndWeek, runFullConfig, activeBranchView,
       globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   useEffect(() => {
     if (pageState !== 'ready' || !runEndWeek) return
     refreshRollingForecast()
   }, [pageState, refreshRollingForecast, runEndWeek])
+
+  // ── Comparison tab: fetch BOTH branches' merged POS+Inventory series ─────────
+  // Reads each branch by its own child_simulation_id (independent of activeBranchView, so
+  // both panels are populated at once), joins Store-Inventory onto POS per week, and layers
+  // in each branch's own future/snapshot forecast — the same data the dashboard shows for a
+  // single selected branch, but for both simultaneously.
+  const refreshComparison = useCallback(async () => {
+    if (!rollingSession) return
+    const reactiveSim = (rollingSession.branches ?? []).find(b => b.branch_key === 'reactive')?.child_simulation_id
+    const adaptiveSim = (rollingSession.branches ?? []).find(b => b.branch_key === 'adaptive')?.child_simulation_id
+    if (!reactiveSim || !adaptiveSim) return
+    const currentStart = rollingSession.current_completed_week
+    if (!currentStart) return
+
+    const filters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
+    const seed = (runFullConfig as any)?.random_seed ?? 42
+    const retailer = rollingSession.retailer_account_id
+    // Shared windows (both branches advance in lockstep with the session cursor).
+    const chunkStarts = (rollingSession.chunks ?? []).map(c => c.start_week).filter(Boolean).sort()
+    const snapStart = chunkStarts.length ? toIsoWeek(chunkStarts[0]) : toIsoWeek(currentStart)
+    const snapEnd = toIsoWeek(currentStart)
+    const futureStart = toIsoWeek(new Date(new Date(currentStart + 'T12:00:00').getTime() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10))
+    const futureEnd = toIsoWeek(rollingSession.total_end_date)
+
+    const loadBranch = async (simId: string) => {
+      const [ss, si, futureRows, snapRows] = await Promise.all([
+        getSummaryStoreSales(simId, filters),
+        getSummaryStoreInventory(simId, filters),
+        getDemandWeeklyTotals(retailer, futureStart, futureEnd, seed, filters, simId).catch(() => []),
+        getDemandWeeklyTotals(retailer, snapStart, snapEnd, seed, filters, simId).catch(() => []),
+      ])
+      const futureMap = new Map((futureRows ?? []).map(r => [r.pos_week, r.demand_qty]))
+      const snapMap = new Map((snapRows ?? []).map(r => [r.pos_week, r.demand_qty]))
+      return buildCombinedSeries(aggPOS(ss.weekly_pos ?? []), aggStoreInv(si.store_inventory ?? []), futureMap, snapMap)
+    }
+
+    setComparisonLoading(true)
+    setComparisonError('')
+    try {
+      const [reactive, adaptive] = await Promise.all([loadBranch(reactiveSim), loadBranch(adaptiveSim)])
+      setReactiveSeries(reactive)
+      setAdaptiveSeries(adaptive)
+    } catch (e: any) {
+      setComparisonError(e?.message ?? 'Failed to load comparison data')
+    } finally {
+      setComparisonLoading(false)
+    }
+  }, [rollingSession, runFullConfig, globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
+
+  // Refresh comparison when its tab is open (and re-run on cursor/filter changes).
+  useEffect(() => {
+    if (activeTab !== 'comparison' || !hasBranches) return
+    refreshComparison()
+  }, [activeTab, hasBranches, rollingSession?.current_completed_week,
+      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand, refreshComparison])
+
+  // ── Auto-generate the next window's branch forecast after every "Run Weeks" ──
+  // The user's model: the rolling-forecast period runs once on the main-line to record
+  // actual promo performance, then the timeline splits into the Reactive and Adaptive
+  // branches for everything after — and each subsequent window's branch demand must be
+  // forecast before that window can be simulated. Rather than making "Run Both Branches" a
+  // separate manual click every cycle, we fire it automatically the moment ANY chunk
+  // completes and a window still remains: the first time it forks the branches; every time
+  // after it just (re)generates the next window's demand for the existing branches. Uses the
+  // exact same formula + endpoint the manual button uses (see ./branch-overrides), so "Edit
+  // Setup" can still re-tune the multipliers afterward. The backend derives the window from
+  // current_completed_week, which advances after each Run Weeks, so each call targets the
+  // correct next 4 weeks. generate-branches only produces demand (it doesn't complete a
+  // chunk), so this can't re-trigger itself into a loop.
+  //
+  // Returns true if it kicked off (so the caller can skip its own refresh — this does one).
+  const maybeAutoGenerateBranches = useCallback(async (session: RollingForecastSession): Promise<boolean> => {
+    if (session.status !== 'active') return false
+    // Need at least one completed main-line chunk (the first Run Weeks): branching only
+    // makes sense once the shared main-line history exists to fork from.
+    const completedMain = (session.chunks ?? []).filter(c => c.status === 'completed' && !c.branch_type)
+    if (completedMain.length === 0) return false
+    const currentStart = session.current_completed_week
+    if (!currentStart) return false
+
+    // Compute the next 4-week window (same window the backend will branch over) so we can
+    // fetch the promos scheduled in it and derive the reactive/adaptive multipliers.
+    const nextStartMs = new Date(currentStart + 'T12:00:00').getTime()
+    const nextEndDate = new Date(nextStartMs + 4 * 7 * 24 * 3600 * 1000)
+    const totalEnd = session.total_end_date
+    // Nothing left to forecast — the horizon is already reached (session should be
+    // 'completed' in this case, but guard explicitly so we never generate an empty window).
+    if (totalEnd && currentStart >= totalEnd) return false
+    const clampedEnd = totalEnd && nextEndDate.toISOString().slice(0, 10) > totalEnd
+      ? totalEnd
+      : nextEndDate.toISOString().slice(0, 10)
+
+    setAutoBranching(true)
+    try {
+      const fetched = await getSessionPromoSchedules(session.session_id, currentStart, clampedEnd)
+      // May be empty (no promo with recorded history in the next window) — that's fine:
+      // generate-branches with empty overrides still produces the window's baseline demand
+      // curve for each branch, which is exactly what's needed so the next Run Weeks has
+      // demand to simulate. Only promo-driven divergence needs overrides.
+      const rows = computeBranchOverrideRows(session, fetched)
+      const seed = (runFullConfig as any)?.random_seed ?? 42
+      const updated = await generateBranches(session.session_id, {
+        seed,
+        ...branchOverridesFromRows(rows),
+      })
+      setRollingSession(updated)
+      await refreshRollingForecast()
+      return true
+    } catch {
+      // Non-fatal: the manual "Run Both Branches" / "Edit Setup" path remains available.
+      return false
+    } finally {
+      setAutoBranching(false)
+    }
+  }, [runFullConfig, refreshRollingForecast])
 
   // ── Fetch base simulation forecasted demand from weekly_demand ────────────
   useEffect(() => {
@@ -840,6 +1185,13 @@ export default function SimulationResultsPage() {
   useEffect(() => {
     if (!filterMountedRef.current) { filterMountedRef.current = true; return }
     if (pageState !== 'ready') return
+    // For an active rolling-forecast session, the OTHER filter-reactive effect
+    // (`refreshRollingForecast()`, same filter deps) is already branch-aware and
+    // filter-aware — it's what should handle this. This effect's fetch functions all
+    // hit the BASE simulationId unconditionally, so letting both fire on the same
+    // filter change races them and can overwrite the correct branch-scoped data with
+    // base-sim data (or vice versa, depending on which resolves last).
+    if (rollingSession?.status === 'active') return
     const posFilters = {
       item_id: globalItem || undefined,
       store_id: globalStore || undefined,
@@ -881,6 +1233,10 @@ export default function SimulationResultsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
+  // ── Branch view toggle — refreshRollingForecast re-fetches ALL 4 charts + the
+  //    forecast overlay against the active branch's child simulation (it depends on
+  //    activeBranchView), so switching the toggle reloads everything automatically. ───────
+
   // ── Status polling ────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -888,7 +1244,11 @@ export default function SimulationResultsPage() {
     let timer: ReturnType<typeof setTimeout>
 
     if (cache?.simulationId === simulationId && cache.summary) {
-      loadSummary()
+      // loadSummary always fetches against the BASE simulationId, never the active
+      // branch's own id — skip it while a branch view is active so it can't overwrite
+      // refreshRollingForecast's correctly branch-scoped chart data (see the identical
+      // guard on the onChunkComplete callback below for the same race).
+      if (!activeBranchView) loadSummary()
       getRunConfig(simulationId).then(cfg => {
         if (!cancelled) {
           setSimName(String((cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
@@ -909,7 +1269,7 @@ export default function SimulationResultsPage() {
           if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
         if (cfg.status === 'COMPLETED') {
-          if (!cancelled) await loadSummary()
+          if (!cancelled && !activeBranchView) await loadSummary()
         } else if (cfg.status === 'FAILED') {
           if (!cancelled) { setPageError('Simulation failed.'); setPageState('error') }
         } else {
@@ -935,16 +1295,22 @@ export default function SimulationResultsPage() {
   // Keep ref in sync so fetch callbacks can read current status without stale closure
   useEffect(() => { analyticsStatusRef.current = analyticsStatus }, [analyticsStatus])
 
-  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse immediately
+  // When analytics becomes READY, reload summary tiles and all 4 charts from ClickHouse immediately.
+  // loadSummary/fetchPOSFiltered/fetchStoreInvFiltered/fetchShipFiltered/fetchDCInvFiltered ALL fetch
+  // against the BASE simulationId, never the active branch's own id. analyticsStatus can flip back to
+  // READY multiple times in a session (once per chunk/branch completion) — if that happens while a
+  // branch view is active, this would overwrite refreshRollingForecast's correctly branch-scoped chart
+  // data with mainline's. Skip entirely while a branch is active; refreshRollingForecast (triggered
+  // separately by the branch-toggle effect and by onChunkComplete) is what keeps branch views correct.
   useEffect(() => {
-    if (analyticsStatus !== 'READY') return
+    if (analyticsStatus !== 'READY' || activeBranchView) return
     loadSummary()
     fetchPOSFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
     fetchStoreInvFiltered(globalItem, globalStore, globalCategory, globalSubcategory, globalBrand)
     fetchShipFiltered(globalItem, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand)
     fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analyticsStatus])
+  }, [analyticsStatus, activeBranchView])
 
   // Poll analytics-status endpoint until CH write is done
   useEffect(() => {
@@ -1077,6 +1443,87 @@ export default function SimulationResultsPage() {
 
   const yAxisTickFormatter = (v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()
 
+  // Shared axis ceilings so both Comparison panels are drawn to the SAME scale — a bar of a
+  // given height means the same value on Adaptive and Reactive, making the comparison fair.
+  // `niceCeil` rounds up to a clean round number so ticks stay readable.
+  const niceCeil = (v: number) => {
+    if (!v || v <= 0) return 1
+    const mag = Math.pow(10, Math.floor(Math.log10(v)))
+    return Math.ceil(v / mag) * mag
+  }
+  const _cmpAll = [...adaptiveSeries, ...reactiveSeries]
+  const comparisonLeftMax = niceCeil(Math.max(0, ..._cmpAll.map(d =>
+    Math.max(Number(d.primary_demand_qty ?? 0), Number(d.sales_qty ?? 0), Number(d.stockout_qty ?? 0), Number(d.forecast_qty ?? 0)))))
+  const comparisonRightMax = niceCeil(Math.max(0, ..._cmpAll.map(d =>
+    Math.max(Number(d.available_quantity ?? 0), Number(d.on_order_quantity ?? 0)))))
+
+  // Comparison tab combined chart: the existing POS chart (bars, left axis) + the existing
+  // Store Inventory chart (lines, right axis) merged into one dual-axis ComposedChart.
+  const renderComparisonChart = (
+    data: any[],
+    zoom: ReturnType<typeof useChartZoom>,
+    height: number,
+  ) => {
+    const promoWeekMap = Object.fromEntries(
+      data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }])
+    )
+    const hasForecast = data.some(d => d.forecast_qty != null)
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <ComposedChart data={zoom.isZoomed ? zoom.displayData : data} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
+          onMouseDown={zoom.onMouseDown} onMouseMove={zoom.onMouseMove} onMouseUp={zoom.onMouseUp}
+          style={{ cursor: zoom.isZoomed ? 'grab' : 'crosshair', outline: 'none' }}>
+          {data.filter(d => d.is_promo_week).map(d => (
+            <ReferenceArea
+              key={d.week} yAxisId="left" x1={d.week} x2={d.week}
+              fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+              fillOpacity={0.12} stroke="none"
+            />
+          ))}
+          {zoom.selectionArea('left')}
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <XAxis dataKey="week" {...xAxisProps} />
+          <YAxis yAxisId="left" domain={[0, comparisonLeftMax]} allowDataOverflow tickFormatter={yAxisTickFormatter} />
+          <YAxis yAxisId="right" orientation="right" domain={[0, comparisonRightMax]} allowDataOverflow tickFormatter={yAxisTickFormatter} />
+          <Tooltip content={<ComparisonTooltip promoWeekMap={promoWeekMap} />} />
+          <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
+          <Bar yAxisId="left" dataKey="primary_demand_qty" fill="#8b5cf6" name="Demand" barSize={9}>
+            {data.map((d, i) => {
+              const rt = d.run_type
+              const fill = rt === 'rolling_chunk' ? '#a78bfa' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
+              return <Cell key={i} fill={fill} />
+            })}
+          </Bar>
+          <Bar yAxisId="left" dataKey="sales_qty" fill="#10b981" name="Sales" barSize={9}>
+            {data.map((d, i) => {
+              const rt = d.run_type
+              const isRolling = rt === 'rolling_chunk' || rt === 'rolling_reactive' || rt === 'rolling_adaptive'
+              const fill = isRolling ? '#34d399' : rt === 'extension' ? '#6ee7b7' : '#10b981'
+              return <Cell key={i} fill={fill} />
+            })}
+          </Bar>
+          <Bar yAxisId="left" dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={9}>
+            {data.map((d, i) => {
+              const rt = d.run_type
+              const isRolling = rt === 'rolling_chunk' || rt === 'rolling_reactive' || rt === 'rolling_adaptive'
+              const fill = isRolling ? '#f87171' : rt === 'extension' ? '#fca5a5' : '#ef4444'
+              return <Cell key={i} fill={fill} />
+            })}
+          </Bar>
+          {hasForecast && (
+            <Bar yAxisId="left" dataKey="forecast_qty" fill="#06b6d4" fillOpacity={0.45} name="Future Demand" barSize={9} />
+          )}
+          <Line yAxisId="right" dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
+          <Line yAxisId="right" dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+          {rollingBaseStartWeek && <ReferenceLine yAxisId="left" x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+          {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
+            <ReferenceLine yAxisId="left" x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    )
+  }
+
   const [exportLoading, setExportLoading] = useState(false)
   const handleExport = async () => {
     setExportLoading(true)
@@ -1150,6 +1597,11 @@ export default function SimulationResultsPage() {
                 <ChevronRight size={13} /> Rolling Forecast
               </button>
             )}
+            {autoBranching && (
+              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-majorelle-blue-200 bg-majorelle-blue-50 px-4 py-2 text-xs font-bold text-majorelle-blue-600">
+                <Loader2 size={13} className="animate-spin" /> Generating branches…
+              </span>
+            )}
             {pageState === 'ready' && rollingSession?.status === 'active' && (
               <button
                 onClick={() => setShowRollingModal(true)}
@@ -1199,17 +1651,27 @@ export default function SimulationResultsPage() {
 
         {/* Tabs */}
         <div className="mb-5 flex gap-2 border-b border-charcoal-blue-200">
-          {['dashboard', 'narrative'].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`px-3 py-2 text-xs font-semibold transition-all border-b-2 capitalize ${
-                activeTab === tab
-                  ? 'border-majorelle-blue-500 text-majorelle-blue-600'
-                  : 'border-transparent text-charcoal-blue-400 hover:text-charcoal-blue-950'
-              }`}
-            >
-              {tab === 'dashboard' ? 'Data Dashboard' : 'Guided Narrative'}
-            </button>
-          ))}
+          {['dashboard', 'comparison'].map(tab => {
+            // The Comparison tab stays locked until the branches exist (i.e. after the
+            // first "Run Weeks", which auto-generates Reactive + Adaptive).
+            const locked = tab === 'comparison' && !hasBranches
+            return (
+              <button key={tab} onClick={() => { if (!locked) setActiveTab(tab) }}
+                disabled={locked}
+                title={locked ? 'Unlocks after the first Run Weeks generates the branches' : undefined}
+                className={`inline-flex items-center gap-1 px-3 py-2 text-xs font-semibold transition-all border-b-2 ${
+                  locked
+                    ? 'border-transparent text-charcoal-blue-300 cursor-not-allowed'
+                    : activeTab === tab
+                      ? 'border-majorelle-blue-500 text-majorelle-blue-600'
+                      : 'border-transparent text-charcoal-blue-400 hover:text-charcoal-blue-950'
+                }`}
+              >
+                {locked && <Lock size={11} className="flex-shrink-0" />}
+                {tab === 'dashboard' ? 'Data Dashboard' : 'Comparison'}
+              </button>
+            )
+          })}
         </div>
 
         {activeTab === 'dashboard' && (
@@ -1223,6 +1685,41 @@ export default function SimulationResultsPage() {
             </div>
 
 
+            {/* Branch forecast toggle — shown when reactive + adaptive branch chunks both exist */}
+            {hasBranches && (
+              <div className="mb-4 flex items-center justify-end gap-2">
+                <span className="text-[10px] font-semibold text-charcoal-blue-400">Branch view:</span>
+                <div className="flex rounded-full border border-charcoal-blue-200 bg-white overflow-hidden text-[10px] font-bold">
+                  {([null, 'reactive', 'adaptive'] as const).map(view => (
+                    <button
+                      key={String(view)}
+                      onClick={() => setActiveBranchView(view)}
+                      className={`px-3 py-1 transition-all ${
+                        activeBranchView === view
+                          ? view === 'reactive'
+                            ? 'bg-rose-500 text-white'
+                            : view === 'adaptive'
+                            ? 'bg-emerald-500 text-white'
+                            : 'bg-charcoal-blue-700 text-white'
+                          : 'text-charcoal-blue-500 hover:bg-charcoal-blue-50'
+                      }`}
+                    >
+                      {view === null ? 'Main-line' : view === 'reactive' ? 'Reactive' : 'Adaptive'}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[9px] text-charcoal-blue-400">
+                  {activeBranchView === 'reactive' && '↑ Full correction based on avg historical performance'}
+                  {activeBranchView === 'adaptive' && '↑ Dampened — max ±10% from original plan'}
+                  {activeBranchView === null && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-charcoal-blue-50 px-2 py-0.5 font-semibold text-charcoal-blue-500">
+                      Frozen reference — original plan, not updated after branching
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+
             <div className="mb-5 grid gap-4 grid-cols-1 lg:grid-cols-2">
 
               {/* Chart 1 — POS Store Sales */}
@@ -1231,7 +1728,8 @@ export default function SimulationResultsPage() {
                 const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
                 // rollingBaseStartWeek, rollingForecastStartWeek, chunkAreas are hoisted to component level
                 const mergedPosData = posData.map(d => {
-                  const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
+                  const isRollingType = d.run_type === 'rolling_chunk' || d.run_type === 'rolling_reactive' || d.run_type === 'rolling_adaptive'
+                  const origForecast = isRollingType ? rollingForecastSnapshot.get(d.week) : undefined
                   const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
                   return {
                     ...d,
@@ -1280,14 +1778,16 @@ export default function SimulationResultsPage() {
                           <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
                             {combinedPosData.map((d, i) => {
                               const rt = d.run_type
-                              const fill = rt === 'rolling_chunk' ? '#34d399' : rt === 'extension' ? '#6ee7b7' : '#10b981'
+                              const isRolling = rt === 'rolling_chunk' || rt === 'rolling_reactive' || rt === 'rolling_adaptive'
+                              const fill = isRolling ? '#34d399' : rt === 'extension' ? '#6ee7b7' : '#10b981'
                               return <Cell key={i} fill={fill} />
                             })}
                           </Bar>
                           <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
                             {combinedPosData.map((d, i) => {
                               const rt = d.run_type
-                              const fill = rt === 'rolling_chunk' ? '#f87171' : rt === 'extension' ? '#fca5a5' : '#ef4444'
+                              const isRolling = rt === 'rolling_chunk' || rt === 'rolling_reactive' || rt === 'rolling_adaptive'
+                              const fill = isRolling ? '#f87171' : rt === 'extension' ? '#fca5a5' : '#ef4444'
                               return <Cell key={i} fill={fill} />
                             })}
                           </Bar>
@@ -1419,171 +1919,34 @@ export default function SimulationResultsPage() {
           </>
         )}
 
-        {activeTab === 'narrative' && (() => {
-          const third = Math.ceil(posData.length / 3)
-          const steps = [
-            {
-              label: 'The Baseline',
-              weekRange: `${posData[0]?.week ?? '—'} – ${posData[third - 1]?.week ?? '—'}`,
-              description: 'Stable demand history. All supply chain nodes operating within target weeks-of-supply.',
-              posSlice: posData.slice(0, third),
-              invSlice: storeInvData.slice(0, third),
-              shipSlice: shipData.slice(0, third),
-              kpis: [
-                { label: 'Avg Weekly Sales', value: posData.slice(0, third).length ? `${Math.round(posData.slice(0, third).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(0, third); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
-                { label: 'Avg Fill Rate', value: shipData.slice(0, third).length ? `${(shipData.slice(0, third).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
-                { label: 'Peak On-Hand', value: storeInvData.slice(0, third).length ? `${Math.max(...storeInvData.slice(0, third).map((r: any) => r.on_hand_quantity)).toLocaleString()}` : '—' },
-              ],
-              narrative: 'The simulation opens with all supply chain nodes operating smoothly. Store inventory levels are well above target, the retailer DC is shipping full replenishment orders, and the supplier is fulfilling close to 100% of DC orders. Demand is steady with predictable weekly patterns — this baseline period establishes the "healthy state" benchmark for the rest of the run.',
-              finding: 'When the system starts healthy, the replenishment logic performs exactly as designed. This period confirms the model is calibrated correctly.',
-              findingColor: 'border-emerald-300 bg-emerald-50 text-emerald-800',
-            },
-            {
-              label: 'The Constraint Emerges',
-              weekRange: `${posData[third]?.week ?? '—'} – ${posData[third * 2 - 1]?.week ?? '—'}`,
-              description: 'Supplier fill rate begins to fall. Retailer DC inventory declines below target WOS.',
-              posSlice: posData.slice(third, third * 2),
-              invSlice: storeInvData.slice(third, third * 2),
-              shipSlice: shipData.slice(third, third * 2),
-              kpis: [
-                { label: 'Avg Weekly Sales', value: posData.slice(third, third * 2).length ? `${Math.round(posData.slice(third, third * 2).reduce((s: number, r: any) => s + r.sales_qty, 0) / third).toLocaleString()} units` : '—' },
-                { label: 'Lost Sales Rate', value: (() => { const s = posData.slice(third, third * 2); const sold = s.reduce((a: number, r: any) => a + r.sales_qty, 0); const lost = s.reduce((a: number, r: any) => a + r.stockout_qty, 0); return sold + lost > 0 ? `${((lost / (sold + lost)) * 100).toFixed(1)}%` : '—' })() },
-                { label: 'Avg Fill Rate', value: shipData.slice(third, third * 2).length ? `${(shipData.slice(third, third * 2).reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / third * 100).toFixed(1)}%` : '—' },
-                { label: 'DC On-Hand Drop', value: storeInvData.slice(third, third * 2).length ? `${Math.round((1 - storeInvData[third * 2 - 1]?.on_hand_quantity / (storeInvData[third]?.on_hand_quantity || 1)) * 100)}%` : '—' },
-              ],
-              narrative: 'Midway through the simulation, supplier fill rates begin to deteriorate. The retailer DC can no longer replenish its full ordered quantity, and on-hand inventory at the DC starts declining. Stores begin experiencing isolated stockouts — initially masked in the aggregate data but visible when filtered by individual store. The replenishment engine responds by ordering more, but the supplier cannot keep up.',
-              finding: 'A drop in fill rate at the supplier level takes 3–4 weeks to visibly impact store shelves. This lag is the window where intervention is possible before lost sales cascade.',
-              findingColor: 'border-amber-300 bg-amber-50 text-amber-800',
-            },
-            {
-              label: 'Vendor Comparison',
-              weekRange: `${shipData[0]?.week ?? '—'} – ${shipData[shipData.length - 1]?.week ?? '—'}`,
-              description: 'Retailer DC vs Supplier DC — who absorbed the pressure and who passed it on.',
-              posSlice: dcInvData,
-              invSlice: storeInvData,
-              shipSlice: shipData,
-              kpis: [
-                { label: 'Total Ordered', value: shipData.length ? `${Math.round(shipData.reduce((s: number, r: any) => s + r.ordered_qty, 0) / 1000).toLocaleString()}K` : '—' },
-                { label: 'Total Shipped', value: shipData.length ? `${Math.round(shipData.reduce((s: number, r: any) => s + r.shipped_qty, 0) / 1000).toLocaleString()}K` : '—' },
-                { label: 'Overall Fill Rate', value: shipData.length ? `${(shipData.reduce((s: number, r: any) => s + r.avg_fill_rate, 0) / shipData.length * 100).toFixed(1)}%` : '—' },
-                { label: 'Unfulfilled Units', value: shipData.length ? `${Math.round((shipData.reduce((s: number, r: any) => s + r.ordered_qty, 0) - shipData.reduce((s: number, r: any) => s + r.shipped_qty, 0)) / 1000).toLocaleString()}K` : '—' },
-              ],
-              narrative: 'Comparing inventory levels at the Retailer DC and Supplier DC reveals a clear divergence. The Supplier DC maintains high on-hand inventory throughout the run, while the Retailer DC is persistently depleted. This pattern indicates the supplier is holding inventory upstream rather than releasing it — the bottleneck is not production capacity but allocation and order fulfillment policy at the vendor level.',
-              finding: 'When the Supplier DC holds inventory while the Retailer DC starves, the issue is vendor allocation policy — not a supply shortage. Escalating fill rate SLAs or shifting to vendor-managed inventory would address the root cause.',
-              findingColor: 'border-majorelle-blue-200 bg-majorelle-blue-50 text-majorelle-blue-800',
-            },
-          ]
-
-          const step = steps[narrativeStep]
-
-          return (
+        {activeTab === 'comparison' && hasBranches && (
+          <div className="space-y-4">
+            {/* Header (the page-level "Run Weeks" button at the top runs the chunk; results
+                reflect here and on the dashboard automatically). */}
             <div>
-              {/* Step progress */}
-              <div className="mb-6 flex items-center gap-0">
-                {steps.map((s, i) => (
-                  <div key={i} className="flex flex-1 items-center">
-                    <button
-                      onClick={() => setNarrativeStep(i)}
-                      className="flex flex-shrink-0 flex-col items-center gap-1"
-                    >
-                      <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-all ${
-                        i < narrativeStep ? 'bg-emerald-500 text-white' : i === narrativeStep ? 'bg-majorelle-blue-500 text-white' : 'bg-charcoal-blue-100 text-charcoal-blue-400'
-                      }`}>
-                        {i < narrativeStep ? '✓' : i + 1}
-                      </div>
-                      <span className={`text-[10px] font-semibold whitespace-nowrap ${i === narrativeStep ? 'text-majorelle-blue-600' : 'text-charcoal-blue-400'}`}>{s.label}</span>
-                    </button>
-                    {i < steps.length - 1 && (
-                      <div className={`mx-2 mb-4 h-px flex-1 ${i < narrativeStep ? 'bg-emerald-400' : 'bg-charcoal-blue-200'}`} />
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Step content */}
-              <div className="rounded-xl border border-charcoal-blue-200 bg-white p-5 shadow-sm">
-                <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-majorelle-blue-500">Step {narrativeStep + 1} of {steps.length}</p>
-                <h2 className="text-lg font-black tracking-tight text-charcoal-blue-950">{step.label}</h2>
-                <p className="mb-4 mt-0.5 text-xs text-charcoal-blue-400">{step.weekRange} — {step.description}</p>
-
-                {/* Chart */}
-                <div className="mb-4 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 p-3">
-                  <ResponsiveContainer width="100%" height={220}>
-                    {narrativeStep === 2 ? (
-                      <ComposedChart data={dcInvData} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
-                        <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Line dataKey="retailer_dc_inventory" stroke="#6366f1" name="Vendor A" type="monotone" strokeWidth={2} dot={false} />
-                        <Line dataKey="supplier_dc_inventory" stroke="#ec4899" name="Vendor B" type="monotone" strokeWidth={2} dot={false} />
-                        <Bar dataKey="ordered_qty" yAxisId={undefined} fill="transparent" />
-                      </ComposedChart>
-                    ) : (
-                      <ComposedChart data={step.posSlice} margin={{ top: 5, right: 20, left: 0, bottom: 50 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="week" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 9 }} />
-                        <YAxis tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}K` : v.toLocaleString()} tick={{ fontSize: 9 }} />
-                        <Tooltip formatter={(v) => typeof v === 'number' ? v.toLocaleString() : String(v ?? '')} />
-                        <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                        <Bar dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
-                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#c4b5fd' : '#8b5cf6'} />)}
-                        </Bar>
-                        <Bar dataKey="sales_qty" fill="#10b981" name="Sales" barSize={10}>
-                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#6ee7b7' : '#10b981'} />)}
-                        </Bar>
-                        <Bar dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={10}>
-                          {step.posSlice.map((e: any, i: number) => <Cell key={i} fill={extensionStartWeek && e.week >= extensionStartWeek ? '#fca5a5' : '#ef4444'} />)}
-                        </Bar>
-                        {extensionStartWeek && <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />}
-                      </ComposedChart>
-                    )}
-                  </ResponsiveContainer>
-                </div>
-
-                {/* KPI row */}
-                <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {step.kpis.map((kpi, i) => (
-                    <div key={i} className="rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50 px-3 py-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-charcoal-blue-400">{kpi.label}</p>
-                      <p className="mt-0.5 text-sm font-black text-charcoal-blue-950">{kpi.value}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Narrative text */}
-                <p className="mb-3 text-xs leading-relaxed text-charcoal-blue-700">{step.narrative}</p>
-
-                {/* Key finding */}
-                <div className={`rounded-lg border px-3 py-2.5 ${step.findingColor}`}>
-                  <span className="mr-1 text-[10px] font-black uppercase tracking-wide">Key finding:</span>
-                  <span className="text-[11px] leading-relaxed">{step.finding}</span>
-                </div>
-              </div>
-
-              {/* Navigation */}
-              <div className="mt-4 flex items-center justify-between">
-                <button
-                  onClick={() => setNarrativeStep(s => Math.max(0, s - 1))}
-                  disabled={narrativeStep === 0}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-charcoal-blue-200 bg-white px-4 py-2 text-xs font-bold text-charcoal-blue-600 transition hover:bg-charcoal-blue-50 disabled:opacity-30"
-                >
-                  <ChevronLeft size={14} /> Previous
-                </button>
-                <span className="text-xs text-charcoal-blue-400">{narrativeStep + 1} / {steps.length}</span>
-                <button
-                  onClick={() => setNarrativeStep(s => Math.min(steps.length - 1, s + 1))}
-                  disabled={narrativeStep === steps.length - 1}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition hover:bg-majorelle-blue-600 disabled:opacity-30"
-                >
-                  Next <ChevronRight size={14} />
-                </button>
-              </div>
+              <h2 className="text-lg font-black tracking-tight text-charcoal-blue-950">Reactive vs Adaptive</h2>
+              <p className="text-xs text-charcoal-blue-400">
+                Combined POS &amp; Store Inventory per branch. Use “Run Weeks” above to advance — both tabs stay in sync.
+              </p>
             </div>
-          )
-        })()}
+            {comparisonError && <ChartError message={comparisonError} />}
+            {/* Adaptive (top) then Reactive (bottom), each = POS bars (left) + inventory lines (right) */}
+            <ChartShell
+              title="Adaptive — POS & Store Inventory"
+              subtitle="Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
+              error="" loading={comparisonLoading}
+              isZoomed={zoomCmpA.isZoomed} onZoomReset={zoomCmpA.resetZoom}
+              chart={(h) => renderComparisonChart(adaptiveSeries, zoomCmpA, h)}
+            />
+            <ChartShell
+              title="Reactive — POS & Store Inventory"
+              subtitle="Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
+              error="" loading={comparisonLoading}
+              isZoomed={zoomCmpB.isZoomed} onZoomReset={zoomCmpB.resetZoom}
+              chart={(h) => renderComparisonChart(reactiveSeries, zoomCmpB, h)}
+            />
+          </div>
+        )}
       </div>
     </div>
 
@@ -1608,17 +1971,36 @@ export default function SimulationResultsPage() {
         onClose={() => setShowRunChunkModal(false)}
         session={rollingSession}
         baseEndDate={runEndWeek}
-        onChunkComplete={(result) => {
+        onChunkComplete={async (result) => {
+          const hadBranches = hasBranches   // capture pre-run state for the one-time auto-navigate
           const updatedSession: RollingForecastSession = {
             ...rollingSession,
             current_completed_week: result.rolling_session?.current_completed_week ?? rollingSession.current_completed_week,
             status: result.rolling_session?.session_status as any ?? 'active',
           }
           setRollingSession(updatedSession)
+          // Fetch the authoritative post-run session (with the just-completed chunk + any
+          // branches) so the auto-branch decision reads fresh state, not the shallow merge above.
+          let freshSession: RollingForecastSession | null = null
+          try { freshSession = await getRollingSession(simulationId) } catch { /* fall through */ }
+          // After EVERY "Run Weeks", auto-generate the next window's branch forecast (the
+          // first time this also forks the Reactive/Adaptive branches). It's a no-op only
+          // once the horizon is reached; on success it does its own dashboard refresh.
+          // See maybeAutoGenerateBranches for the full cadence rationale.
+          if (freshSession && await maybeAutoGenerateBranches(freshSession)) {
+            // First run: branches just came into existence → unlock + jump to Comparison once.
+            if (!hadBranches && !autoNavigatedComparisonRef.current) {
+              autoNavigatedComparisonRef.current = true
+              setActiveTab('comparison')
+            }
+            refreshComparison()   // keep both Comparison panels current alongside the dashboard
+            return
+          }
           // refreshRollingForecast internally re-fetches getSummaryStoreSales (posData) when chunks exist.
           // Do NOT also call loadSummary() here — the concurrent fetch would race and may overwrite
           // rolling_chunk-typed rows with stale base-only data, causing chunk weeks to vanish from charts.
           refreshRollingForecast()
+          refreshComparison()
         }}
       />
     )}

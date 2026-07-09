@@ -187,14 +187,23 @@ export interface RollingForecastChunk {
   id: string
   rolling_session_id: string
   simulation_id: string
-  chunk_number: number
+  chunk_number: number | null
   start_week: string   // YYYY-MM-DD
   end_week: string     // YYYY-MM-DD
-  status: 'pending' | 'running' | 'completed'
-  performance_inputs: Record<string, number>
+  status: 'pending' | 'running' | 'completed' | 'demand_ready'
+  performance_inputs: Array<{ promo_group_name?: string; pct?: number; schedule_id?: string; multiplier?: number }> | Record<string, number>
   extension_id: string | null
   created_at: string
   chunk_type?: 'SIM' | 'FORECAST'
+  branch_type?: 'reactive' | 'adaptive' | null
+}
+
+export interface SimulationBranch {
+  id: string
+  branch_key: string   // open string — 'reactive' | 'adaptive' today, not a fixed enum
+  child_simulation_id: string
+  status: string
+  branch_params: Record<string, { multiplier: number; raw_input?: { pct?: number; promo_group_name?: string } }>
 }
 
 export interface RollingForecastSession {
@@ -207,6 +216,11 @@ export interface RollingForecastSession {
   current_completed_week: string | null
   created_at: string
   created_by: string | null
+  branches: SimulationBranch[]
+  // DEPRECATED — derived from `branches` by the backend for the cutover window.
+  // Prefer `branches` in new code; these will be removed after cutover settles.
+  reactive_simulation_id?: string | null
+  adaptive_simulation_id?: string | null
   chunks: RollingForecastChunk[]
   chunk_type_sequence?: string[]
 }
@@ -227,7 +241,7 @@ export interface RunChunkResponse extends RunYamlResponse {
   }[]
   rolling_session: {
     session_id: string
-    chunk_number: number
+    chunk_number: number | null
     current_completed_week: string
     session_status: string
   }

@@ -721,7 +721,7 @@ def get_runs(
                        COALESCE(is_extended, FALSE) AS is_extended,
                        COALESCE(extension_count, 0) AS extension_count
                 FROM simulation_config
-                WHERE retailer_account_id = %s AND user_id = %s {scenario_filter}
+                WHERE retailer_account_id = %s AND user_id = %s AND parent_simulation_id IS NULL {scenario_filter}
                 ORDER BY created_at DESC
                 LIMIT 50
                 """,
