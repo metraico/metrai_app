@@ -2140,13 +2140,28 @@ export default function SimulationResultsPage() {
             const weeks = [...new Set([...p.keys(), ...c.keys()])].sort()
             return weeks.map(w => (w > (stockoutEndWeek as string) ? (c.get(w) ?? p.get(w)) : (p.get(w) ?? c.get(w))) as T)
           }
-          const buildCombined = (pos: any[], inv: any[]) => {
+          // Aggregate reactive planner_forecast rows by week for the tooltip overlay.
+          const reactiveForecastByWeek = new Map<string, number>()
+          for (const r of branchForecastRows) {
+            const wk = r.forecast_week
+            reactiveForecastByWeek.set(wk, (reactiveForecastByWeek.get(wk) ?? 0) + (r.planner_forecast ?? 0))
+          }
+          const buildCombined = (pos: any[], inv: any[], branch: 'reactive' | 'adaptive') => {
             const invByWeek = new Map(inv.map((d: any) => [d.week, d]))
-            return pos.map((d: any) => ({
-              ...d,
-              on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
-              on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
-            }))
+            return pos.map((d: any) => {
+              const isAfterAnchor = !!stockoutEndWeek && d.week > stockoutEndWeek
+              // Post-anchor planner forecast: dampened rows for Reactive, base demand for Adaptive.
+              const plannerForecast = !isAfterAnchor ? null
+                : branch === 'reactive' ? (reactiveForecastByWeek.get(d.week) ?? null)
+                : d.demand_qty
+              return {
+                ...d,
+                on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
+                on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
+                // Feed the tooltip resolver — post-anchor shows as "Future Demand".
+                branch_forecast_qty: plannerForecast,
+              }
+            })
           }
           const rPosMerged = mergeAt(cmpReactivePos, parentPosData)
           const rInvMerged = mergeAt(cmpReactiveInv, parentStoreInvData)
@@ -2156,8 +2171,8 @@ export default function SimulationResultsPage() {
           const aShipMerged = mergeAt(cmpAdaptiveShip, parentShipData)
           const rKpi = computeKPIs(rPosMerged, rShipMerged)
           const aKpi = computeKPIs(aPosMerged, aShipMerged)
-          const rChart = buildCombined(rPosMerged, rInvMerged)
-          const aChart = buildCombined(aPosMerged, aInvMerged)
+          const rChart = buildCombined(rPosMerged, rInvMerged, 'reactive')
+          const aChart = buildCombined(aPosMerged, aInvMerged, 'adaptive')
 
           const Kpi = ({ label, value }: { label: string; value: string }) => (
             <div className="flex flex-col rounded-md border border-charcoal-blue-100 bg-charcoal-blue-50 px-2.5 py-1.5">
