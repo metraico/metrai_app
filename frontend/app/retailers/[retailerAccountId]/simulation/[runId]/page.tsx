@@ -261,7 +261,18 @@ function POSTooltip({ active, payload, label, promoWeekMap }: {
       )}
       {branchForecast != null && forecast == null && (
         <div className={`${!isFutureOnly ? 'border-t border-charcoal-blue-100 pt-1.5 mt-1' : ''}`}>
-          <p className="flex justify-between gap-4 text-cyan-600"><span>Future Demand</span><span className="font-medium">{branchForecast.toLocaleString()}</span></p>
+          <p className="flex justify-between gap-4 text-cyan-600">
+            <span>{isBranchTail ? 'Future Demand' : 'Planner Forecast'}</span>
+            <span className="font-medium">{branchForecast.toLocaleString()}</span>
+          </p>
+          {!isBranchTail && actualDemand > 0 && (
+            <p className="flex justify-between gap-4 text-charcoal-blue-400 text-[10px]">
+              <span>Forecast vs Actual</span>
+              <span className="font-medium">
+                {branchForecast > 0 ? `${((branchForecast / actualDemand - 1) * 100).toFixed(1)}%` : '—'}
+              </span>
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -567,6 +578,10 @@ export default function SimulationResultsPage() {
   const [hlsData, setHlsData] = useState<HiddenLostSalesResponse | null>(null)
   // HLS — per-branch planner forecast rows (rendered as post-stockout future-demand tail)
   const [branchForecastRows, setBranchForecastRows] = useState<BranchForecastRow[]>([])
+  // HLS — parent's POS rows (pre-anchor historical). Fetched on branch views so we can
+  // show main-line's history to the LEFT of Forecast Start even after the branch has run
+  // (analyticsSimId then points at the branch child which only has post-anchor rows).
+  const [parentPosData, setParentPosData] = useState<any[]>([])
   // HLS — branch simulation execution state
   const [runBranchesInFlight, setRunBranchesInFlight] = useState(false)
   const [runBranchesError, setRunBranchesError] = useState('')
@@ -619,11 +634,18 @@ export default function SimulationResultsPage() {
       .slice(-1)[0]
     return last ? toIsoWeek(last) : null
   })()
+  // Cyan for both branches so the Planner Forecast bar doesn't collide with
+  // Lost Sales (red) on Reactive views. Matches the rolling-forecast pattern.
   const branchTailColor =
     selectedBranch === 'adaptive' ? '#06b6d4'
-    : selectedBranch === 'reactive' ? '#ef4444'
+    : selectedBranch === 'reactive' ? '#06b6d4'
     : null
-  const showBranchForecastTail = selectedBranch !== 'base' && !!stockoutEndWeek && branchForecastRows.length > 0
+  // Adaptive sources its tail from the parent's posData (no branch_forecast rows required);
+  // Reactive needs the planner_forecast rows to have loaded.
+  const showBranchForecastTail =
+    selectedBranch !== 'base' &&
+    !!stockoutEndWeek &&
+    (selectedBranch === 'adaptive' || branchForecastRows.length > 0)
   // When a branch view is selected but its child sim hasn't been run, the non-POS charts fall back
   // to the parent's data — which is misleading past the stockout anchor. Cut those charts at the
   // anchor until the branch sim completes.
@@ -690,6 +712,13 @@ export default function SimulationResultsPage() {
   // ── Initial load ──────────────────────────────────────────────────────────
 
   const loadSummary = useCallback(async () => {
+    // Skip entirely when any sidebar filter is active — the dedicated filter effect
+    // handles fetching filtered summaries. Otherwise loadSummary would overwrite the
+    // filtered posData/storeInvData/etc with portfolio-wide unfiltered aggregates.
+    // Use getState() to bypass useCallback's stale closure.
+    const fs = useFilterStore.getState()
+    const anyFilter = !!(fs.globalItem || fs.globalStore || fs.globalSdc || fs.globalRdc || fs.globalCategory || fs.globalSubcategory || fs.globalBrand)
+    if (anyFilter) { setPageState('ready'); return }
     // When a non-base branch is selected, always fetch fresh from the branch's simulation_id.
     if (analyticsSimId !== simulationId) {
       // Skip if the selected branch hasn't run yet — the child sim has no analytics.
@@ -1019,8 +1048,11 @@ export default function SimulationResultsPage() {
     }).catch(() => null)
     // Re-fetch rolling forecast demand with the updated filters so it matches the same scope
     if (rollingSession?.status === 'active') refreshRollingForecast()
+  // Depend on analyticsSimId too — after a branch switch, loadSummary overwrites posData with
+  // unfiltered summary data, so we must re-fetch with the active filters to avoid stale portfolio-wide
+  // bars appearing on a filtered branch view.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
+  }, [globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand, analyticsSimId])
 
   // ── Coordinate branch selector with the affected-items filter ────────────
   // Switching to Reactive/Adaptive auto-picks the first affected item (branch
@@ -1047,30 +1079,72 @@ export default function SimulationResultsPage() {
   // section renders nothing. Not gated on pageState / runFullConfig to avoid
   // a race where the section shows only after refresh (previously the effect
   // depended on runFullConfig arriving before pageState=ready).
+  // Always fetch from the PARENT simulation, not analyticsSimId. Branch children
+  // run with `resolved_scenario = None` so their /hidden-lost-sales response has an
+  // empty disruption_windows array — which would collapse stockoutEndWeek to null
+  // and drop the Forecast Start line on branch views.
   useEffect(() => {
-    if (!analyticsSimId) return
+    if (!simulationId) return
     let cancelled = false
-    getHiddenLostSales(analyticsSimId)
+    getHiddenLostSales(simulationId)
       .then((d) => { if (!cancelled) setHlsData(d) })
       .catch(() => null)
     return () => { cancelled = true }
-  }, [analyticsSimId])
+  }, [simulationId])
 
   // ── Fetch per-branch planner forecast rows for the post-stockout tail ─────
   // Always fetch from the REACTIVE child: those rows carry both `planner_forecast`
   // (dampened) and `base_demand` (baseline), which we use for Reactive and Adaptive
   // overlays respectively. The Adaptive child has no rows written by the backend.
+  //
+  // Do NOT clear rows on selectedBranch change — showBranchForecastTail already gates
+  // rendering by branch, so keeping the cache prevents a flash-of-empty-tail when
+  // toggling Main-line ↔ Reactive/Adaptive. Only clear when the reactive child id
+  // itself disappears.
+  const reactiveChildId = reactiveChild?.simulation_id ?? null
   useEffect(() => {
-    if (selectedBranch === 'base' || !reactiveChild) {
+    if (!reactiveChildId) {
       setBranchForecastRows([])
       return
     }
+    // Skip refetch if we already have rows keyed to this child; this avoids the flash-of-empty
+    // during branch toggle AND recovers naturally on retry-toggles when a prior fetch failed
+    // (empty rows → refetch).
+    if (branchForecastRows.length > 0 && branchForecastRows[0]?.simulation_id === reactiveChildId) return
     let cancelled = false
-    getBranchForecast(reactiveChild.simulation_id)
+    getBranchForecast(reactiveChildId)
       .then(rows => { if (!cancelled) setBranchForecastRows(rows) })
-      .catch(() => { if (!cancelled) setBranchForecastRows([]) })
+      .catch(() => { /* keep prior rows; user can retry by re-toggling branch */ })
     return () => { cancelled = true }
-  }, [reactiveChild, selectedBranch])
+  // Depend on selectedBranch so a manual re-toggle retries a failed fetch.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reactiveChildId, selectedBranch])
+
+  // ── Fetch parent's POS data for pre-anchor context on branch views ──────
+  // When the user is on Reactive/Adaptive we always want main-line's historical
+  // bars to the LEFT of Forecast Start — regardless of whether the branch child
+  // has run yet. Once the branch is COMPLETED, analyticsSimId switches to the
+  // child (which only has post-anchor rows), so without this we lose the pre-anchor
+  // history entirely. Honors the item/store/category filter so the parent's slice
+  // matches the branch's slice.
+  useEffect(() => {
+    if (selectedBranch === 'base') { setParentPosData([]); return }
+    if (!isHls || !simulationId) return
+    let cancelled = false
+    const filters = {
+      item_id: globalItem || undefined,
+      store_id: globalStore || undefined,
+      category: globalCategory || undefined,
+      subcategory: globalSubcategory || undefined,
+      brand: globalBrand || undefined,
+    }
+    const anyFilter = !!(globalItem || globalStore || globalCategory || globalSubcategory || globalBrand)
+    getSummaryStoreSales(simulationId, anyFilter ? filters : undefined)
+      .then(data => { if (!cancelled) setParentPosData(aggPOS(data.weekly_pos ?? [])) })
+      .catch(() => { if (!cancelled) setParentPosData([]) })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simulationId, selectedBranch, isHls, globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
 
   // ── Status polling ────────────────────────────────────────────────────────
 
@@ -1127,6 +1201,12 @@ export default function SimulationResultsPage() {
   // When branch selection changes, refetch analytics for the newly selected sim id
   useEffect(() => {
     if (pageState !== 'ready') return
+    // Skip: the sidebar-filter effect fetches filtered summaries whenever a
+    // filter is active. Running loadSummary here would overwrite that with the
+    // unfiltered aggregate and leave the chart showing portfolio-wide bars
+    // while the sidebar shows a specific item selected.
+    const anyFilter = !!(globalItem || globalStore || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
+    if (anyFilter) return
     loadSummary()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsSimId])
@@ -1560,6 +1640,11 @@ export default function SimulationResultsPage() {
                             disabled={!clickable}
                             onClick={() => {
                               if (!match) return
+                              // On branch views, chips are select-only — the auto-select effect
+                              // would immediately re-pick an affected item, making a "deselect"
+                              // toggle feel broken. Clicking the selected chip on a branch view
+                              // is a no-op.
+                              if (isSelected && selectedBranch !== 'base') return
                               setFilters({ globalItem: isSelected ? '' : match.item_id })
                             }}
                             className={`rounded-full border px-2.5 py-1 text-left text-[11px] font-semibold transition-colors ${
@@ -1589,34 +1674,73 @@ export default function SimulationResultsPage() {
                 // Merge simulated posData with rolling forecast data for unrun weeks
                 const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
                 // Aggregate branch planner forecast rows by week, restricted to affected items.
-                // Reactive uses planner_forecast (dampened); Adaptive uses base_demand (baseline).
+                // Reactive uses planner_forecast (dampened, from branch_forecast table).
+                // Adaptive reuses main-line's demand directly (see mergedPosData below) — no
+                // aggregation needed here; leaving the map empty for adaptive.
+                // Honor the Item filter (globalItem = item_id) so future-demand bars scope match
+                // the historical bars — otherwise picking one affected item shows one item's history
+                // vs the sum of ALL affected items' future demand.
                 const branchForecastByWeek = new Map<string, number>()
-                for (const r of branchForecastRows) {
-                  if (affectedItemCodes && !affectedItemCodes.has(r.item_code)) continue
-                  if (!r.forecast_week) continue
-                  // Backend already returns ISO week ("2025-W29"); only pass through toIsoWeek for YYYY-MM-DD.
-                  const w = /^\d{4}-W\d{2}$/.test(r.forecast_week) ? r.forecast_week : toIsoWeek(r.forecast_week)
-                  if (!w || w.includes('NaN')) continue
-                  const val = selectedBranch === 'adaptive' ? (r.base_demand ?? 0) : (r.planner_forecast ?? 0)
-                  branchForecastByWeek.set(w, (branchForecastByWeek.get(w) ?? 0) + val)
+                // Clip the reactive tail to the parent run's end_week: the engine's branch/forecast
+                // horizon extends a full year past the stockout, but the demo should stay within the
+                // user's original simulation window.
+                const runEndIsoWeek = runEndWeek ? toIsoWeek(runEndWeek) : null
+                if (selectedBranch !== 'adaptive') {
+                  for (const r of branchForecastRows) {
+                    if (affectedItemCodes && !affectedItemCodes.has(r.item_code)) continue
+                    if (globalItem && r.item_id !== globalItem) continue
+                    if (!r.forecast_week) continue
+                    // Backend already returns ISO week ("2025-W29"); only pass through toIsoWeek for YYYY-MM-DD.
+                    const w = /^\d{4}-W\d{2}$/.test(r.forecast_week) ? r.forecast_week : toIsoWeek(r.forecast_week)
+                    if (!w || w.includes('NaN')) continue
+                    if (runEndIsoWeek && w > runEndIsoWeek) continue
+                    branchForecastByWeek.set(w, (branchForecastByWeek.get(w) ?? 0) + (r.planner_forecast ?? 0))
+                  }
                 }
-                // rollingBaseStartWeek, rollingForecastStartWeek, chunkAreas are hoisted to component level
-                const mergedPosData = posData.map(d => {
-                  const origForecast = d.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(d.week) : undefined
-                  const baseForecast = d.run_type === 'base' ? baseForecastMap.get(d.week) : undefined
-                  // Hard-cut behavior: on a branch view, weeks strictly AFTER the stockout end
-                  // show only Future Demand (branch_forecast_qty). Weeks at/before the anchor show
-                  // only historical bars. No overlap.
-                  const afterAnchor = showBranchForecastTail && stockoutEndWeek && d.week > stockoutEndWeek
+                // Branch-view sourcing:
+                //  • Pre-anchor weeks always come from the PARENT's posData so we keep the
+                //    main-line historical context to the left of Forecast Start (even after
+                //    the branch has run, when analyticsSimId → child and posData covers
+                //    post-anchor weeks only).
+                //  • Post-anchor weeks come from posData (which is the branch child once
+                //    COMPLETED, or the parent's projection while still unrun) so they show
+                //    the branch's own realized sales/stockouts.
+                const branchIsCompleted = selectedBranchRun?.simulation_status === 'COMPLETED'
+                const useMergedSources = selectedBranch !== 'base' && branchIsCompleted && parentPosData.length > 0 && !!stockoutEndWeek
+                const parentByWeek = new Map(parentPosData.map((d: any) => [d.week, d]))
+                const branchByWeek = new Map(posData.map((d: any) => [d.week, d]))
+                const allWeeks = useMergedSources
+                  ? [...new Set([...parentByWeek.keys(), ...branchByWeek.keys()])].sort()
+                  : posData.map((d: any) => d.week)
+                const mergedPosData = allWeeks.map(week => {
+                  const pre = parentByWeek.get(week)
+                  const post = branchByWeek.get(week)
+                  const isAfterAnchor = !!stockoutEndWeek && week > stockoutEndWeek
+                  // Pick the authoritative row for THIS week:
+                  //  • merged branch view: pre-anchor → parent, post-anchor → branch
+                  //  • else: original posData row
+                  const src: any = useMergedSources ? (isAfterAnchor ? post ?? pre : pre ?? post) : (post ?? pre ?? { week })
+                  const origForecast = src.run_type === 'rolling_chunk' ? rollingForecastSnapshot.get(week) : undefined
+                  const baseForecast = src.run_type === 'base' ? baseForecastMap.get(week) : undefined
+                  // Legacy pre-run behavior: cut historical bars past anchor when branch hasn't run.
+                  const legacyCut = !useMergedSources && showBranchForecastTail && stockoutEndWeek && week > stockoutEndWeek
                   return {
-                    ...d,
-                    forecast_qty: forecastByWeek.get(d.week),
+                    ...src,
+                    week,
+                    forecast_qty: forecastByWeek.get(week),
                     original_forecast_qty: origForecast,
                     base_forecast_qty: baseForecast,
-                    primary_demand_qty: afterAnchor ? null : (origForecast ?? baseForecast ?? d.demand_qty),
-                    sales_qty: afterAnchor ? null : d.sales_qty,
-                    stockout_qty: afterAnchor ? null : d.stockout_qty,
-                    branch_forecast_qty: afterAnchor ? branchForecastByWeek.get(d.week) ?? null : null,
+                    primary_demand_qty: legacyCut ? null : (origForecast ?? baseForecast ?? src.demand_qty),
+                    sales_qty: legacyCut ? null : src.sales_qty,
+                    stockout_qty: legacyCut ? null : src.stockout_qty,
+                    // Planner forecast overlay (right of anchor only). Reactive = dampened
+                    // planner_forecast from branch_forecast; Adaptive = parent's demand for
+                    // that week (baseline forecast, no dampening).
+                    branch_forecast_qty: isAfterAnchor && selectedBranch !== 'base'
+                      ? (selectedBranch === 'adaptive'
+                          ? (pre?.demand_qty ?? src.demand_qty ?? null)
+                          : (branchForecastByWeek.get(week) ?? null))
+                      : null,
                   }
                 })
                 const forecastOnlyWeeks = rollingForecastData
