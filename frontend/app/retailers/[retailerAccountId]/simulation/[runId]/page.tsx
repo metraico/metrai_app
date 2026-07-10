@@ -597,6 +597,7 @@ export default function SimulationResultsPage() {
   const [hlsData, setHlsData] = useState<HiddenLostSalesResponse | null>(null)
   // HLS — per-branch planner forecast rows (rendered as post-stockout future-demand tail)
   const [branchForecastRows, setBranchForecastRows] = useState<BranchForecastRow[]>([])
+  const [adaptiveBranchForecastRows, setAdaptiveBranchForecastRows] = useState<BranchForecastRow[]>([])
   // HLS — parent's POS rows (pre-anchor historical). Fetched on branch views so we can
   // show main-line's history to the LEFT of Forecast Start even after the branch has run
   // (analyticsSimId then points at the branch child which only has post-anchor rows).
@@ -1147,33 +1148,42 @@ export default function SimulationResultsPage() {
     return () => { cancelled = true }
   }, [simulationId])
 
-  // ── Fetch per-branch planner forecast rows for the post-stockout tail ─────
-  // Always fetch from the REACTIVE child: those rows carry both `planner_forecast`
-  // (dampened) and `base_demand` (baseline), which we use for Reactive and Adaptive
-  // overlays respectively. The Adaptive child has no rows written by the backend.
+  // ── Fetch per-branch planner_forecast rows from metrai.branch_forecast ────
+  // Both Reactive and Adaptive children persist rows. Reactive rows carry the
+  // dampened forecast (base_demand × scale); Adaptive rows carry a noise-free
+  // planner baseline (baseline × lifecycle × seasonal × promo, no RNG).
   //
   // Do NOT clear rows on selectedBranch change — showBranchForecastTail already gates
   // rendering by branch, so keeping the cache prevents a flash-of-empty-tail when
-  // toggling Main-line ↔ Reactive/Adaptive. Only clear when the reactive child id
-  // itself disappears.
+  // toggling Main-line ↔ Reactive/Adaptive.
   const reactiveChildId = reactiveChild?.simulation_id ?? null
+  const adaptiveChildId = adaptiveChild?.simulation_id ?? null
   useEffect(() => {
     if (!reactiveChildId) {
       setBranchForecastRows([])
       return
     }
-    // Skip refetch if we already have rows keyed to this child; this avoids the flash-of-empty
-    // during branch toggle AND recovers naturally on retry-toggles when a prior fetch failed
-    // (empty rows → refetch).
     if (branchForecastRows.length > 0 && branchForecastRows[0]?.simulation_id === reactiveChildId) return
     let cancelled = false
     getBranchForecast(reactiveChildId)
       .then(rows => { if (!cancelled) setBranchForecastRows(rows) })
       .catch(() => { /* keep prior rows; user can retry by re-toggling branch */ })
     return () => { cancelled = true }
-  // Depend on selectedBranch so a manual re-toggle retries a failed fetch.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reactiveChildId, selectedBranch])
+  useEffect(() => {
+    if (!adaptiveChildId) {
+      setAdaptiveBranchForecastRows([])
+      return
+    }
+    if (adaptiveBranchForecastRows.length > 0 && adaptiveBranchForecastRows[0]?.simulation_id === adaptiveChildId) return
+    let cancelled = false
+    getBranchForecast(adaptiveChildId)
+      .then(rows => { if (!cancelled) setAdaptiveBranchForecastRows(rows) })
+      .catch(() => { /* keep prior rows; user can retry by re-toggling branch */ })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adaptiveChildId, selectedBranch])
 
   // ── Fetch parent's POS data for pre-anchor context on branch views ──────
   // When the user is on Reactive/Adaptive we always want main-line's historical
@@ -1823,23 +1833,17 @@ export default function SimulationResultsPage() {
               {(() => {
                 // Merge simulated posData with rolling forecast data for unrun weeks
                 const forecastByWeek = new Map(rollingForecastData.map(r => [r.week, r.forecast_qty]))
-                // Aggregate branch planner forecast rows by week, restricted to affected items.
-                // Reactive uses planner_forecast (dampened, from branch_forecast table).
-                // Adaptive reuses main-line's demand directly (see mergedPosData below) — no
-                // aggregation needed here; leaving the map empty for adaptive.
+                // Aggregate this branch's planner_forecast rows by week.
+                // Reactive: dampened forecast; Adaptive: noise-free baseline.
                 // Honor the Item filter (globalItem = item_id) so future-demand bars scope match
                 // the historical bars — otherwise picking one affected item shows one item's history
                 // vs the sum of ALL affected items' future demand.
                 const branchForecastByWeek = new Map<string, number>()
-                // Clip the reactive tail to the parent run's end_week: the engine's branch/forecast
-                // horizon extends a full year past the stockout, but the demo should stay within the
-                // user's original simulation window.
                 const runEndIsoWeek = runEndWeek ? toIsoWeek(runEndWeek) : null
-                // Build item metadata lookup once so we can filter branch_forecast rows by
-                // category / subcategory / brand — none of which are on the row itself.
                 const itemsMetaById = new Map<string, any>((meta?.items_meta ?? []).map((m: any) => [m.item_id, m]))
-                if (selectedBranch !== 'adaptive') {
-                  for (const r of branchForecastRows) {
+                const activeBranchRows = selectedBranch === 'adaptive' ? adaptiveBranchForecastRows : branchForecastRows
+                if (selectedBranch !== 'base') {
+                  for (const r of activeBranchRows) {
                     if (affectedItemCodes && !affectedItemCodes.has(r.item_code)) continue
                     if (globalItem && r.item_id !== globalItem) continue
                     if (globalStore && r.store_id !== globalStore) continue
@@ -2144,9 +2148,9 @@ export default function SimulationResultsPage() {
             const weeks = [...new Set([...p.keys(), ...c.keys()])].sort()
             return weeks.map(w => (w > (stockoutEndWeek as string) ? (c.get(w) ?? p.get(w)) : (p.get(w) ?? c.get(w))) as T)
           }
-          // Reactive planner_forecast covers affected items only (Adaptive reuses base for the rest).
-          // Compute the per-week delta between planner_forecast and base_demand across the filtered
-          // affected slice; Reactive future demand = Adaptive future demand + this delta.
+          // Aggregate each branch's own planner_forecast rows by week, honoring filters.
+          // Reactive rows carry the dampened forecast; Adaptive rows carry the noise-free
+          // baseline. Both use the same shape (branch_forecast table).
           const itemsMeta = (meta?.items_meta ?? []) as any[]
           const allowedItemIds = (globalCategory || globalSubcategory || globalBrand)
             ? new Set(itemsMeta.filter(m =>
@@ -2155,31 +2159,24 @@ export default function SimulationResultsPage() {
                 (!globalBrand || m.brand === globalBrand)
               ).map(m => m.item_id))
             : null
-          const reactiveDeltaByWeek = new Map<string, number>()
-          for (const r of branchForecastRows) {
-            if (globalItem && r.item_id !== globalItem) continue
-            if (globalStore && r.store_id !== globalStore) continue
-            if (allowedItemIds && !allowedItemIds.has(r.item_id)) continue
-            const wk = r.forecast_week
-            const delta = (r.planner_forecast ?? 0) - (r.base_demand ?? 0)
-            reactiveDeltaByWeek.set(wk, (reactiveDeltaByWeek.get(wk) ?? 0) + delta)
+          const aggregateForecast = (rows: BranchForecastRow[]) => {
+            const m = new Map<string, number>()
+            for (const r of rows) {
+              if (globalItem && r.item_id !== globalItem) continue
+              if (globalStore && r.store_id !== globalStore) continue
+              if (allowedItemIds && !allowedItemIds.has(r.item_id)) continue
+              m.set(r.forecast_week, (m.get(r.forecast_week) ?? 0) + (r.planner_forecast ?? 0))
+            }
+            return m
           }
-          // Adaptive's future demand at each week (its own realized demand, filtered), used
-          // both for the Adaptive tooltip and as the base for Reactive = Adaptive + delta.
-          const adaptiveDemandByWeek = new Map<string, number>(
-            cmpAdaptivePos.map((d: any) => [d.week, Number(d.demand_qty ?? 0)])
-          )
+          const reactiveForecastByWeek = aggregateForecast(branchForecastRows)
+          const adaptiveForecastByWeek = aggregateForecast(adaptiveBranchForecastRows)
           const buildCombined = (pos: any[], inv: any[], branch: 'reactive' | 'adaptive') => {
             const invByWeek = new Map(inv.map((d: any) => [d.week, d]))
+            const forecastByWeek = branch === 'reactive' ? reactiveForecastByWeek : adaptiveForecastByWeek
             return pos.map((d: any) => {
               const isAfterAnchor = !!stockoutEndWeek && d.week > stockoutEndWeek
-              const adaptiveDemand = adaptiveDemandByWeek.get(d.week) ?? Number(d.demand_qty ?? 0)
-              // Post-anchor planner forecast:
-              //   Adaptive → base demand = its own realized demand (undampened forecast)
-              //   Reactive → Adaptive base + delta from affected items' dampened rows
-              const plannerForecast = !isAfterAnchor ? null
-                : branch === 'reactive' ? adaptiveDemand + (reactiveDeltaByWeek.get(d.week) ?? 0)
-                : adaptiveDemand
+              const plannerForecast = !isAfterAnchor ? null : (forecastByWeek.get(d.week) ?? null)
               // Pre-anchor forecast: use baseForecastMap (weekly_demand) if available, else fall
               // back to the row's demand_qty since base_forecast == base_demand for HLS pre-anchor.
               const preAnchorForecast = isAfterAnchor ? null
