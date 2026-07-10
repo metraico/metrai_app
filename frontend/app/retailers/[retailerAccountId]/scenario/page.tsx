@@ -30,6 +30,9 @@ scenario:
 `
 
 const HLS_TEMPLATE = `# SCENARIO: Hidden Lost Sales
+# dc: must be a SUPPLIER DC code (not a retailer DC). Use the code from your
+#     supplier DC list (e.g. SDC_EAST, SDC_WEST). The disruption blocks
+#     manufacturer receipts into that supplier DC during the window.
 run:
   simulation_name: "DC Stockout - Super Bowl Week 2024"
   start_date: "2024-01-01"

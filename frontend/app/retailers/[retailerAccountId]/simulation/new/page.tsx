@@ -5,6 +5,8 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
 import { getRunYamlTemplate, runSimulation, engineBaseUrl } from '@/lib/api/simulation'
 import { getSimulatePreview, getPromoYamlTemplate } from '@/lib/api/promos'
+import { getEntities, getMappings } from '@/lib/api/entities'
+import type { EntityItem, EntityDC } from '@/lib/api/types'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp, Tag } from 'lucide-react'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
@@ -174,6 +176,14 @@ export default function NewSimulationPage() {
   const [selectedScenario, setSelectedScenario] = useState<ScenarioId>(urlScenario)
   const [scenarioYaml, setScenarioYaml] = useState('')
   const [scenarioYamlError, setScenarioYamlError] = useState<string | null>(null)
+  const [itemCatalog, setItemCatalog] = useState<EntityItem[]>([])
+  const [itemPickerOpen, setItemPickerOpen] = useState(false)
+  const [itemPickerQuery, setItemPickerQuery] = useState('')
+  const [supplierDcCatalog, setSupplierDcCatalog] = useState<EntityDC[]>([])
+  const [dcPickerOpen, setDcPickerOpen] = useState(false)
+  const [dcPickerQuery, setDcPickerQuery] = useState('')
+  // dc_id -> Set of item_id for supplier DCs; used to filter Add Item dropdown.
+  const [dcItemsMap, setDcItemsMap] = useState<Record<string, Set<string>>>({})
   const [promoAdjustments, setPromoAdjustments] = useState<Record<string, number>>({})
   const [stage, setStage] = useState<RunStage>({ type: 'idle' })
   const [templateLoading, setTemplateLoading] = useState(true)
@@ -272,6 +282,64 @@ export default function NewSimulationPage() {
       setScenarioYaml(scenarioDef.yamlTemplate)
     }
   }, [isScenarioPreset, selectedScenario, promoPreview])
+
+  // Fetch item + supplier DC catalogues + dc→items mapping for the HLS pickers
+  useEffect(() => {
+    if (selectedScenario !== 'hidden_lost_sales') return
+    if (itemCatalog.length > 0 && supplierDcCatalog.length > 0 && Object.keys(dcItemsMap).length > 0) return
+    Promise.all([getEntities(), getMappings()])
+      .then(([e, m]) => {
+        setItemCatalog(e.items ?? [])
+        setSupplierDcCatalog((e.dcs ?? []).filter(d => (d.dc_role || '').toUpperCase() === 'SUPPLIER_DC'))
+        const map: Record<string, Set<string>> = {}
+        for (const row of (m.dc_items ?? [])) {
+          if (!map[row.dc_id]) map[row.dc_id] = new Set()
+          map[row.dc_id].add(row.item_id)
+        }
+        setDcItemsMap(map)
+      })
+      .catch(() => { setItemCatalog([]); setSupplierDcCatalog([]); setDcItemsMap({}) })
+  }, [selectedScenario, itemCatalog.length, supplierDcCatalog.length, dcItemsMap])
+
+  // Set the supplier DC on the HLS disruption. Overwrites whatever was there.
+  function setHlsDcInYaml(dcCode: string) {
+    try {
+      const doc = yaml.load(scenarioYaml) as any
+      if (!doc || typeof doc !== 'object' || !Array.isArray(doc.disruptions) || doc.disruptions.length === 0) {
+        throw new Error('no disruptions')
+      }
+      doc.disruptions[0].dc = dcCode
+      const dumped = yaml.dump(doc, { lineWidth: 120, quotingType: '"', forceQuotes: false })
+      setScenarioYaml(dumped)
+      setScenarioYamlError(null)
+    } catch {
+      setScenarioYaml((prev) => prev + `\n# set dc: ${dcCode}`)
+    }
+  }
+
+  // Append an item_code to the HLS disruption's `items:` list. Handles both
+  // `items: all` (converts to list) and existing lists (dedupes). Falls back
+  // to a string append if parsing fails.
+  function addItemToHlsYaml(code: string) {
+    try {
+      const doc = yaml.load(scenarioYaml) as any
+      if (!doc || typeof doc !== 'object' || !Array.isArray(doc.disruptions) || doc.disruptions.length === 0) {
+        throw new Error('no disruptions')
+      }
+      const d0 = doc.disruptions[0]
+      let items = d0.items
+      if (items === 'all' || items == null) items = []
+      if (!Array.isArray(items)) items = [String(items)]
+      if (!items.map(String).includes(code)) items.push(code)
+      d0.items = items
+      const dumped = yaml.dump(doc, { lineWidth: 120, quotingType: '"', forceQuotes: false })
+      setScenarioYaml(dumped)
+      setScenarioYamlError(null)
+    } catch {
+      // fallback: just note the code appended raw
+      setScenarioYaml((prev) => prev + `\n# added: ${code}`)
+    }
+  }
 
   // Mode B: initialise per-promo adjustments state from promoPreview
   useEffect(() => {
@@ -470,7 +538,20 @@ export default function NewSimulationPage() {
       router.push(`/retailers/${routeAccountId}/simulation/${simulation_id}`)
     } catch (err: unknown) {
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
-      const msg = err instanceof Error ? err.message : 'An error occurred.'
+      // Prefer the engine's `detail` field over the generic axios message.
+      // The engine returns Pydantic validation errors and other 4xx/5xx details here.
+      const anyErr = err as any
+      const detail = anyErr?.response?.data?.detail
+      let msg: string
+      if (typeof detail === 'string') {
+        msg = detail
+      } else if (Array.isArray(detail) && detail.length > 0) {
+        msg = detail.map((d: any) => d?.msg ?? JSON.stringify(d)).join('; ')
+      } else if (err instanceof Error) {
+        msg = err.message
+      } else {
+        msg = 'An error occurred.'
+      }
       setStage({ type: 'error', message: msg })
     }
   }
@@ -803,13 +884,153 @@ export default function NewSimulationPage() {
                   <div className="h-5 w-5 animate-spin rounded-full border-2 border-majorelle-blue-500 border-t-transparent" />
                 </div>
               ) : (
-                <YamlEditor
-                  value={scenarioYaml}
-                  onChange={v => { setScenarioYaml(v); setScenarioYamlError(null) }}
-                  label={scenarioDef?.yamlEditorLabel ?? 'Scenario YAML'}
-                  description={scenarioDef?.yamlEditorDescription ?? ''}
-                  rows={Math.max(12, scenarioYaml.split('\n').length + 2)}
-                />
+                <>
+                  {selectedScenario === 'hidden_lost_sales' && (
+                    <div className="relative flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setDcPickerOpen(v => !v); setItemPickerOpen(false) }}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-majorelle-blue-300 bg-white px-3 py-1 text-[11px] font-semibold text-majorelle-blue-600 hover:border-majorelle-blue-500 hover:bg-majorelle-blue-50 transition-colors cursor-pointer"
+                      >
+                        <span className="text-sm leading-none">◆</span> Select Supplier DC
+                      </button>
+                      {dcPickerOpen && (
+                        <div className="absolute right-[152px] top-full z-20 mt-1 w-80 rounded-lg border border-charcoal-blue-200 bg-white shadow-xl">
+                          <div className="border-b border-charcoal-blue-100 p-2">
+                            <input
+                              type="text"
+                              value={dcPickerQuery}
+                              onChange={(e) => setDcPickerQuery(e.target.value)}
+                              placeholder="Search by code or name"
+                              autoFocus
+                              className="w-full rounded-md border border-charcoal-blue-200 bg-white px-2 py-1 text-xs text-charcoal-blue-900 focus:border-majorelle-blue-500 focus:outline-none focus:ring-1 focus:ring-majorelle-blue-500"
+                            />
+                          </div>
+                          <div className="max-h-64 overflow-y-auto">
+                            <button
+                              type="button"
+                              onClick={() => { setHlsDcInYaml('all'); setDcPickerOpen(false); setDcPickerQuery('') }}
+                              className="flex w-full items-baseline gap-2 border-b border-charcoal-blue-100 bg-amber-50/60 px-3 py-1.5 text-left text-[11px] hover:bg-amber-100 transition-colors cursor-pointer"
+                            >
+                              <span className="font-mono font-semibold text-amber-800">all</span>
+                              <span className="truncate text-amber-700">All supplier DCs — cut the item off everywhere</span>
+                            </button>
+                            {(() => {
+                              const q = dcPickerQuery.trim().toLowerCase()
+                              const filtered = supplierDcCatalog.filter(d =>
+                                !q ||
+                                d.dc_code.toLowerCase().includes(q) ||
+                                (d.dc_name || '').toLowerCase().includes(q)
+                              )
+                              if (filtered.length === 0) return (
+                                <p className="px-3 py-3 text-[11px] text-charcoal-blue-400">
+                                  {supplierDcCatalog.length === 0 ? 'Loading supplier DCs…' : 'No supplier DCs match your search.'}
+                                </p>
+                              )
+                              return filtered.map(d => (
+                                <button
+                                  key={d.dc_id}
+                                  type="button"
+                                  onClick={() => { setHlsDcInYaml(d.dc_code); setDcPickerOpen(false); setDcPickerQuery('') }}
+                                  className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-majorelle-blue-50 transition-colors cursor-pointer"
+                                >
+                                  <span className="font-mono font-semibold text-charcoal-blue-800">{d.dc_code}</span>
+                                  <span className="truncate text-charcoal-blue-500">{d.dc_name}</span>
+                                </button>
+                              ))
+                            })()}
+                          </div>
+                          <div className="flex justify-end border-t border-charcoal-blue-100 p-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setDcPickerOpen(false)}
+                              className="rounded-md px-2 py-0.5 text-[10px] font-semibold text-charcoal-blue-500 hover:text-charcoal-blue-800 cursor-pointer"
+                            >
+                              Close
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => { setItemPickerOpen(v => !v); setDcPickerOpen(false) }}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-majorelle-blue-300 bg-white px-3 py-1 text-[11px] font-semibold text-majorelle-blue-600 hover:border-majorelle-blue-500 hover:bg-majorelle-blue-50 transition-colors cursor-pointer"
+                      >
+                        <span className="text-sm leading-none">+</span> Add Item
+                      </button>
+                      {itemPickerOpen && (
+                        <div className="absolute right-0 top-full z-20 mt-1 w-80 rounded-lg border border-charcoal-blue-200 bg-white shadow-xl">
+                          <div className="border-b border-charcoal-blue-100 p-2">
+                            <input
+                              type="text"
+                              value={itemPickerQuery}
+                              onChange={(e) => setItemPickerQuery(e.target.value)}
+                              placeholder="Search by code or description"
+                              autoFocus
+                              className="w-full rounded-md border border-charcoal-blue-200 bg-white px-2 py-1 text-xs text-charcoal-blue-900 focus:border-majorelle-blue-500 focus:outline-none focus:ring-1 focus:ring-majorelle-blue-500"
+                            />
+                          </div>
+                          <div className="max-h-64 overflow-y-auto">
+                            {(() => {
+                              const q = itemPickerQuery.trim().toLowerCase()
+                              // Read the current dc from the YAML; scope items to that supplier DC's catalogue
+                              let currentDcCode: string | null = null
+                              try {
+                                const doc = yaml.load(scenarioYaml) as any
+                                currentDcCode = doc?.disruptions?.[0]?.dc ?? null
+                              } catch {}
+                              let scopedItems = itemCatalog
+                              if (currentDcCode && String(currentDcCode).toLowerCase() !== 'all' && currentDcCode !== 'DC_CODE') {
+                                const dc = supplierDcCatalog.find(d => d.dc_code === currentDcCode)
+                                if (dc) {
+                                  const allowed = dcItemsMap[dc.dc_id]
+                                  if (allowed && allowed.size > 0) scopedItems = itemCatalog.filter(it => allowed.has(it.item_id))
+                                }
+                              }
+                              const filtered = scopedItems.filter(it =>
+                                !q ||
+                                it.item_code.toLowerCase().includes(q) ||
+                                (it.item_description || '').toLowerCase().includes(q)
+                              ).slice(0, 100)
+                              if (filtered.length === 0) return (
+                                <p className="px-3 py-3 text-[11px] text-charcoal-blue-400">
+                                  {itemCatalog.length === 0 ? 'Loading items…' : 'No items match your search.'}
+                                </p>
+                              )
+                              return filtered.map(it => (
+                                <button
+                                  key={it.item_id}
+                                  type="button"
+                                  onClick={() => { addItemToHlsYaml(it.item_code); setItemPickerQuery('') }}
+                                  className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-majorelle-blue-50 transition-colors cursor-pointer"
+                                >
+                                  <span className="font-mono font-semibold text-charcoal-blue-800">{it.item_code}</span>
+                                  <span className="truncate text-charcoal-blue-500">{it.item_description}</span>
+                                </button>
+                              ))
+                            })()}
+                          </div>
+                          <div className="flex justify-end border-t border-charcoal-blue-100 p-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setItemPickerOpen(false)}
+                              className="rounded-md px-2 py-0.5 text-[10px] font-semibold text-charcoal-blue-500 hover:text-charcoal-blue-800 cursor-pointer"
+                            >
+                              Close
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <YamlEditor
+                    value={scenarioYaml}
+                    onChange={v => { setScenarioYaml(v); setScenarioYamlError(null) }}
+                    label={scenarioDef?.yamlEditorLabel ?? 'Scenario YAML'}
+                    description={scenarioDef?.yamlEditorDescription ?? ''}
+                    rows={Math.max(12, scenarioYaml.split('\n').length + 2)}
+                  />
+                </>
               )}
               {scenarioYamlError && (
                 <p className="mt-1.5 flex items-center gap-1 text-[10px] text-rose-600">

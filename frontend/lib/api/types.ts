@@ -161,6 +161,36 @@ export interface SimulationRun {
   scenario_type?: string  // 'no_scenario' when no scenario was applied
   is_extended: boolean
   extension_count: number
+  parent_simulation_id?: string
+  branch_type?: 'reactive' | 'adaptive' | null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HLS Branching  (backend: POST /simulate/{id}/branch/forecast, /branch/run;
+//                 GET /branch-forecast/{id})
+// ─────────────────────────────────────────────────────────────────────────────
+export interface BranchForecastRow {
+  simulation_id: string
+  parent_simulation_id: string
+  store_id: string
+  store_code: string
+  item_id: string
+  item_code: string
+  forecast_week: string
+  planner_forecast: number
+  base_demand: number
+  reactive_scale: number
+  raw_ratio: number
+}
+export interface BranchForecastResponse {
+  simulation_id: string
+  parent_simulation_id: string
+  branch_type: 'reactive' | 'adaptive'
+  fork_week: string
+  end_week: string
+  rows_written: number
+  avg_dampening_pct: number
+  items_affected: number
 }
 
 // GET /simulation/{id}/extensions
@@ -187,14 +217,23 @@ export interface RollingForecastChunk {
   id: string
   rolling_session_id: string
   simulation_id: string
-  chunk_number: number
+  chunk_number: number | null
   start_week: string   // YYYY-MM-DD
   end_week: string     // YYYY-MM-DD
-  status: 'pending' | 'running' | 'completed'
-  performance_inputs: Record<string, number>
+  status: 'pending' | 'running' | 'completed' | 'demand_ready'
+  performance_inputs: Array<{ promo_group_name?: string; pct?: number; schedule_id?: string; multiplier?: number }> | Record<string, number>
   extension_id: string | null
   created_at: string
   chunk_type?: 'SIM' | 'FORECAST'
+  branch_type?: 'reactive' | 'adaptive' | null
+}
+
+export interface SimulationBranch {
+  id: string
+  branch_key: string   // open string — 'reactive' | 'adaptive' today, not a fixed enum
+  child_simulation_id: string
+  status: string
+  branch_params: Record<string, { multiplier: number; raw_input?: { pct?: number; promo_group_name?: string } }>
 }
 
 export interface RollingForecastSession {
@@ -207,6 +246,11 @@ export interface RollingForecastSession {
   current_completed_week: string | null
   created_at: string
   created_by: string | null
+  branches: SimulationBranch[]
+  // DEPRECATED — derived from `branches` by the backend for the cutover window.
+  // Prefer `branches` in new code; these will be removed after cutover settles.
+  reactive_simulation_id?: string | null
+  adaptive_simulation_id?: string | null
   chunks: RollingForecastChunk[]
   chunk_type_sequence?: string[]
 }
@@ -227,7 +271,7 @@ export interface RunChunkResponse extends RunYamlResponse {
   }[]
   rolling_session: {
     session_id: string
-    chunk_number: number
+    chunk_number: number | null
     current_completed_week: string
     session_status: string
   }
@@ -307,6 +351,9 @@ export interface ItemMeta {
   item_id: string
   item_code: string
   item_description: string
+  // Optional friendly name (some datasets ship this alongside item_description).
+  // HLS chip strip prefers item_description then falls back to item_name.
+  item_name?: string
   uom: string
   unit_price?: number
   category?: string
