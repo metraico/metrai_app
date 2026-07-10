@@ -6,6 +6,9 @@ __pycache__/
 .DS_Store
 .pem
 .venv/
+/*.png
+.playwright-mcp/
+metrai_nextjs/.next/
 
 # node / next build artifacts (incl. the stray metrai_nextjs scratch project)
 node_modules/
