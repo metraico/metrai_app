@@ -5,7 +5,9 @@ import { useAuthStore } from '@/lib/store/authStore'
 import {
   generateExtensionDemand, getDemandStatus, getDemandWeeklyTotals,
   createRollingSessionYaml, runRollingChunk, recalculateRollingDemand, getSessionPromoSchedules,
+  generateBranches,
 } from '@/lib/api/simulation'
+import yaml from 'js-yaml'
 import { getPromoGroups, getPromos } from '@/lib/api/promos'
 import {
   Dialog, DialogContent, DialogTitle,
@@ -14,8 +16,9 @@ import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown } from 'lucide-react'
+import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown, GitBranch } from 'lucide-react'
 import type { PromoGroupResponse, PromoResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
+import { computeBranchOverrideRows } from './branch-overrides'
 import { toIsoWeek, formatDateUS, parseToISO } from '@/lib/utils'
 
 // ── Shared primitives (same as extend-modal) ─────────────────────────────────
@@ -114,6 +117,18 @@ function validateRollingYaml(yaml: string): string | null {
   return null
 }
 
+// ── Branch helpers ────────────────────────────────────────────────────────────
+
+function addWeeks(dateStr: string, weeks: number): string {
+  const d = new Date(dateStr + 'T12:00:00')
+  d.setDate(d.getDate() + weeks * 7)
+  return d.toISOString().slice(0, 10)
+}
+
+function clampDate(dateStr: string, ceiling: string): string {
+  return dateStr > ceiling ? ceiling : dateStr
+}
+
 type ModalState =
   | 'setup'
   | 'demand_preview'
@@ -121,6 +136,7 @@ type ModalState =
   | 'performance_input'
   | 'recalc_demand'
   | 'all_complete'
+  | 'branch_preview'
 
 export interface RollingForecastModalProps {
   open: boolean
@@ -172,6 +188,13 @@ export function RollingForecastModal({
   // ── Performance input state ───────────────────────────────────────────────
   const [promoGroups, setPromoGroups] = useState<string[]>([])
   const [perfInputs, setPerfInputs] = useState<Record<string, number>>({})
+
+  // ── Branch forecast state ─────────────────────────────────────────────────
+  const [branchYamlReactive, setBranchYamlReactive] = useState('')
+  const [branchYamlAdaptive, setBranchYamlAdaptive] = useState('')
+  const [branchRunning, setBranchRunning] = useState(false)
+  const [branchError, setBranchError] = useState('')
+  const [loadingBranches, setLoadingBranches] = useState(false)
 
   // ── Load promo groups catalog ─────────────────────────────────────────────
   useEffect(() => {
@@ -419,6 +442,80 @@ export function RollingForecastModal({
     }, 50)
   }
 
+  // ── Branch forecast handlers ──────────────────────────────────────────────
+  async function handleOpenBranchPreview() {
+    if (!session) return
+    setLoadingBranches(true)
+    setBranchError('')
+    try {
+      const nextEnd = clampDate(addWeeks(currentStart, 4), totalEnd)
+      const fetched = await getSessionPromoSchedules(session.session_id, currentStart, nextEnd)
+      const header = `# Chunk window: ${formatDateUS(currentStart)} → ${formatDateUS(nextEnd)}  (4 weeks)\n`
+      // Single source of truth for the reactive/adaptive formula — shared with the
+      // auto-trigger in page.tsx (see ./branch-overrides).
+      const rows = computeBranchOverrideRows(session, fetched)
+      // pct/promo_group_name are real fields (not just a comment) so they survive
+      // editing and round-trip to the backend as the branch_params audit trail —
+      // "what did the user see / what was the formula based on" vs. the computed multiplier.
+      const reactiveEntries = rows.map(r =>
+        `  - schedule_id: "${r.schedule_id}"\n    multiplier: ${r.reactiveMult.toFixed(4)}\n    pct: ${r.reactivePct.toFixed(2)}                # audit only — does not affect the forecast\n    promo_group_name: "${r.promo_group_name}"    # audit only (was ×${r.origMult.toFixed(3)})`
+      )
+      const adaptiveEntries = rows.map(r =>
+        `  - schedule_id: "${r.schedule_id}"\n    multiplier: ${r.adaptiveMult.toFixed(4)}\n    pct: ${r.adaptivePct.toFixed(2)}                # audit only — does not affect the forecast\n    promo_group_name: "${r.promo_group_name}"    # audit only (was ×${r.origMult.toFixed(3)})`
+      )
+
+      const buildBranchYaml = (type: string, entries: string[]) =>
+        entries.length > 0
+          ? header + `branch_type: ${type}\npromo_overrides:\n` + entries.join('\n\n') + '\n'
+          : header + `branch_type: ${type}\npromo_overrides: []\n`
+
+      setBranchYamlReactive(buildBranchYaml('reactive', reactiveEntries))
+      setBranchYamlAdaptive(buildBranchYaml('adaptive', adaptiveEntries))
+      setModalState('branch_preview')
+    } catch (e: any) {
+      setBranchError(e?.message ?? 'Failed to load branch preview')
+    } finally {
+      setLoadingBranches(false)
+    }
+  }
+
+  // Parse the editable branch YAML back into structured overrides. pct/promo_group_name
+  // are optional (only present if the user didn't strip them while editing) and are stored
+  // server-side purely as an audit trail alongside the computed multiplier.
+  function parseBranchOverrides(y: string): { schedule_id: string; multiplier: number; pct?: number; promo_group_name?: string }[] {
+    let doc: any = {}
+    try { doc = yaml.load(y) || {} } catch { return [] }
+    const arr = Array.isArray(doc.promo_overrides) ? doc.promo_overrides : []
+    return arr
+      .filter((o: any) => o && o.schedule_id != null && o.multiplier != null)
+      .map((o: any) => ({
+        schedule_id: String(o.schedule_id),
+        multiplier: Number(o.multiplier),
+        ...(o.pct != null ? { pct: Number(o.pct) } : {}),
+        ...(o.promo_group_name != null ? { promo_group_name: String(o.promo_group_name) } : {}),
+      }))
+  }
+
+  async function handleRunBothBranches() {
+    if (!session) return
+    setBranchRunning(true)
+    setBranchError('')
+    try {
+      // Demand-only: generates the two forecasted demand curves (no supply-chain sim yet).
+      const updated = await generateBranches(session.session_id, {
+        seed: baseSeed,
+        reactive: parseBranchOverrides(branchYamlReactive),
+        adaptive: parseBranchOverrides(branchYamlAdaptive),
+      })
+      onSessionUpdated(updated)
+      onClose()
+    } catch (e: any) {
+      setBranchError(e?.response?.data?.detail ?? e?.message ?? 'Branch generation failed')
+    } finally {
+      setBranchRunning(false)
+    }
+  }
+
   // Build a map of group name → individual promos for grouped picker display
   const promosByGroup = promosCatalog.reduce<Record<string, PromoResponse[]>>((acc, p) => {
     const key = p.promo_group_name ?? ''
@@ -440,14 +537,18 @@ export function RollingForecastModal({
 
   const currentStart = session?.current_completed_week || baseEndDate
   const totalEnd = session?.total_end_date || totalEndDate
+  const completedMainChunks = (session?.chunks ?? []).filter(c => c.status === 'completed' && !c.branch_type)
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto rounded-2xl p-0 shadow-2xl bg-white">
+      <DialogContent className={`max-h-[90vh] ${modalState === 'branch_preview' ? 'max-w-3xl' : 'max-w-2xl'} overflow-y-auto rounded-2xl p-0 shadow-2xl bg-white transition-all`}>
           {/* Header */}
           <div className="flex items-center justify-between border-b border-charcoal-blue-100 px-6 py-4 pr-12">
             <div>
-              <DialogTitle className="text-sm font-bold text-charcoal-blue-900">Rolling Forecast</DialogTitle>
+              <DialogTitle className="text-sm font-bold text-charcoal-blue-900 flex items-center gap-2">
+                {modalState === 'branch_preview' && <GitBranch size={14} className="text-majorelle-blue-500" />}
+                Rolling Forecast
+              </DialogTitle>
               <p className="text-[10px] text-charcoal-blue-400 mt-0.5">
                 {{
                   setup: 'Set up your rolling forecast window and schedule promos',
@@ -456,6 +557,7 @@ export function RollingForecastModal({
                   performance_input: 'How did your promos perform?',
                   recalc_demand: 'Recalculating demand with updated multipliers…',
                   all_complete: 'Rolling forecast complete',
+                  branch_preview: 'Compare Reactive and Adaptive demand forecasts — edit multipliers if needed, then run both.',
                 }[modalState]}
               </p>
             </div>
@@ -582,17 +684,30 @@ export function RollingForecastModal({
                   )}
                 </div>
 
-                <button
-                  onClick={handleSaveAndPreview}
-                  disabled={savingSetup || demandStatus === 'generating'}
-                  className="w-full rounded-xl bg-amber-500 py-2.5 text-xs font-bold text-white transition-all hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {demandStatus === 'generating'
-                    ? <><Loader2 size={13} className="animate-spin" /> Generating demand…</>
-                    : savingSetup
-                      ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-                      : existingSession ? <>Regenerate Demand <ChevronRight size={13} /></> : <>Generate Demand <ChevronRight size={13} /></>}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSaveAndPreview}
+                    disabled={savingSetup || demandStatus === 'generating'}
+                    className="flex-[2] rounded-xl bg-amber-500 py-2.5 text-xs font-bold text-white transition-all hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {demandStatus === 'generating'
+                      ? <><Loader2 size={13} className="animate-spin" /> Generating demand…</>
+                      : savingSetup
+                        ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+                        : existingSession ? <>Regenerate Demand <ChevronRight size={13} /></> : <>Generate Demand <ChevronRight size={13} /></>}
+                  </button>
+                  {completedMainChunks.length >= 1 && currentStart < totalEnd && (
+                    <button
+                      onClick={handleOpenBranchPreview}
+                      disabled={loadingBranches || savingSetup}
+                      className="flex-1 rounded-xl border border-majorelle-blue-300 py-2.5 text-xs font-bold text-majorelle-blue-600 hover:bg-majorelle-blue-50 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      {loadingBranches
+                        ? <><Loader2 size={12} className="animate-spin" /> Loading…</>
+                        : <><GitBranch size={12} /> Compare Forecasts</>}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -735,6 +850,68 @@ export function RollingForecastModal({
                 <div className="text-center">
                   <p className="text-sm font-bold text-charcoal-blue-800">Recalculating demand…</p>
                   <p className="text-xs text-charcoal-blue-400 mt-1">Applying performance adjustments to future promo weeks</p>
+                </div>
+              </div>
+            )}
+
+            {/* ── BRANCH PREVIEW ───────────────────────────────────────────── */}
+            {modalState === 'branch_preview' && (
+              <div className="space-y-4">
+                {branchError && (
+                  <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                    <AlertCircle size={13} className="mt-0.5 flex-shrink-0" />
+                    <span>{branchError}</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Reactive panel */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-rose-500" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-rose-600">Reactive</span>
+                    </div>
+                    <textarea
+                      value={branchYamlReactive}
+                      onChange={e => setBranchYamlReactive(e.target.value)}
+                      rows={12}
+                      spellCheck={false}
+                      className="w-full rounded-xl border-2 border-rose-300 bg-rose-50/20 px-3 py-2 font-mono text-[10px] text-charcoal-blue-800 focus:border-rose-400 focus:outline-none resize-none leading-relaxed"
+                    />
+                    <p className="text-[9px] text-charcoal-blue-400">Full correction — proportional to all past chunks</p>
+                  </div>
+                  {/* Adaptive panel */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                      <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-600">Adaptive</span>
+                    </div>
+                    <textarea
+                      value={branchYamlAdaptive}
+                      onChange={e => setBranchYamlAdaptive(e.target.value)}
+                      rows={12}
+                      spellCheck={false}
+                      className="w-full rounded-xl border-2 border-emerald-300 bg-emerald-50/20 px-3 py-2 font-mono text-[10px] text-charcoal-blue-800 focus:border-emerald-400 focus:outline-none resize-none leading-relaxed"
+                    />
+                    <p className="text-[9px] text-charcoal-blue-400">Dampened — max ±10% drift from original plan</p>
+                  </div>
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={() => { setModalState('setup'); setBranchError('') }}
+                    disabled={branchRunning}
+                    className="flex-1 rounded-xl border border-charcoal-blue-200 py-2.5 text-xs font-bold text-charcoal-blue-600 hover:bg-charcoal-blue-50 disabled:opacity-50"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    onClick={handleRunBothBranches}
+                    disabled={branchRunning}
+                    className="flex-[2] rounded-xl bg-majorelle-blue-500 py-2.5 text-xs font-bold text-white hover:bg-majorelle-blue-600 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {branchRunning
+                      ? <><Loader2 size={13} className="animate-spin" /> Running both branches…</>
+                      : <><GitBranch size={12} /> Run Both Branches →</>}
+                  </button>
                 </div>
               </div>
             )}

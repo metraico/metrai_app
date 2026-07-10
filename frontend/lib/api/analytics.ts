@@ -108,9 +108,11 @@ export type SupplyChainFilters = {
 }
 
 // GET /analytics/{simulation_id}/summary/store-sales
-export const getSummaryStoreSales = (simulationId: string, filters?: StoreSalesFilters) =>
+export const getSummaryStoreSales = (simulationId: string, filters?: StoreSalesFilters, preferredRunType?: string) =>
   engineClient
-    .get<StoreSalesResponse>(`/analytics/${simulationId}/summary/store-sales`, { params: filters })
+    .get<StoreSalesResponse>(`/analytics/${simulationId}/summary/store-sales`, {
+      params: { ...filters, ...(preferredRunType ? { preferred_run_type: preferredRunType } : {}) },
+    })
     .then(r => r.data)
 
 // GET /analytics/{simulation_id}/summary/store-inventory

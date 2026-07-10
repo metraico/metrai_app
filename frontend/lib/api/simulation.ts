@@ -133,6 +133,7 @@ export const getDemandWeeklyTotals = (
     subcategory?: string
     brand?: string
   },
+  simulationId?: string,
 ) =>
   engineClient.get<{ pos_week: string; demand_qty: number }[]>('/demand/weekly-totals', {
     params: {
@@ -141,6 +142,7 @@ export const getDemandWeeklyTotals = (
       end_week: endWeek,
       seed,
       ...filters,
+      ...(simulationId ? { simulation_id: simulationId } : {}),
     },
   }).then(r => r.data)
 
@@ -193,6 +195,21 @@ export const runRollingChunkYaml = (
 export const getRollingSession = (simulationId: string) =>
   engineClient.get<RollingForecastSession>(`/simulation/${simulationId}/rolling-session`).then(r => r.data)
 
+// POST /rolling-session/{id}/generate-branches — demand-only reactive/adaptive curves (no sim)
+// pct/promo_group_name are optional audit fields (what the formula was based on) stored
+// server-side alongside the computed multiplier in simulation_branches.branch_params.
+export const generateBranches = (
+  sessionId: string,
+  body: {
+    seed?: number
+    reactive: { schedule_id: string; multiplier: number; pct?: number; promo_group_name?: string }[]
+    adaptive: { schedule_id: string; multiplier: number; pct?: number; promo_group_name?: string }[]
+  },
+): Promise<RollingForecastSession> =>
+  engineClient.post<RollingForecastSession>(
+    `/rolling-session/${sessionId}/generate-branches`, body,
+  ).then(r => r.data)
+
 // POST /rolling-session/{id}/run-chunk
 export const runRollingChunk = (sessionId: string, req: RunChunkRequest) =>
   engineClient.post<RunChunkResponse>(`/rolling-session/${sessionId}/run-chunk`, req).then(r => r.data)
@@ -222,6 +239,7 @@ export const getSessionPromoSchedules = (
     end_date: string
     demand_multiplier: number
     performance_pct: number | null
+    original_multiplier: number | null
   }[]>(
     `/rolling-session/${sessionId}/promo-schedules`,
     { params: { start_date: startDate, end_date: endDate } },
