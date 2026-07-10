@@ -1,6 +1,6 @@
 import { apiClient, engineClient } from './client'
 import { formatDateUS } from '@/lib/utils'
-import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest } from './types'
+import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest, BranchForecastResponse, BranchForecastRow } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // YAML body helpers — shared by rolling-forecast-modal and run-chunk-modal
@@ -60,10 +60,21 @@ export const pollSimulationUntilDone = (result: RunYamlResponse) =>
 export const getRunConfig = (simulationId: string) =>
   apiClient.get<RunConfig>(`/run-config/${simulationId}`).then(r => r.data)
 
-// GET /runs?scenario_type=  (retailer_account_id and user_id derived from JWT by app-backend)
-export const getRuns = (_retailerAccountId: string, _userId: string, scenarioType?: string) =>
+// GET /runs?scenario_type=&include_branches=
+// retailer_account_id and user_id are derived from JWT by app-backend.
+// Pass includeBranches=true when you need HLS reactive/adaptive child sims too
+// (the Runs list omits it — only detail pages enumerating a run's branches opt in).
+export const getRuns = (
+  _retailerAccountId: string,
+  _userId: string,
+  scenarioType?: string,
+  includeBranches?: boolean,
+) =>
   apiClient.get<SimulationRun[]>('/runs', {
-    params: { ...(scenarioType ? { scenario_type: scenarioType } : {}) },
+    params: {
+      ...(scenarioType ? { scenario_type: scenarioType } : {}),
+      ...(includeBranches ? { include_branches: true } : {}),
+    },
   }).then(r => r.data)
 
 // GET /run-yaml-template
@@ -224,6 +235,49 @@ export const recalculateRollingDemand = (sessionId: string, req: RecalculateDema
 // DELETE /rolling-session/{id}
 export const abandonRollingSession = (sessionId: string) =>
   engineClient.delete<{ abandoned: string }>(`/rolling-session/${sessionId}`).then(r => r.data)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HLS Branching  (app-backend routes)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /simulate/{parent_simulation_id}/branch/forecast — fires reactive + adaptive in parallel
+export const generateBranchForecasts = (
+  parentSimulationId: string,
+  itemCodes?: string[],
+): Promise<{ reactive: BranchForecastResponse; adaptive: BranchForecastResponse }> => {
+  const body = (branch_type: 'reactive' | 'adaptive') =>
+    itemCodes && itemCodes.length > 0
+      ? { branch_type, item_codes: itemCodes }
+      : { branch_type }
+  return Promise.all([
+    apiClient.post<BranchForecastResponse>(
+      `/simulate/${parentSimulationId}/branch/forecast`,
+      body('reactive'),
+    ).then(r => r.data),
+    apiClient.post<BranchForecastResponse>(
+      `/simulate/${parentSimulationId}/branch/forecast`,
+      body('adaptive'),
+    ).then(r => r.data),
+  ]).then(([reactive, adaptive]) => ({ reactive, adaptive }))
+}
+
+// POST /simulate/{id}/branch/run — runs reactive + adaptive branches in parallel
+export const runBranches = (
+  reactiveId: string,
+  adaptiveId: string,
+): Promise<void> =>
+  Promise.all([
+    apiClient.post(`/simulate/${reactiveId}/branch/run`),
+    apiClient.post(`/simulate/${adaptiveId}/branch/run`),
+  ]).then(() => undefined)
+
+// GET /branch-forecast/{simulation_id}
+export const getBranchForecast = (simulationId: string) =>
+  apiClient
+    .get<{ simulation_id: string; rows: BranchForecastRow[]; count: number }>(
+      `/branch-forecast/${simulationId}`,
+    )
+    .then(r => r.data.rows ?? [])
 
 // GET /rolling-session/{id}/promo-schedules — promo groups active in a date range
 export const getSessionPromoSchedules = (

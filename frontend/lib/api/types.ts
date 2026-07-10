@@ -161,6 +161,36 @@ export interface SimulationRun {
   scenario_type?: string  // 'no_scenario' when no scenario was applied
   is_extended: boolean
   extension_count: number
+  parent_simulation_id?: string
+  branch_type?: 'reactive' | 'adaptive' | null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HLS Branching  (backend: POST /simulate/{id}/branch/forecast, /branch/run;
+//                 GET /branch-forecast/{id})
+// ─────────────────────────────────────────────────────────────────────────────
+export interface BranchForecastRow {
+  simulation_id: string
+  parent_simulation_id: string
+  store_id: string
+  store_code: string
+  item_id: string
+  item_code: string
+  forecast_week: string
+  planner_forecast: number
+  base_demand: number
+  reactive_scale: number
+  raw_ratio: number
+}
+export interface BranchForecastResponse {
+  simulation_id: string
+  parent_simulation_id: string
+  branch_type: 'reactive' | 'adaptive'
+  fork_week: string
+  end_week: string
+  rows_written: number
+  avg_dampening_pct: number
+  items_affected: number
 }
 
 // GET /simulation/{id}/extensions
