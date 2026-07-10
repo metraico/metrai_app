@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 .pem
 .venv/
+/*.png
+.playwright-mcp/
+metrai_nextjs/.next/
