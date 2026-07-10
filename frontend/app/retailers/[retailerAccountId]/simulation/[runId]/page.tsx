@@ -2184,16 +2184,14 @@ export default function SimulationResultsPage() {
               // back to the row's demand_qty since base_forecast == base_demand for HLS pre-anchor.
               const preAnchorForecast = isAfterAnchor ? null
                 : (baseForecastMap.get(d.week) ?? d.demand_qty ?? null)
+              // Purple bar renders the FORECAST (pre-anchor: baseline; post-anchor: planner).
+              // Actual demand stays in `demand_qty` and surfaces only in the tooltip.
+              const forecastBar = isAfterAnchor ? plannerForecast : preAnchorForecast
               return {
                 ...d,
-                // Set primary_demand_qty so POSTooltip doesn't treat post-anchor rows as
-                // "future only" (which would hide Sales/Lost Sales rows).
-                primary_demand_qty: d.demand_qty,
+                primary_demand_qty: forecastBar,
                 on_hand_quantity: invByWeek.get(d.week)?.on_hand_quantity ?? null,
                 on_order_quantity: invByWeek.get(d.week)?.on_order_quantity ?? null,
-                // Tooltip resolver picks these up:
-                //   pre-anchor  → base_forecast_qty → "Forecasted Demand"
-                //   post-anchor → branch_forecast_qty → "Forecasted Demand"
                 base_forecast_qty: preAnchorForecast,
                 branch_forecast_qty: plannerForecast,
               }
@@ -2236,7 +2234,7 @@ export default function SimulationResultsPage() {
                   <YAxis yAxisId="right" orientation="right" tickFormatter={yAxisTickFormatter} />
                   <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                   <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                  <Bar yAxisId="left" dataKey="demand_qty" fill="#8b5cf6" name="Demand" barSize={8} />
+                  <Bar yAxisId="left" dataKey="primary_demand_qty" fill="#8b5cf6" name="Forecasted Demand" barSize={8} />
                   <Bar yAxisId="left" dataKey="sales_qty" fill="#10b981" name="Sales" barSize={8} />
                   <Bar yAxisId="left" dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={8} />
                   <Line yAxisId="right" dataKey="on_hand_quantity" stroke="#10b981" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
