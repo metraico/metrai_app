@@ -1474,8 +1474,9 @@ export default function SimulationResultsPage() {
     ]).then(([ss, sc]) => {
       setKpis(computeKPIs(ss.weekly_pos ?? [], sc.weekly_shipments ?? []))
     }).catch(() => null)
-    // Re-fetch rolling forecast demand with the updated filters so it matches the same scope
-    if (rollingSession?.status === 'active') refreshRollingForecast()
+    // Rolling-forecast demand re-fetch is handled by the sibling effect that shares
+    // these filter deps — see `refreshRollingForecast`. This effect early-returns above
+    // when the rolling session is active to avoid double-fetching and races.
   // Depend on analyticsSimId too — after a branch switch, loadSummary overwrites posData with
   // unfiltered summary data, so we must re-fetch with the active filters to avoid stale portfolio-wide
   // bars appearing on a filtered branch view.
@@ -2202,14 +2203,14 @@ export default function SimulationResultsPage() {
                   <h3 className="text-sm font-bold text-charcoal-blue-950">Hidden Lost Sales — Affected Items</h3>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                    {hlsData.disruption_windows.flatMap((w) => {
+                    {hlsData.disruption_windows.flatMap<{ key: string; code: string | null; desc: string }>((w) => {
                       const codes = w.item_codes
                       if (codes === 'all' || (typeof codes === 'string' && codes === 'all')) {
                         return [{ key: `all-${w.supplier_dc_code}`, code: null, desc: `All items on ${w.supplier_dc_code}` }]
                       }
                       const arr = Array.isArray(codes) ? codes : []
                       return arr.map((c) => ({ key: `${w.supplier_dc_code}-${c}`, code: c, desc: '' }))
-                    }).filter((chip, idx, arr) => arr.findIndex(x => x.key === chip.key) === idx)
+                    }).filter((chip, idx, arr) => arr.findIndex((x) => x.key === chip.key) === idx)
                       .map((chip) => {
                         if (chip.code === null) {
                           return (

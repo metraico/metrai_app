@@ -351,6 +351,9 @@ export interface ItemMeta {
   item_id: string
   item_code: string
   item_description: string
+  // Optional friendly name (some datasets ship this alongside item_description).
+  // HLS chip strip prefers item_description then falls back to item_name.
+  item_name?: string
   uom: string
   unit_price?: number
   category?: string
