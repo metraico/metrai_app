@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode, Lock, CheckCircle2 } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, ChevronDown, FileCode, Lock, CheckCircle2 } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
@@ -23,6 +23,46 @@ import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
 import { toIsoWeek } from '@/lib/utils'
+
+// ── Export branch options ─────────────────────────────────────────────────────
+
+interface ExportOption {
+  key: string
+  label: string
+  description: string
+  simulationId: string
+}
+
+/** Resolve which simulation_id each export option points at, given the current
+ *  (ideally freshly-refetched) runs/session data — HLS and promo-forecast branches
+ *  are tracked in different places (allRuns vs. rollingSession.branches). Pulled out
+ *  as a pure function so we can compute it BOTH from render-time state (for display)
+ *  and from a fresh refetch right before opening the menu (to avoid a stale branch
+ *  id that's since been regenerated/deleted — see _delete_branch_and_child in the
+ *  engine, which hard-deletes an old branch's simulation_config row). */
+function computeExportOptions(
+  mainSimulationId: string,
+  runs: SimulationRun[],
+  session: RollingForecastSession | null,
+  scenarioIsHls: boolean,
+): ExportOption[] {
+  const opts: ExportOption[] = [
+    { key: 'main', label: 'Main-line', description: 'Historical data only — no forecast', simulationId: mainSimulationId },
+  ]
+  if (scenarioIsHls) {
+    const children = runs.filter(r => r.parent_simulation_id === mainSimulationId)
+    const reactive = children.find(r => r.branch_type === 'reactive') || null
+    const adaptive = children.find(r => r.branch_type === 'adaptive') || null
+    if (reactive) opts.push({ key: 'reactive', label: 'Reactive', description: 'Historical + Reactive forecast', simulationId: reactive.simulation_id })
+    if (adaptive) opts.push({ key: 'adaptive', label: 'Adaptive', description: 'Historical + Adaptive forecast', simulationId: adaptive.simulation_id })
+  } else {
+    const reactiveBranch = session?.branches?.find(b => b.branch_key === 'reactive')
+    const adaptiveBranch = session?.branches?.find(b => b.branch_key === 'adaptive')
+    if (reactiveBranch) opts.push({ key: 'reactive', label: 'Reactive', description: 'Historical + Reactive forecast', simulationId: reactiveBranch.child_simulation_id })
+    if (adaptiveBranch) opts.push({ key: 'adaptive', label: 'Adaptive', description: 'Historical + Adaptive forecast', simulationId: adaptiveBranch.child_simulation_id })
+  }
+  return opts
+}
 
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
@@ -1982,18 +2022,72 @@ export default function SimulationResultsPage() {
   }
 
   const [exportLoading, setExportLoading] = useState(false)
-  const handleExport = async () => {
+  const [exportMenuLoading, setExportMenuLoading] = useState(false)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const [exportError, setExportError] = useState('')
+
+  // Which simulation_id each export option actually points at — recomputed every render
+  // from current state, so the dropdown always reflects what's on screen. Main-line is
+  // always this run's own id (historical data only, no forecast tail). Reactive/Adaptive
+  // are separate child simulations, resolved from whichever branching mechanism this
+  // scenario uses (HLS: allRuns child sims; promo: rollingSession.branches).
+  const exportBranchOptions = computeExportOptions(simulationId, allRuns, rollingSession, isHls)
+
+  const handleExport = async (targetSimulationId: string, branchLabel: string) => {
+    setShowExportMenu(false)
+    setExportError('')
     setExportLoading(true)
     try {
-      const url = getSimulationExportUrl(simulationId)
+      // Cheap existence check first (fast Postgres lookup via the proxied /run-config
+      // route) — catches a stale/deleted simulation id with a clear error before we
+      // navigate, instead of silently downloading a 404 error body.
+      await getRunConfig(targetSimulationId)
+      // Run name + which branch (Main-line/Reactive/Adaptive) — the raw simulation_id
+      // alone doesn't tell the user what they downloaded.
+      const filename = `${simName}_${branchLabel}`
+      const url = getSimulationExportUrl(targetSimulationId, filename)
       const a = document.createElement('a')
       a.href = url
       a.download = ''
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
+    } catch (e: any) {
+      setExportError(e?.response?.data?.detail ?? e?.message ?? 'Simulation not found — it may have been deleted or regenerated.')
     } finally {
       setExportLoading(false)
+    }
+  }
+
+  // Refresh branch data right before showing the picker (or exporting main-line directly,
+  // when there's nothing to pick) — a branch's simulation_id can be regenerated/deleted
+  // after this page loaded (see _delete_branch_and_child in the engine), so the cached
+  // allRuns/rollingSession state could point at a since-deleted simulation. Refetching
+  // here means the option we show — and the id we send — is always current.
+  const handleExportButtonClick = async () => {
+    if (exportLoading || exportMenuLoading) return
+    setExportError('')
+    setExportMenuLoading(true)
+    try {
+      const retId = params.retailerAccountId as string
+      // Only refetch the source computeExportOptions actually reads for this scenario
+      // (isHls → allRuns; promo → rollingSession) — the other one is never consulted,
+      // so fetching it on every click would just be wasted network traffic.
+      const [freshRuns, freshSession] = await Promise.all([
+        isHls && retId ? getRuns(retId, '', undefined, true).catch(() => allRuns) : Promise.resolve(allRuns),
+        !isHls && rollingSession ? getRollingSession(simulationId).catch(() => rollingSession) : Promise.resolve(rollingSession),
+      ])
+      setAllRuns(freshRuns)
+      setRollingSession(freshSession)
+
+      const freshOptions = computeExportOptions(simulationId, freshRuns, freshSession, isHls)
+      if (freshOptions.length > 1) {
+        setShowExportMenu(true)
+      } else {
+        handleExport(simulationId, 'Main-line')
+      }
+    } finally {
+      setExportMenuLoading(false)
     }
   }
 
@@ -2136,14 +2230,41 @@ export default function SimulationResultsPage() {
                 <ChevronRight size={13} /> Run Weeks
               </button>
             )}
-          <button
-            onClick={handleExport}
-            disabled={exportLoading}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {exportLoading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            {exportLoading ? 'Exporting…' : 'Export'}
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => {
+                if (showExportMenu) { setShowExportMenu(false); return }
+                handleExportButtonClick()
+              }}
+              disabled={exportLoading || exportMenuLoading}
+              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl bg-majorelle-blue-500 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-majorelle-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {(exportLoading || exportMenuLoading) ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              {exportLoading ? 'Exporting…' : exportMenuLoading ? 'Checking…' : 'Export'}
+              {!exportLoading && !exportMenuLoading && exportBranchOptions.length > 1 && (
+                <ChevronDown size={12} className={showExportMenu ? 'rotate-180 transition-transform' : 'transition-transform'} />
+              )}
+            </button>
+            {showExportMenu && exportBranchOptions.length > 1 && (
+              <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-charcoal-blue-100 bg-white p-1.5 shadow-xl">
+                {exportBranchOptions.map(opt => (
+                  <button
+                    key={opt.key}
+                    onClick={() => handleExport(opt.simulationId, opt.label)}
+                    className="flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left hover:bg-charcoal-blue-50"
+                  >
+                    <span className="text-xs font-bold text-charcoal-blue-800">{opt.label}</span>
+                    <span className="text-[10px] text-charcoal-blue-400">{opt.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {exportError && (
+              <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-semibold text-rose-700 shadow-xl">
+                {exportError}
+              </div>
+            )}
+          </div>
           </div>
         </div>
 

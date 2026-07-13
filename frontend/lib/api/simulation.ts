@@ -111,9 +111,16 @@ export const deleteSimulation = (simulationId: string) =>
 export const getAnalyticsStatus = (simulationId: string) =>
   engineClient.get<{ ready: boolean }>(`/analytics-status/${simulationId}`).then(r => r.data)
 
-// GET /simulation/{simulation_id}/export — returns ZIP stream
-export const getSimulationExportUrl = (simulationId: string) =>
-  `${engineClient.defaults.baseURL}/simulation/${simulationId}/export`
+// GET /simulation/{simulation_id}/export — direct engine URL for a plain <a> navigation
+// (not fetched as a JS blob) so the browser honors Content-Disposition natively. Pair
+// with a cheap existence check (getRunConfig) before navigating, so a stale/deleted
+// simulation id surfaces as a clear error instead of a silently-downloaded 404 body.
+// `filename` (optional) is a human-readable name — e.g. run name + branch label — sent
+// as-is; the engine sanitizes it and falls back to an id-based name if omitted.
+export const getSimulationExportUrl = (simulationId: string, filename?: string) => {
+  const base = `${engineClient.defaults.baseURL}/simulation/${simulationId}/export`
+  return filename ? `${base}?filename=${encodeURIComponent(filename)}` : base
+}
 
 // GET /simulation/{simulation_id}/ending-inventory — used to seed Extend Forecast runs
 export const getEndingInventory = (simulationId: string) =>
