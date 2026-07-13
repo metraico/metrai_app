@@ -1055,14 +1055,14 @@ def get_promos(current_user: dict = Depends(get_current_user)):
             data_acct = _resolve_data_account(cur, retailer_account_id)
             cur.execute(
                 """
-                SELECT p.promo_id::text, p.promo_name, p.start_date::text, p.end_date::text,
+                SELECT p.promo_id::text, p.promo_name, p.event_type, p.start_date::text, p.end_date::text,
                        p.demand_multiplier, pg.promo_group_name,
                        array_agg(pgi.item_id::text) AS item_ids
                 FROM promos p
                 JOIN promo_groups pg ON p.promo_group_id = pg.promo_group_id
                 JOIN promo_group_items pgi ON pg.promo_group_id = pgi.promo_group_id
                 WHERE p.retailer_account_id = %s AND p.simulation_id IS NULL
-                GROUP BY p.promo_id, p.promo_name, p.start_date, p.end_date,
+                GROUP BY p.promo_id, p.promo_name, p.event_type, p.start_date, p.end_date,
                          p.demand_multiplier, pg.promo_group_name
                 ORDER BY p.start_date
                 """,

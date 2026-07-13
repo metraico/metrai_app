@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode, Lock } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode, Lock, CheckCircle2 } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
@@ -782,13 +782,16 @@ export default function SimulationResultsPage() {
   const childBranches = allRuns.filter(r => r.parent_simulation_id === simulationId)
   const reactiveChild = childBranches.find(r => r.branch_type === 'reactive') || null
   const adaptiveChild = childBranches.find(r => r.branch_type === 'adaptive') || null
+  const isHls = scenarioType === 'hidden_lost_sales' || (hlsData !== null && hlsData.disruption_windows.length > 0)
   // HLS-only — driven by child simulations whose parent_simulation_id === this run.
   // Promo scenarios use hasPromoBranches (declared earlier, driven by rollingSession.branches).
-  const hasHlsBranches = childBranches.length > 0
+  // Gated on isHls because the engine forks child sims the same way (parent_simulation_id)
+  // for BOTH HLS branching and promo rolling-forecast branching — without this check, a
+  // promo run with reactive/adaptive branches would show both toggles at once.
+  const hasHlsBranches = isHls && childBranches.length > 0
   const bothBranchesCompleted =
     reactiveChild?.simulation_status === 'COMPLETED' &&
     adaptiveChild?.simulation_status === 'COMPLETED'
-  const isHls = scenarioType === 'hidden_lost_sales' || (hlsData !== null && hlsData.disruption_windows.length > 0)
   const showCompareButton = isHls && !hasHlsBranches && currentRun?.branch_type == null && !currentRun?.parent_simulation_id
   // Selected-branch sim id (may be a not-yet-run child); used to know which branch is active.
   const selectedBranchSimId =
@@ -2046,6 +2049,14 @@ export default function SimulationResultsPage() {
                   {selectedBranch === 'base' ? 'Main-line' : selectedBranch === 'reactive' ? 'Reactive' : 'Adaptive'}
                 </span>
               )}
+              {rollingSession?.status === 'completed' && (
+                <span
+                  title="This rolling forecast has reached its total forecast end date — Edit Setup and Run Weeks are no longer available."
+                  className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700"
+                >
+                  <CheckCircle2 size={11} /> Forecast Complete
+                </span>
+              )}
               <button
                 onClick={() => setYamlModalOpen(true)}
                 title="View run YAML config"
@@ -2266,50 +2277,49 @@ export default function SimulationResultsPage() {
               </div>
             )}
 
-            {hasHlsBranches && (() => {
-              const branchOpts: Array<{ v: 'base' | 'reactive' | 'adaptive'; label: string; activeCls: string; enabled: boolean }> = [
-                { v: 'base',     label: 'Main-line', activeCls: 'bg-charcoal-blue-900 text-white shadow',      enabled: true },
-                { v: 'reactive', label: 'Reactive',  activeCls: 'bg-rose-500 text-white shadow',               enabled: !!reactiveChild },
-                { v: 'adaptive', label: 'Adaptive',  activeCls: 'bg-emerald-500 text-white shadow',            enabled: !!adaptiveChild },
-              ]
-              const helper =
-                selectedBranch === 'reactive' ? '↑ Full correction based on avg historical performance'
-                : selectedBranch === 'adaptive' ? 'Base forecast — no dampening applied'
-                : 'Showing main-line simulation data'
-              return (
-                <div className="mb-5 flex items-center gap-3 rounded-xl border border-charcoal-blue-200 bg-white px-4 py-2 shadow-sm">
-                  <span className="text-xs font-semibold text-charcoal-blue-500">Branch view:</span>
-                  <div className="inline-flex items-center rounded-xl border border-charcoal-blue-200 bg-charcoal-blue-50 p-0.5">
-                    {branchOpts.map(opt => {
-                      const active = selectedBranch === opt.v
-                      return (
-                        <button
-                          key={opt.v}
-                          disabled={!opt.enabled}
-                          onClick={() => opt.enabled && setSelectedBranch(opt.v)}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-                            active
-                              ? opt.activeCls
-                              : opt.enabled
-                                ? 'text-charcoal-blue-600 hover:bg-white'
-                                : 'text-charcoal-blue-300 cursor-not-allowed'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <span className={`text-[11px] font-medium ${
-                    selectedBranch === 'reactive' ? 'text-rose-600'
-                    : selectedBranch === 'adaptive' ? 'text-emerald-600'
-                    : 'text-charcoal-blue-400'
-                  }`}>
-                    {helper}
-                  </span>
+            {/* HLS branch toggle — reuses the same right-aligned pill UI as the promo-forecast
+                branch toggle below (hasPromoBranches), just driven by selectedBranch/child sims
+                instead of activeBranchView/rolling-forecast branches. */}
+            {hasHlsBranches && (
+              <div className="mb-4 flex items-center justify-end gap-2">
+                <span className="text-[10px] font-semibold text-charcoal-blue-400">Branch view:</span>
+                <div className="flex rounded-full border border-charcoal-blue-200 bg-white overflow-hidden text-[10px] font-bold">
+                  {([
+                    { v: 'base' as const,     label: 'Main-line', enabled: true },
+                    { v: 'reactive' as const, label: 'Reactive',  enabled: !!reactiveChild },
+                    { v: 'adaptive' as const, label: 'Adaptive',  enabled: !!adaptiveChild },
+                  ]).map(opt => (
+                    <button
+                      key={opt.v}
+                      disabled={!opt.enabled}
+                      onClick={() => opt.enabled && setSelectedBranch(opt.v)}
+                      className={`px-3 py-1 transition-all ${
+                        selectedBranch === opt.v
+                          ? opt.v === 'reactive'
+                            ? 'bg-rose-500 text-white'
+                            : opt.v === 'adaptive'
+                            ? 'bg-emerald-500 text-white'
+                            : 'bg-charcoal-blue-700 text-white'
+                          : opt.enabled
+                            ? 'text-charcoal-blue-500 hover:bg-charcoal-blue-50'
+                            : 'text-charcoal-blue-300 cursor-not-allowed'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
                 </div>
-              )
-            })()}
+                <span className="text-[9px] text-charcoal-blue-400">
+                  {selectedBranch === 'reactive' && '↑ Full correction based on avg historical performance'}
+                  {selectedBranch === 'adaptive' && 'Base forecast — no dampening applied'}
+                  {selectedBranch === 'base' && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-charcoal-blue-50 px-2 py-0.5 font-semibold text-charcoal-blue-500">
+                      Showing main-line simulation data
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
 
             {/* Promo branch forecast toggle — shown when reactive + adaptive branch chunks both exist */}
             {hasPromoBranches && (

@@ -16,7 +16,7 @@ import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown, GitBranch } from 'lucide-react'
+import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown, GitBranch, Lock } from 'lucide-react'
 import type { PromoGroupResponse, PromoResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
 import { computeBranchOverrideRows } from './branch-overrides'
 import { toIsoWeek, formatDateUS, parseToISO } from '@/lib/utils'
@@ -62,7 +62,7 @@ function buildRollingSessionYaml(totalEndDate: string): string {
     `#`,
     `# Each promo entry:`,
     `#   name        — must match a promo group name in the catalog (drives item associations)`,
-    `#   promo_name  — optional: specific promo type e.g. BOGO_Ad, 2/$6 (display/audit only)`,
+    `#   event       — optional: specific promo event type e.g. BOGO Ad, 2/$6 Ad (display/audit only)`,
     `#   start/end   — MM-DD-YYYY, end must be >= start`,
     `#   multiplier  — 1.0 = baseline, 1.25 = +25% demand boost`,
     ``,
@@ -90,13 +90,13 @@ function replaceTotalEndDate(yaml: string, newDate: string): string {
 function appendPromoSnippet(
   yaml: string,
   promoGroupName: string,
-  promoName: string | null,
+  eventType: string | null,
   startDate: string,
   endDate: string,
   multiplier = 1.0,
 ): string {
-  const nameLines = promoName
-    ? `  - name: "${promoGroupName}"\n    promo_name: "${promoName}"\n`
+  const nameLines = eventType
+    ? `  - name: "${promoGroupName}"\n    event: "${eventType}"\n`
     : `  - name: "${promoGroupName}"\n`
   const snippet = `${nameLines}    start: "${formatDateUS(startDate)}"\n    end: "${formatDateUS(endDate)}"\n    multiplier: ${multiplier}`
 
@@ -115,6 +115,133 @@ function validateRollingYaml(yaml: string): string | null {
   // extractTotalEndDate normalises to YYYY-MM-DD internally
   if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid date`
   return null
+}
+
+// ── Multi-week promo linter ───────────────────────────────────────────────────
+// The simulation engine buckets demand by ISO week (Mon–Sun) and applies a promo's
+// full multiplier to EVERY week any part of [start, end] touches — there's no
+// partial-week effect. A promo range that crosses a week boundary silently boosts
+// two (or more) weeks instead of one. This is a non-blocking nudge, not a guard —
+// see _apply_promo_yaml_overrides in the engine for where that'd need to be enforced.
+
+/** Monday→Sunday bounds (US display format) of the ISO week containing a YYYY-MM-DD date. */
+function weekBoundsUS(iso: string): { start: string; end: string } {
+  const d = new Date(iso + 'T12:00:00')
+  const dow = d.getDay() || 7 // Mon=1 .. Sun=7
+  const monday = new Date(d)
+  monday.setDate(d.getDate() - (dow - 1))
+  const sunday = new Date(monday)
+  sunday.setDate(monday.getDate() + 6)
+  const asISO = (x: Date) => x.toISOString().slice(0, 10)
+  return { start: formatDateUS(asISO(monday)), end: formatDateUS(asISO(sunday)) }
+}
+
+/** Count distinct ISO weeks touched by [startISO, endISO] — mirrors the engine's day-by-day bucketing. */
+function countIsoWeeksSpanned(startISO: string, endISO: string): number {
+  const seen = new Set<string>()
+  const cur = new Date(startISO + 'T12:00:00')
+  const end = new Date(endISO + 'T12:00:00')
+  while (cur <= end) {
+    seen.add(toIsoWeek(cur.toISOString().slice(0, 10)))
+    cur.setDate(cur.getDate() + 1)
+  }
+  return seen.size
+}
+
+interface PromoWeekWarning {
+  key: string
+  name: string
+  event?: string
+  start: string
+  end: string
+  weeksSpanned: number
+  startWeek: { start: string; end: string }
+  endWeek: { start: string; end: string }
+}
+
+/** Parse the promo YAML and flag any entry whose [start, end] spans more than one ISO week. */
+function findMultiWeekPromoWarnings(yamlText: string): PromoWeekWarning[] {
+  let parsed: any
+  try {
+    parsed = yaml.load(yamlText)
+  } catch {
+    return [] // yamlError already surfaces parse failures — don't double-report here
+  }
+  const promos = parsed?.promos
+  if (!Array.isArray(promos)) return []
+
+  const warnings: PromoWeekWarning[] = []
+  promos.forEach((p: any, idx: number) => {
+    if (!p?.start || !p?.end) return
+    const startISO = parseToISO(String(p.start))
+    const endISO = parseToISO(String(p.end))
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO) || !/^\d{4}-\d{2}-\d{2}$/.test(endISO)) return
+
+    const weeksSpanned = countIsoWeeksSpanned(startISO, endISO)
+    if (weeksSpanned <= 1) return
+
+    warnings.push({
+      key: `${p.name ?? 'promo'}-${idx}`,
+      name: String(p.name ?? 'Promo'),
+      event: p.event ? String(p.event) : undefined,
+      start: formatDateUS(startISO),
+      end: formatDateUS(endISO),
+      weeksSpanned,
+      startWeek: weekBoundsUS(startISO),
+      endWeek: weekBoundsUS(endISO),
+    })
+  })
+  return warnings
+}
+
+// ── Locked (already-simulated) promo rows ─────────────────────────────────────
+// A promo row is "locked" once its window has already been covered by a completed
+// chunk (row.end_date <= session.current_completed_week) — editing it wouldn't
+// change what already ran, so it's excluded from the editable YAML textarea and
+// shown read-only instead. It still must be re-submitted on save, since the
+// backend wholesale-replaces extension_promo_schedules for the session
+// (DELETE + re-INSERT from the posted `promos` list — see create_rolling_session).
+
+interface PromoScheduleRow {
+  id: string
+  promo_name: string
+  promo_group_name: string
+  start_date: string
+  end_date: string
+  demand_multiplier: number
+  performance_pct: number | null
+  original_multiplier: number | null
+}
+
+function isPromoRowLocked(row: PromoScheduleRow, currentCompletedWeek: string): boolean {
+  return !!currentCompletedWeek && row.end_date <= currentCompletedWeek
+}
+
+/** Render one promo row as a YAML list-item block (used both for editable rows and
+ *  when re-appending locked rows to the submitted YAML). */
+function promoRowToYamlBlock(row: PromoScheduleRow): string {
+  const lines = [`  - name: "${row.promo_group_name}"`]
+  if (row.promo_name && row.promo_name !== row.promo_group_name) {
+    lines.push(`    event: "${row.promo_name}"`)
+  }
+  lines.push(
+    `    start: "${formatDateUS(row.start_date)}"`,
+    `    end: "${formatDateUS(row.end_date)}"`,
+    `    multiplier: ${row.demand_multiplier}`,
+  )
+  return lines.join('\n')
+}
+
+/** Re-append locked promo rows to the (editable) YAML right before submission —
+ *  they're hidden from the textarea but must still reach the backend, or the
+ *  wholesale replace in create_rolling_session would delete them. */
+function appendLockedPromosToYaml(yamlText: string, lockedRows: PromoScheduleRow[]): string {
+  if (lockedRows.length === 0) return yamlText
+  const blocks = lockedRows.map(promoRowToYamlBlock).join('\n\n')
+  if (/promos:\s*\[\]/.test(yamlText)) {
+    return yamlText.replace(/promos:\s*\[\]/, `promos:\n${blocks}`)
+  }
+  return yamlText.trimEnd() + '\n\n' + blocks + '\n'
 }
 
 // ── Branch helpers ────────────────────────────────────────────────────────────
@@ -172,6 +299,9 @@ export function RollingForecastModal({
   const [promoGroupCatalog, setPromoGroupCatalog] = useState<PromoGroupResponse[]>([])
   const [promosCatalog, setPromosCatalog] = useState<PromoResponse[]>([])
   const [showPromoDropdown, setShowPromoDropdown] = useState(false)
+  // Promo rows already covered by a completed chunk — shown read-only, re-appended
+  // to the YAML on save (see appendLockedPromosToYaml).
+  const [lockedPromoRows, setLockedPromoRows] = useState<PromoScheduleRow[]>([])
   const [promoSearch, setPromoSearch] = useState('')
   const [savingSetup, setSavingSetup] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -210,27 +340,27 @@ export function RollingForecastModal({
       const skeleton = buildRollingSessionYaml(totalEndDate)
       setYamlContent(skeleton)
       setYamlError(null)
+      setLockedPromoRows([])
     }
   }, [open])
 
   // ── When opened in edit mode, pre-populate YAML from existing session ────
+  // Promo rows already covered by a completed chunk are locked — kept out of the
+  // editable YAML (and shown read-only instead), since editing what already ran
+  // wouldn't change the historical result.
   useEffect(() => {
     if (!open || !existingSession) return
     setModalState('setup')
     setTotalEndDate(existingSession.total_end_date)
+    const currentCompletedWeek = existingSession.current_completed_week || ''
     getSessionPromoSchedules(existingSession.session_id).then(rows => {
+      const locked = rows.filter(r => isPromoRowLocked(r, currentCompletedWeek))
+      const editable = rows.filter(r => !isPromoRowLocked(r, currentCompletedWeek))
+      setLockedPromoRows(locked)
+
       let yaml = buildRollingSessionYaml(existingSession.total_end_date)
-      // Rebuild with existing promos
-      if (rows.length > 0) {
-        const promoLines = rows.map(r => {
-          const lines = [`  - name: "${r.promo_group_name}"`]
-          if (r.promo_name && r.promo_name !== r.promo_group_name) {
-            lines.push(`    promo_name: "${r.promo_name}"`)
-          }
-          lines.push(`    start: "${formatDateUS(r.start_date)}"`, `    end: "${formatDateUS(r.end_date)}"`, `    multiplier: ${r.demand_multiplier}`)
-          return lines.join('\n')
-        }).join('\n\n')
-        yaml = yaml.replace(/promos:\s*\[\]/, `promos:\n${promoLines}`)
+      if (editable.length > 0) {
+        yaml = yaml.replace(/promos:\s*\[\]/, `promos:\n${editable.map(promoRowToYamlBlock).join('\n\n')}`)
       }
       setYamlContent(yaml)
       setYamlError(null)
@@ -293,7 +423,10 @@ export function RollingForecastModal({
       // Create OR update session via YAML POST. Backend is idempotent on session_id
       // — for an existing active session it replaces extension_promo_schedules,
       // updates total_end_date, and invalidates+regenerates post-current demand.
-      const sess = await createRollingSessionYaml(baseSimulationId, yamlContent)
+      // Locked (already-simulated) promo rows aren't in the editable YAML — re-append
+      // them here so the backend's wholesale replace doesn't drop them.
+      const submittedYaml = appendLockedPromosToYaml(yamlContent, lockedPromoRows)
+      const sess = await createRollingSessionYaml(baseSimulationId, submittedYaml)
       setSession(sess)
       onSessionUpdated(sess)
 
@@ -427,7 +560,7 @@ export function RollingForecastModal({
     setYamlContent(prev => appendPromoSnippet(
       prev,
       promo.promo_group_name ?? promo.promo_name,
-      promo.promo_name,
+      promo.event_type || null,
       today,
       weekLater,
       promo.demand_multiplier,
@@ -516,6 +649,9 @@ export function RollingForecastModal({
     }
   }
 
+  // Non-blocking nudge — recomputed on every YAML keystroke, see findMultiWeekPromoWarnings above.
+  const promoWeekWarnings = findMultiWeekPromoWarnings(yamlContent)
+
   // Build a map of group name → individual promos for grouped picker display
   const promosByGroup = promosCatalog.reduce<Record<string, PromoResponse[]>>((acc, p) => {
     const key = p.promo_group_name ?? ''
@@ -529,7 +665,7 @@ export function RollingForecastModal({
     (g.category ?? '').toLowerCase().includes(promoSearch.toLowerCase()) ||
     (g.brand ?? '').toLowerCase().includes(promoSearch.toLowerCase()) ||
     (promosByGroup[g.promo_group_name] ?? []).some(p =>
-      p.promo_name.toLowerCase().includes(promoSearch.toLowerCase())
+      p.event_type.toLowerCase().includes(promoSearch.toLowerCase())
     )
   )
 
@@ -593,17 +729,21 @@ export function RollingForecastModal({
                     <label className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">
                       Promo Schedule YAML
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => setShowPromoDropdown(v => !v)}
-                      className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 hover:text-amber-700"
-                    >
-                      <Plus size={11} /> Add promo
-                      <ChevronDown size={10} className={showPromoDropdown ? 'rotate-180 transition-transform' : 'transition-transform'} />
-                    </button>
+                    {/* Add promo is only offered during first-time setup — once a session
+                        exists (edit setup / regenerate), the schedule is edited via the YAML. */}
+                    {!existingSession && (
+                      <button
+                        type="button"
+                        onClick={() => setShowPromoDropdown(v => !v)}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 hover:text-amber-700"
+                      >
+                        <Plus size={11} /> Add promo
+                        <ChevronDown size={10} className={showPromoDropdown ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                      </button>
+                    )}
                   </div>
 
-                  {showPromoDropdown && (
+                  {!existingSession && showPromoDropdown && (
                     <div className="absolute right-0 top-6 z-20 w-72 rounded-xl border border-charcoal-blue-100 bg-white shadow-xl p-3 space-y-2">
                       <input
                         value={promoSearch}
@@ -614,7 +754,17 @@ export function RollingForecastModal({
                       />
                       <div className="max-h-56 overflow-y-auto space-y-1">
                         {filteredGroups.map(g => {
-                          const groupPromos = promosByGroup[g.promo_group_name] ?? []
+                          const allGroupPromos = promosByGroup[g.promo_group_name] ?? []
+                          // Collapse to unique (event_type, multiplier) combos — the specific
+                          // dates repeat across the year but get rewritten in the YAML, so only
+                          // the event + multiplier distinguish one pickable option from another.
+                          const seenPromoKeys = new Set<string>()
+                          const groupPromos = allGroupPromos.filter(p => {
+                            const key = `${p.event_type ?? ''}|${p.demand_multiplier}`
+                            if (seenPromoKeys.has(key)) return false
+                            seenPromoKeys.add(key)
+                            return true
+                          })
                           return (
                             <div key={g.promo_group_id}>
                               {/* Group header — non-clickable label */}
@@ -633,7 +783,7 @@ export function RollingForecastModal({
                                     className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[10px] hover:bg-charcoal-blue-50 border border-transparent hover:border-charcoal-blue-100"
                                   >
                                     <Plus size={9} className="flex-shrink-0 text-amber-500" />
-                                    <span className="flex-1 font-semibold text-charcoal-blue-800 truncate">{p.promo_name}</span>
+                                    <span className="flex-1 font-semibold text-charcoal-blue-800 truncate">{[g.promo_group_name, p.event_type].filter(Boolean).join(' · ')}</span>
                                     <span className="text-charcoal-blue-400 tabular-nums">×{p.demand_multiplier.toFixed(2)}</span>
                                   </button>
                                 ))
@@ -660,6 +810,29 @@ export function RollingForecastModal({
                   )}
                 </div>
 
+                {/* Already-simulated promos — read-only. These rows fall within a chunk that
+                    already ran, so editing them here wouldn't change the historical result;
+                    they're re-appended to the YAML on save (see appendLockedPromosToYaml). */}
+                {lockedPromoRows.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400">
+                      <Lock size={10} /> Already Simulated — locked
+                    </p>
+                    <div className="space-y-1 rounded-lg border border-charcoal-blue-100 bg-charcoal-blue-50/60 px-2.5 py-2">
+                      {lockedPromoRows.map(row => (
+                        <div key={row.id} className="flex items-center gap-2 text-[10px] text-charcoal-blue-500">
+                          <Lock size={9} className="flex-shrink-0 text-charcoal-blue-300" />
+                          <span className="flex-1 truncate font-semibold text-charcoal-blue-700">
+                            {[row.promo_group_name, row.promo_name !== row.promo_group_name ? row.promo_name : null].filter(Boolean).join(' · ')}
+                          </span>
+                          <span className="text-charcoal-blue-400">{formatDateUS(row.start_date)} → {formatDateUS(row.end_date)}</span>
+                          <span className="tabular-nums text-charcoal-blue-400">×{row.demand_multiplier.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* YAML editor textarea */}
                 <div className="space-y-1">
                   <textarea
@@ -681,6 +854,25 @@ export function RollingForecastModal({
                     <p className="flex items-center gap-1.5 text-[10px] font-semibold text-rose-600">
                       <AlertCircle size={11} /> {yamlError}
                     </p>
+                  )}
+                  {/* Non-blocking nudge: the engine applies a promo's full multiplier to every
+                      ISO week its [start, end] touches — a range crossing a week boundary
+                      silently boosts 2+ weeks instead of 1. This doesn't stop Generate Demand;
+                      it just shows the actual week split so a fat-fingered date is obvious. */}
+                  {promoWeekWarnings.length > 0 && (
+                    <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/70 px-2.5 py-2">
+                      {promoWeekWarnings.map(w => (
+                        <p key={w.key} className="flex items-start gap-1.5 text-[10px] font-medium leading-relaxed text-amber-700">
+                          <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
+                          <span>
+                            <span className="font-bold">{w.name}{w.event ? ` · ${w.event}` : ''}</span>
+                            {' '}— {w.start} → {w.end} spans {w.weeksSpanned} weeks.{' '}
+                            Week of start: <span className="font-semibold">{w.startWeek.start} → {w.startWeek.end}</span>.{' '}
+                            Week of end: <span className="font-semibold">{w.endWeek.start} → {w.endWeek.end}</span>.
+                          </span>
+                        </p>
+                      ))}
+                    </div>
                   )}
                 </div>
 
