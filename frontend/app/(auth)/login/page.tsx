@@ -33,14 +33,13 @@ export default function LoginPage() {
 
     try {
       const data = await login({ username: signInForm.username, password: signInForm.password })
-      const payload = JSON.parse(atob(data.access_token.split('.')[1]))
 
       setAuth({
-        userId: payload.sub ?? null,
-        fullName: payload.username ?? null,
+        userId: data.user_id ?? null,
+        fullName: data.full_name ?? null,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
-        retailerAccountId: null,
+        retailerAccountId: data.retailer_account_id ?? null,
       })
 
       router.push('/retailers')
@@ -73,13 +72,12 @@ export default function LoginPage() {
 
       // Register returns user info only — sign in to get tokens
       const data = await login({ username: signUpForm.username, password: signUpForm.password })
-      const payload = JSON.parse(atob(data.access_token.split('.')[1]))
       setAuth({
-        userId: payload.sub ?? null,
-        fullName: payload.username ?? null,
+        userId: data.user_id ?? null,
+        fullName: data.full_name ?? null,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
-        retailerAccountId: null,
+        retailerAccountId: data.retailer_account_id ?? null,
       })
 
       router.push('/retailers')

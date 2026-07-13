@@ -21,6 +21,7 @@ import { RunChunkModal } from './run-chunk-modal'
 import { computeBranchOverrideRows, branchOverridesFromRows } from './branch-overrides'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
+import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
 import { toIsoWeek } from '@/lib/utils'
 
@@ -694,7 +695,7 @@ export default function SimulationResultsPage() {
   const [cmpAdaptiveShip, setCmpAdaptiveShip] = useState<any[]>([])
   const [cmpLoading, setCmpLoading] = useState(false)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
-  const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
+  const { analyticsStatus, setAnalyticsStatus, resetAnalyticsStatus } = useAnalyticsStatusStore()
   const analyticsStatusRef = useRef<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
   const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -806,14 +807,27 @@ export default function SimulationResultsPage() {
       : simulationId
 
   // Anchor for the branch forecast tail: last week of the (last) stockout disruption window.
-  const stockoutEndWeek = (() => {
+  // Also compute the ISO week where the branch forecast *starts* — this is what the engine
+  // returns as fork_week (iso_week(max(window_end) + 7 days)) and what the "Forecast Start"
+  // ReferenceLine should point to. stockoutEndWeek stays as the pre-forecast anchor used by
+  // `w > stockoutEndWeek` comparisons that gate merge/cut behavior.
+  const lastWindowEnd = (() => {
     if (!hlsData || hlsData.disruption_windows.length === 0) return null
     const last = hlsData.disruption_windows
       .map(w => w.window_end)
       .filter(Boolean)
       .sort()
       .slice(-1)[0]
-    return last ? toIsoWeek(last) : null
+    return last || null
+  })()
+  const stockoutEndWeek = lastWindowEnd ? toIsoWeek(lastWindowEnd) : null
+  const forecastStartWeek = (() => {
+    if (!lastWindowEnd) return null
+    // Mirror the engine: iso_week(window_end + 7 days) so we always land in the ISO week
+    // AFTER the disruption's final week, regardless of the weekday of window_end.
+    const d = new Date(lastWindowEnd + 'T12:00:00')
+    d.setDate(d.getDate() + 7)
+    return toIsoWeek(d.toISOString().slice(0, 10))
   })()
   // Cyan for both branches so the Planner Forecast bar doesn't collide with
   // Lost Sales (red) on Reactive views. Matches the rolling-forecast pattern.
@@ -1769,6 +1783,14 @@ export default function SimulationResultsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus, activeBranchView])
 
+  // Reset shared analytics status when simulation changes / on unmount so a fresh view
+  // doesn't inherit a stale READY from a previous sim (filters would incorrectly stay enabled).
+  useEffect(() => {
+    resetAnalyticsStatus()
+    return () => resetAnalyticsStatus()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simulationId])
+
   // Poll analytics-status endpoint until CH write is done
   useEffect(() => {
     if (pageState !== 'ready' || (analyticsStatus !== 'PENDING' && analyticsStatus !== null)) return
@@ -2543,8 +2565,8 @@ export default function SimulationResultsPage() {
                           {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                             <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                           )}
-                          {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
-                            <ReferenceLine x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                          {showBranchForecastTail && forecastStartWeek && branchTailColor && (
+                            <ReferenceLine x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                           )}
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -2579,8 +2601,8 @@ export default function SimulationResultsPage() {
                       {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                         <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                       )}
-                      {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
-                        <ReferenceLine x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                      {showBranchForecastTail && forecastStartWeek && branchTailColor && (
+                        <ReferenceLine x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                       )}
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -2625,8 +2647,8 @@ export default function SimulationResultsPage() {
                       {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                         <ReferenceLine yAxisId="left" x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                       )}
-                      {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
-                        <ReferenceLine yAxisId="left" x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                      {showBranchForecastTail && forecastStartWeek && branchTailColor && (
+                        <ReferenceLine yAxisId="left" x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                       )}
                       <Line yAxisId="right" dataKey="avg_fill_rate" stroke="#f59e0b" name="Fill Rate" type="monotone" strokeWidth={2} dot={false} />
                       <ReferenceLine yAxisId="right" y={0.95} stroke="#d1d5db" strokeDasharray="5 5" />
@@ -2661,8 +2683,8 @@ export default function SimulationResultsPage() {
                       {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
                         <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
                       )}
-                      {showBranchForecastTail && stockoutEndWeek && branchTailColor && (
-                        <ReferenceLine x={stockoutEndWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
+                      {showBranchForecastTail && forecastStartWeek && branchTailColor && (
+                        <ReferenceLine x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                       )}
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -2802,7 +2824,7 @@ export default function SimulationResultsPage() {
                   <Bar yAxisId="left" dataKey="stockout_qty" fill="#ef4444" name="Lost Sales" barSize={8} />
                   <Line yAxisId="right" dataKey="on_hand_quantity" stroke="#10b981" name="On Hand" type="monotone" strokeWidth={2} dot={false} />
                   <Line yAxisId="right" dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
-                  {stockoutEndWeek && <ReferenceLine yAxisId="left" x={stockoutEndWeek} stroke="#06b6d4" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#06b6d4' }} />}
+                  {forecastStartWeek && <ReferenceLine yAxisId="left" x={forecastStartWeek} stroke="#06b6d4" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#06b6d4' }} />}
                 </ComposedChart>
               </ResponsiveContainer>
             </div>

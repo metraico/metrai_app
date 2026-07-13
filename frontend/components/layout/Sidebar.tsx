@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useRouter, useParams, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
 import { useFilterStore } from '@/lib/store/filterStore'
+import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
 import { logout } from '@/lib/api/auth'
 import { LogOut, Home, BarChart3, Plus, Settings, SlidersHorizontal, ChevronLeft, RotateCcw } from 'lucide-react'
 import { FilterSelect } from '@/components/ui/filter-select'
@@ -22,6 +23,7 @@ export function Sidebar() {
     filteredItemOptions, filteredSubcategoryOptions, filteredBrandOptions,
     resetFilters, setFilters,
   } = useFilterStore()
+  const { analyticsStatus } = useAnalyticsStatusStore()
 
   const retailerAccountId = params.retailerAccountId as string
   const runId = params.runId as string | undefined
@@ -29,6 +31,7 @@ export function Sidebar() {
   // Filter mode: only when viewing a simulation result
   const isSimulationRun = !!(retailerAccountId && runId && pathname.includes('/simulation/') && !pathname.includes('/new'))
   const hasFilters = !!(globalItem || globalStore || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
+  const filtersReady = analyticsStatus === 'READY'
 
   const handleLogout = async () => {
     if (refreshToken) logout().catch(() => {})
@@ -118,6 +121,7 @@ export function Sidebar() {
                       value={globalCategory}
                       options={categoryOptions}
                       onChange={v => applyMetaFilter(v, '', '')}
+                      disabled={!filtersReady}
                     />
                   )}
                   {subcategoryOptions.length > 0 && (
@@ -127,6 +131,7 @@ export function Sidebar() {
                       value={globalSubcategory}
                       options={filteredSubcategoryOptions(globalCategory)}
                       onChange={v => applyMetaFilter(globalCategory, v, '')}
+                      disabled={!filtersReady}
                     />
                   )}
                   {brandOptions.length > 0 && (
@@ -136,6 +141,7 @@ export function Sidebar() {
                       value={globalBrand}
                       options={filteredBrandOptions(globalCategory, globalSubcategory)}
                       onChange={v => applyMetaFilter(globalCategory, globalSubcategory, v)}
+                      disabled={!filtersReady}
                     />
                   )}
                   <FilterSelect
@@ -144,6 +150,7 @@ export function Sidebar() {
                     value={globalItem}
                     options={filteredItemOptions(globalCategory, globalSubcategory, globalBrand)}
                     onChange={v => applyFilter(v, globalStore, globalSdc, globalRdc)}
+                    disabled={!filtersReady}
                   />
                 </div>
 
@@ -156,6 +163,7 @@ export function Sidebar() {
                     value={globalStore}
                     options={filteredStoreOptions(globalItem)}
                     onChange={v => applyFilter(globalItem, v, globalSdc, globalRdc)}
+                    disabled={!filtersReady}
                   />
                 </div>
 
@@ -168,6 +176,7 @@ export function Sidebar() {
                     value={globalSdc}
                     options={filteredSdcOptions(globalItem, globalRdc)}
                     onChange={v => applyFilter(globalItem, globalStore, v, globalRdc)}
+                    disabled={!filtersReady}
                   />
                   <FilterSelect
                     variant="dark"
@@ -175,6 +184,7 @@ export function Sidebar() {
                     value={globalRdc}
                     options={filteredRdcOptions(globalItem, globalSdc)}
                     onChange={v => applyFilter(globalItem, globalStore, globalSdc, v)}
+                    disabled={!filtersReady}
                   />
                 </div>
               </>
@@ -185,7 +195,7 @@ export function Sidebar() {
           <div className="border-t border-white/10 px-4 py-3">
             <button
               onClick={resetFilters}
-              disabled={!hasFilters}
+              disabled={!hasFilters || !filtersReady}
               className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-charcoal-blue-400/30 px-3 py-1.5 text-xs font-semibold text-charcoal-blue-300 transition-all hover:border-majorelle-blue-500/50 hover:bg-majorelle-blue-500/10 hover:text-majorelle-blue-300 disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <RotateCcw size={12} /> Reset Filters
