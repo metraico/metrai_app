@@ -21,6 +21,7 @@ import { RunChunkModal } from './run-chunk-modal'
 import { computeBranchOverrideRows, branchOverridesFromRows } from './branch-overrides'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
+import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
 import { toIsoWeek } from '@/lib/utils'
 
@@ -694,7 +695,7 @@ export default function SimulationResultsPage() {
   const [cmpAdaptiveShip, setCmpAdaptiveShip] = useState<any[]>([])
   const [cmpLoading, setCmpLoading] = useState(false)
   const [meta, setMeta] = useState<AnalyticsMeta | null>(null)
-  const [analyticsStatus, setAnalyticsStatus] = useState<'PENDING' | 'READY' | 'FAILED' | null>(null)
+  const { analyticsStatus, setAnalyticsStatus, resetAnalyticsStatus } = useAnalyticsStatusStore()
   const analyticsStatusRef = useRef<'PENDING' | 'READY' | 'FAILED' | null>(null)
   const [analyticsReadyVisible, setAnalyticsReadyVisible] = useState(true)
   const bannerDismissRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1765,6 +1766,14 @@ export default function SimulationResultsPage() {
     fetchDCInvFiltered(globalItem, globalRdc, globalSdc, globalCategory, globalSubcategory, globalBrand)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyticsStatus, activeBranchView])
+
+  // Reset shared analytics status when simulation changes / on unmount so a fresh view
+  // doesn't inherit a stale READY from a previous sim (filters would incorrectly stay enabled).
+  useEffect(() => {
+    resetAnalyticsStatus()
+    return () => resetAnalyticsStatus()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simulationId])
 
   // Poll analytics-status endpoint until CH write is done
   useEffect(() => {
