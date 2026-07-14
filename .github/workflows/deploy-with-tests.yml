@@ -60,6 +60,9 @@ jobs:
             -f metrai_simulation_engine/db/pg_init.sql
           # Apply every migration in lexicographic order. Migrations use
           # IF NOT EXISTS / IF EXISTS guards, so re-running them is a no-op.
+          # `nullglob` so the loop is a no-op when no migration files exist
+          # (they were consolidated into pg_init.sql in the sim-engine repo).
+          shopt -s nullglob
           for f in metrai_simulation_engine/db/pg_migrate_*.sql; do
             echo "Applying $(basename "$f")"
             psql -h localhost -p 5433 -U metrai -d metrai -v ON_ERROR_STOP=1 -f "$f"
