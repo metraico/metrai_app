@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronRight, FileCode, Lock, CheckCircle2 } from 'lucide-react'
+import { Download, Package, Truck, ShoppingCart, AlertCircle, Loader2, ChevronLeft, ChevronDown, ChevronRight, FileCode, Lock, CheckCircle2 } from 'lucide-react'
 import * as yaml from 'js-yaml'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
