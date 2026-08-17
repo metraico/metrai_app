@@ -8,3 +8,5 @@ __pycache__/
 .venv/
 .playwright-mcp/
 OneDrive_1_08-05-2026/
+node_modules/
+.next/
