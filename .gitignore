@@ -6,3 +6,9 @@ __pycache__/
 .DS_Store
 .pem
 .venv/
+.playwright-mcp/
+OneDrive_1_08-05-2026/
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
