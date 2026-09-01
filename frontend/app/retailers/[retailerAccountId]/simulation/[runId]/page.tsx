@@ -23,7 +23,7 @@ import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
-import { toIsoWeek } from '@/lib/utils'
+import { toIsoWeek, formatDateDisplay } from '@/lib/utils'
 
 // ── Export branch options ─────────────────────────────────────────────────────
 
@@ -3133,8 +3133,8 @@ export default function SimulationResultsPage() {
                   {promoEntries.map((p: any, i: number) => (
                     <tr key={i} className="border-b border-charcoal-blue-50">
                       <td className="py-1 pr-4 font-medium text-charcoal-blue-900">{p.promo_name}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.start_date}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.end_date}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{formatDateDisplay(p.start_date)}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{formatDateDisplay(p.end_date)}</td>
                       <td className="py-1 text-charcoal-blue-600">{p.demand_multiplier ?? '—'}</td>
                     </tr>
                   ))}

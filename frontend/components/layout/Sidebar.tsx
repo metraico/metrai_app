@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useParams, usePathname } from 'next/navigation'
 import { useFilterStore } from '@/lib/store/filterStore'
 import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
-import { Home, BarChart3, Plus, SlidersHorizontal, ChevronLeft, RotateCcw } from 'lucide-react'
+import { Home, BarChart3, SlidersHorizontal, ChevronLeft, RotateCcw } from 'lucide-react'
 import { FilterSelect } from '@/components/ui/filter-select'
 
 export function Sidebar() {
@@ -33,7 +33,6 @@ export function Sidebar() {
     pathname === `/retailers/${retailerAccountId}` ||
     pathname === `/retailers/${retailerAccountId}/runs`
   )
-  const isNewSim = retailerAccountId && pathname.includes('/simulation/new')
   const isSimulation = retailerAccountId && pathname.includes('/simulation/') && !pathname.includes('/new')
 
   const applyFilter = (item: string, store: string, sdc: string, rdc: string) => {
@@ -60,7 +59,6 @@ export function Sidebar() {
   const navItems = [
     { label: 'Retailers', href: '/retailers', icon: Home, current: !retailerAccountId },
     retailerAccountId && { label: 'Runs', href: `/retailers/${retailerAccountId}`, icon: BarChart3, current: !!isRuns },
-    retailerAccountId && { label: 'New Simulation', href: `/retailers/${retailerAccountId}/simulation/new`, icon: Plus, current: !!isNewSim },
   ].filter(Boolean)
 
   return (

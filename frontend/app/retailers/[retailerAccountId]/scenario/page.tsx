@@ -47,13 +47,13 @@ scenario:
   disruptions:
     - dc: DC_EAST
       items: all
-      window_start: "2024-02-05"
-      window_end: "2024-02-11"
+      window_start: "02/05/2024"
+      window_end: "02/11/2024"
       mode: stockout
     - dc: DC_WEST
       items: all
-      window_start: "2024-04-01"
-      window_end: "2024-04-17"
+      window_start: "04/01/2024"
+      window_end: "04/17/2024"
       mode: outage
       fulfillment_pct: 30
 `
