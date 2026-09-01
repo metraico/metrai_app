@@ -23,7 +23,7 @@ import { useSimulationStore } from '@/lib/store/simulationStore'
 import { useFilterStore } from '@/lib/store/filterStore'
 import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
-import { toIsoWeek } from '@/lib/utils'
+import { toIsoWeek, formatDateDisplay } from '@/lib/utils'
 
 // ── Export branch options ─────────────────────────────────────────────────────
 
@@ -465,7 +465,7 @@ function ComparisonTooltip({ active, payload, label, promoWeekMap }: {
       </div>
       {!isFutureOnly && (
         <div className="mb-1.5 space-y-0.5">
-          <p className="flex justify-between gap-4 text-violet-700"><span>Demand</span><span className="font-medium">{demand.toLocaleString()}</span></p>
+          <p className="flex justify-between gap-4 text-violet-700"><span>Forecasted Demand</span><span className="font-medium">{demand.toLocaleString()}</span></p>
           <p className="flex justify-between gap-4 text-emerald-700"><span>Sales</span><span className="font-medium">{sales.toLocaleString()}</span></p>
           <p className="flex justify-between gap-4 text-red-600"><span>Lost Sales</span><span className="font-medium">{lost.toLocaleString()}</span></p>
         </div>
@@ -2006,7 +2006,7 @@ export default function SimulationResultsPage() {
           <YAxis yAxisId="right" orientation="right" domain={[0, comparisonRightMax]} allowDataOverflow tickFormatter={yAxisTickFormatter} />
           <Tooltip content={<ComparisonTooltip promoWeekMap={promoWeekMap} />} />
           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-          <Bar yAxisId="left" dataKey="primary_demand_qty" fill="#8b5cf6" name="Demand" barSize={9}>
+          <Bar yAxisId="left" dataKey="primary_demand_qty" fill="#8b5cf6" name="Forecasted Demand" barSize={9}>
             {data.map((d, i) => {
               const rt = d.run_type
               const fill = rt === 'rolling_chunk' ? '#a78bfa' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
@@ -2629,7 +2629,7 @@ export default function SimulationResultsPage() {
                 return (
                   <ChartShell
                     title="POS — Store Sales"
-                    subtitle="Weekly demand, sales and lost sales across all stores"
+                    subtitle="Weekly forecasted demand, sales and lost sales across all stores"
                     error={posError} loading={posLoading || (selectedBranch !== 'base' && parentPosLoading)}
                     isZoomed={zoom1.isZoomed} onZoomReset={zoom1.resetZoom}
                     chart={(h) => (
@@ -2650,7 +2650,7 @@ export default function SimulationResultsPage() {
                           <YAxis tickFormatter={yAxisTickFormatter} />
                           <Tooltip content={<POSTooltip hideActual={selectedBranch !== 'base' && !branchIsCompleted} promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
-                          <Bar dataKey="primary_demand_qty" fill="#8b5cf6" name="Demand" barSize={10}>
+                          <Bar dataKey="primary_demand_qty" fill="#8b5cf6" name="Forecasted Demand" barSize={10}>
                             {combinedPosData.map((d, i) => {
                               const rt = d.run_type
                               const fill = rt === 'rolling_chunk' ? '#a78bfa' : rt === 'extension' ? '#c4b5fd' : '#8b5cf6'
@@ -2832,14 +2832,14 @@ export default function SimulationResultsPage() {
             {/* Adaptive (top) then Reactive (bottom), each = POS bars (left) + inventory lines (right) */}
             <ChartShell
               title="Adaptive — POS & Store Inventory"
-              subtitle="Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
+              subtitle="Forecasted Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
               error="" loading={comparisonLoading}
               isZoomed={zoomCmpA.isZoomed} onZoomReset={zoomCmpA.resetZoom}
               chart={(h) => renderComparisonChart(adaptiveSeries, zoomCmpA, h)}
             />
             <ChartShell
               title="Reactive — POS & Store Inventory"
-              subtitle="Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
+              subtitle="Forecasted Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
               error="" loading={comparisonLoading}
               isZoomed={zoomCmpB.isZoomed} onZoomReset={zoomCmpB.resetZoom}
               chart={(h) => renderComparisonChart(reactiveSeries, zoomCmpB, h)}
@@ -3133,8 +3133,8 @@ export default function SimulationResultsPage() {
                   {promoEntries.map((p: any, i: number) => (
                     <tr key={i} className="border-b border-charcoal-blue-50">
                       <td className="py-1 pr-4 font-medium text-charcoal-blue-900">{p.promo_name}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.start_date}</td>
-                      <td className="py-1 pr-4 text-charcoal-blue-600">{p.end_date}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{formatDateDisplay(p.start_date)}</td>
+                      <td className="py-1 pr-4 text-charcoal-blue-600">{formatDateDisplay(p.end_date)}</td>
                       <td className="py-1 text-charcoal-blue-600">{p.demand_multiplier ?? '—'}</td>
                     </tr>
                   ))}

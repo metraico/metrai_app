@@ -19,7 +19,8 @@ import {
 import { Check, AlertCircle, Plus, ChevronRight, Loader2, ChevronDown, GitBranch, Lock } from 'lucide-react'
 import type { PromoGroupResponse, PromoResponse, RollingForecastSession, PerformanceInput } from '@/lib/api/types'
 import { computeBranchOverrideRows } from './branch-overrides'
-import { toIsoWeek, formatDateUS, parseToISO } from '@/lib/utils'
+import { toIsoWeek, formatDateUS, parseToISO, formatDateDisplay } from '@/lib/utils'
+import { DatePickerField } from '@/components/ui/date-picker-field'
 
 // ── Shared primitives (same as extend-modal) ─────────────────────────────────
 
@@ -133,7 +134,7 @@ function weekBoundsUS(iso: string): { start: string; end: string } {
   const sunday = new Date(monday)
   sunday.setDate(monday.getDate() + 6)
   const asISO = (x: Date) => x.toISOString().slice(0, 10)
-  return { start: formatDateUS(asISO(monday)), end: formatDateUS(asISO(sunday)) }
+  return { start: formatDateDisplay(asISO(monday)), end: formatDateDisplay(asISO(sunday)) }
 }
 
 /** Count distinct ISO weeks touched by [startISO, endISO] — mirrors the engine's day-by-day bucketing. */
@@ -184,8 +185,8 @@ function findMultiWeekPromoWarnings(yamlText: string): PromoWeekWarning[] {
       key: `${p.name ?? 'promo'}-${idx}`,
       name: String(p.name ?? 'Promo'),
       event: p.event ? String(p.event) : undefined,
-      start: formatDateUS(startISO),
-      end: formatDateUS(endISO),
+      start: formatDateDisplay(startISO),
+      end: formatDateDisplay(endISO),
       weeksSpanned,
       startWeek: weekBoundsUS(startISO),
       endWeek: weekBoundsUS(endISO),
@@ -714,12 +715,11 @@ export function RollingForecastModal({
 
                 {/* Date helper — keeps total_end_date in sync with the YAML */}
                 <FormField label="Total Forecast End Date" info="Sets total_end_date in the YAML. You can also type it directly in the editor below.">
-                  <input
-                    type="date"
+                  <DatePickerField
                     value={totalEndDate}
-                    min={baseEndDate}
-                    onChange={e => handleDatePickerChange(e.target.value)}
-                    className={inputCls}
+                    onChange={handleDatePickerChange}
+                    minDateISO={baseEndDate}
+                    inputClassName={inputCls}
                   />
                 </FormField>
 
@@ -825,7 +825,7 @@ export function RollingForecastModal({
                           <span className="flex-1 truncate font-semibold text-charcoal-blue-700">
                             {[row.promo_group_name, row.promo_name !== row.promo_group_name ? row.promo_name : null].filter(Boolean).join(' · ')}
                           </span>
-                          <span className="text-charcoal-blue-400">{formatDateUS(row.start_date)} → {formatDateUS(row.end_date)}</span>
+                          <span className="text-charcoal-blue-400">{formatDateDisplay(row.start_date)} → {formatDateDisplay(row.end_date)}</span>
                           <span className="tabular-nums text-charcoal-blue-400">×{row.demand_multiplier.toFixed(2)}</span>
                         </div>
                       ))}
@@ -944,7 +944,7 @@ export function RollingForecastModal({
                         Next Chunk
                       </p>
                       <p className="text-xs font-bold text-charcoal-blue-800">
-                        {formatDateUS(currentStart)} → {formatDateUS(nextChunkEnd)}
+                        {formatDateDisplay(currentStart)} → {formatDateDisplay(nextChunkEnd)}
                         <span className="ml-2 font-normal text-charcoal-blue-500">(4 weeks)</span>
                       </p>
                     </div>
@@ -968,7 +968,7 @@ export function RollingForecastModal({
                 <div className="text-center">
                   <p className="text-sm font-bold text-charcoal-blue-800">Running simulation chunk…</p>
                   <p className="text-xs text-charcoal-blue-400 mt-1">
-                    {formatDateUS(currentStart)} → {formatDateUS(chunkEndDate)}
+                    {formatDateDisplay(currentStart)} → {formatDateDisplay(chunkEndDate)}
                   </p>
                 </div>
               </div>
@@ -1118,7 +1118,7 @@ export function RollingForecastModal({
                   <p className="text-sm font-bold text-charcoal-blue-800">Rolling forecast complete!</p>
                   <p className="text-xs text-charcoal-blue-500 mt-1">
                     All chunks have been committed.
-                    Your simulation now covers through {formatDateUS(session?.total_end_date ?? totalEnd)}.
+                    Your simulation now covers through {formatDateDisplay(session?.total_end_date ?? totalEnd)}.
                   </p>
                 </div>
                 <button

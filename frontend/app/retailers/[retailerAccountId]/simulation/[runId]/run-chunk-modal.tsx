@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { getSessionPromoSchedules, runRollingChunkYaml, buildRunChunkYaml } from '@/lib/api/simulation'
-import { formatDateUS } from '@/lib/utils'
+import { formatDateDisplay } from '@/lib/utils'
 import type { RollingForecastSession, RunChunkResponse } from '@/lib/api/types'
 import yaml from 'js-yaml'
 
@@ -111,7 +111,7 @@ export function RunChunkModal({
             <p className="text-[9px] font-semibold uppercase tracking-widest text-charcoal-blue-400 mb-1">Next Chunk</p>
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs font-bold text-charcoal-blue-800">
-                {formatDateUS(currentStart)} → {formatDateUS(chunkEndDate)}
+                {formatDateDisplay(currentStart)} → {formatDateDisplay(chunkEndDate)}
                 <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} weeks)</span>
               </p>
               <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${weeksRemaining === 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
