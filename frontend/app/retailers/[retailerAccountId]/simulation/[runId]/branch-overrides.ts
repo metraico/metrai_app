@@ -52,6 +52,7 @@ export interface BranchOverrideRow {
   reactivePct: number   // latest recorded pct (audit field)
   adaptiveMult: number  // damped response: origMult × (1 + latestPct% × ADAPTIVE_LEARNING_FACTOR)
   adaptivePct: number   // the damped pct actually applied (audit field)
+  source?: 'catalog' | 'extension'  // where this promo occurrence came from (audit field)
 }
 
 export interface BranchOverride {
@@ -67,7 +68,7 @@ export interface BranchOverride {
 // recorded history yet is skipped (nothing to react to → keeps the plan multiplier).
 export function computeBranchOverrideRows(
   session: RollingForecastSession,
-  fetched: { id: string; promo_group_name: string; demand_multiplier: number; original_multiplier: number | null }[],
+  fetched: { id: string; promo_group_name: string; demand_multiplier: number; original_multiplier: number | null; source?: 'catalog' | 'extension' }[],
 ): BranchOverrideRow[] {
   const latestPct = collectLatestPct(session)
   const rows: BranchOverrideRow[] = []
@@ -84,6 +85,7 @@ export function computeBranchOverrideRows(
       reactivePct: pct,
       adaptiveMult: clampMult(origMult * (1 + dampedAdj / 100)),
       adaptivePct: dampedAdj,
+      source: sched.source,
     })
   }
   return rows
