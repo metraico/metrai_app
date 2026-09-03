@@ -40,13 +40,17 @@ export function collectLatestPct(session: RollingForecastSession): Record<string
   return out
 }
 
+// Adaptive carries forward only this fraction of the observed pct (vs. Reactive's full
+// carry-forward) — a dampened "learning" response rather than a flat cap.
+export const ADAPTIVE_LEARNING_FACTOR = 0.10
+
 export interface BranchOverrideRow {
   schedule_id: string
   promo_group_name: string
   origMult: number      // the original planned multiplier (M0)
   reactiveMult: number  // full response: origMult × (1 + latestPct%)
   reactivePct: number   // latest recorded pct (audit field)
-  adaptiveMult: number  // damped response: origMult × (1 + clamp(latestPct%, -10, 10))
+  adaptiveMult: number  // damped response: origMult × (1 + latestPct% × ADAPTIVE_LEARNING_FACTOR)
   adaptivePct: number   // the damped pct actually applied (audit field)
 }
 
@@ -71,15 +75,15 @@ export function computeBranchOverrideRows(
     const origMult = (sched.original_multiplier ?? sched.demand_multiplier) as number
     const pct = latestPct[sched.promo_group_name]
     if (pct === undefined) continue
-    const cappedAdj = Math.max(-10, Math.min(10, pct))
+    const dampedAdj = pct * ADAPTIVE_LEARNING_FACTOR
     rows.push({
       schedule_id: String(sched.id),
       promo_group_name: sched.promo_group_name,
       origMult,
       reactiveMult: clampMult(origMult * (1 + pct / 100)),
       reactivePct: pct,
-      adaptiveMult: clampMult(origMult * (1 + cappedAdj / 100)),
-      adaptivePct: cappedAdj,
+      adaptiveMult: clampMult(origMult * (1 + dampedAdj / 100)),
+      adaptivePct: dampedAdj,
     })
   }
   return rows

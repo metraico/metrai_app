@@ -10,10 +10,12 @@ import type { EntityItem, EntityDC } from '@/lib/api/types'
 import { useSimulationStore } from '@/lib/store/simulationStore'
 import { ChevronRight, ChevronLeft, Check, AlertCircle, Code, TrendingUp, Tag } from 'lucide-react'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
+import { DatePickerField } from '@/components/ui/date-picker-field'
 import yaml from 'js-yaml'
 import type { SimulatePreviewResponse } from '@/lib/api/types'
 import { SCENARIOS, NO_SCENARIO, type ScenarioId } from '@/lib/scenarios'
-import { cn, formatDateUS } from '@/lib/utils'
+import { useBreadcrumb } from '@/lib/store/breadcrumbStore'
+import { cn, formatDateUS, formatDateDisplay, parseDisplayToISO } from '@/lib/utils'
 
 interface RunFormValues {
   simulation_name: string
@@ -168,6 +170,11 @@ export default function NewSimulationPage() {
 
   const urlScenario = (searchParams.get('scenario') as ScenarioId) ?? 'no_scenario'
   const isScenarioPreset = urlScenario !== 'no_scenario'
+  const scenarioTitle = [NO_SCENARIO, ...SCENARIOS].find(s => s.id === urlScenario)?.title ?? 'Runs'
+  useBreadcrumb([
+    { label: scenarioTitle, href: `/retailers/${routeAccountId}/runs?scenario=${urlScenario}` },
+    { label: 'New Simulation' },
+  ])
 
   const { setCache } = useSimulationStore()
   const [currentStep, setCurrentStep] = useState(0)
@@ -607,14 +614,14 @@ export default function NewSimulationPage() {
                             className={inputCls} placeholder="Optional" />
                         </FormField>
                         <FormField label="Start Date">
-                          <input type="date" value={formValues.start_date}
-                            onChange={e => setField('start_date', e.target.value)}
-                            className={inputCls} />
+                          <DatePickerField value={formValues.start_date}
+                            onChange={iso => setField('start_date', iso)}
+                            inputClassName={inputCls} />
                         </FormField>
                         <FormField label="End Date">
-                          <input type="date" value={formValues.end_date}
-                            onChange={e => setField('end_date', e.target.value)}
-                            className={inputCls} />
+                          <DatePickerField value={formValues.end_date}
+                            onChange={iso => setField('end_date', iso)}
+                            inputClassName={inputCls} />
                         </FormField>
                         <FormField label="Seed">
                           <input type="number" value={formValues.seed}
@@ -793,7 +800,7 @@ export default function NewSimulationPage() {
                                       <td className="px-2 py-1">
                                         <span className="rounded bg-majorelle-blue-50 px-1 py-0.5 font-bold text-majorelle-blue-600">{p.event_type || '—'}</span>
                                       </td>
-                                      <td className="px-2 py-1 whitespace-nowrap text-charcoal-blue-400">{formatDateUS(p.start_date)} → {formatDateUS(p.end_date)}</td>
+                                      <td className="px-2 py-1 whitespace-nowrap text-charcoal-blue-400">{formatDateDisplay(p.start_date)} → {formatDateDisplay(p.end_date)}</td>
                                       <td className="px-2 py-1 text-center font-bold text-emerald-600">{p.demand_multiplier}×</td>
                                     </tr>
                                   ))}
@@ -1108,7 +1115,7 @@ export default function NewSimulationPage() {
                         <div>
                           <p className="text-xs font-bold text-charcoal-blue-950">{p.promo_name}</p>
                           <p className="text-[10px] text-charcoal-blue-400">
-                            {formatDateUS(p.start_date)} → {formatDateUS(p.end_date)} · {p.store_count} stores · {p.item_count} items
+                            {formatDateDisplay(p.start_date)} → {formatDateDisplay(p.end_date)} · {p.store_count} stores · {p.item_count} items
                           </p>
                         </div>
                         <span className="rounded-full border border-majorelle-blue-200 px-2 py-0.5 text-[9px] font-semibold text-majorelle-blue-500 whitespace-nowrap">
@@ -1178,7 +1185,7 @@ export default function NewSimulationPage() {
               <div className="rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 p-3">
                 <p className="text-xs font-semibold text-charcoal-blue-950">Simulation</p>
                 <p className="mt-0.5 text-[10px] text-charcoal-blue-400">
-                  {formValues.simulation_name} · {formValues.start_date} → {formValues.end_date} · seed {formValues.seed}
+                  {formValues.simulation_name} · {formatDateDisplay(formValues.start_date)} → {formatDateDisplay(formValues.end_date)} · seed {formValues.seed}
                 </p>
               </div>
               <div className="rounded-lg border border-charcoal-blue-200 bg-charcoal-blue-50 p-3">

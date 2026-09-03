@@ -1,19 +1,15 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter, useParams, usePathname } from 'next/navigation'
-import { useAuthStore } from '@/lib/store/authStore'
+import { useParams, usePathname } from 'next/navigation'
 import { useFilterStore } from '@/lib/store/filterStore'
 import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
-import { logout } from '@/lib/api/auth'
-import { LogOut, Home, BarChart3, Plus, Settings, SlidersHorizontal, ChevronLeft, RotateCcw } from 'lucide-react'
+import { Home, BarChart3, SlidersHorizontal, ChevronLeft, RotateCcw } from 'lucide-react'
 import { FilterSelect } from '@/components/ui/filter-select'
 
 export function Sidebar() {
-  const router = useRouter()
   const params = useParams()
   const pathname = usePathname()
-  const { clearAuth, fullName, refreshToken } = useAuthStore()
   const {
     globalItem, globalStore, globalSdc, globalRdc,
     globalCategory, globalSubcategory, globalBrand,
@@ -33,18 +29,10 @@ export function Sidebar() {
   const hasFilters = !!(globalItem || globalStore || globalSdc || globalRdc || globalCategory || globalSubcategory || globalBrand)
   const filtersReady = analyticsStatus === 'READY'
 
-  const handleLogout = async () => {
-    if (refreshToken) logout().catch(() => {})
-    clearAuth()
-    router.push('/login')
-  }
-
   const isRuns = retailerAccountId && (
     pathname === `/retailers/${retailerAccountId}` ||
     pathname === `/retailers/${retailerAccountId}/runs`
   )
-  const isNewSim = retailerAccountId && pathname.includes('/simulation/new')
-  const isScenario = retailerAccountId && pathname.includes('/scenario')
   const isSimulation = retailerAccountId && pathname.includes('/simulation/') && !pathname.includes('/new')
 
   const applyFilter = (item: string, store: string, sdc: string, rdc: string) => {
@@ -71,8 +59,6 @@ export function Sidebar() {
   const navItems = [
     { label: 'Retailers', href: '/retailers', icon: Home, current: !retailerAccountId },
     retailerAccountId && { label: 'Runs', href: `/retailers/${retailerAccountId}`, icon: BarChart3, current: !!isRuns },
-    retailerAccountId && { label: 'New Simulation', href: `/retailers/${retailerAccountId}/simulation/new`, icon: Plus, current: !!isNewSim },
-    retailerAccountId && { label: 'Scenario Setup', href: `/retailers/${retailerAccountId}/scenario`, icon: Settings, current: !!isScenario },
   ].filter(Boolean)
 
   return (
@@ -235,26 +221,6 @@ export function Sidebar() {
               </div>
             )}
           </nav>
-
-          {/* User / Logout */}
-          <div className="border-t border-white/10 px-3 py-3">
-            <div className="mb-2 rounded-xl bg-majorelle-blue-500/15 px-3 py-2">
-              <p className="mb-1 text-[9px] font-bold uppercase tracking-wide text-charcoal-blue-400">Signed In As</p>
-              <div className="flex items-center gap-2">
-                <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-majorelle-blue-500 text-xs font-bold text-white">
-                  {(fullName || 'U').charAt(0).toUpperCase()}
-                </div>
-                <p className="truncate text-xs font-medium text-white">{fullName || 'User'}</p>
-              </div>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-charcoal-blue-400/30 px-3 py-1.5 text-xs font-semibold text-charcoal-blue-300 transition-all hover:border-red-500/50 hover:bg-red-500/15 hover:text-red-400"
-            >
-              <LogOut size={13} />
-              Sign Out
-            </button>
-          </div>
         </>
       )}
     </aside>

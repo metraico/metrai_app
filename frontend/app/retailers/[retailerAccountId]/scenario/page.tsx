@@ -8,6 +8,7 @@ import { validateScenario } from '@/lib/api/scenarios'
 import { runSimulation } from '@/lib/api/simulation'
 import { ChevronLeft, TrendingUp, AlertTriangle, CheckCircle, AlertCircle, Loader2, Truck, BarChart2, Clock, BookOpen, Code2 } from 'lucide-react'
 import yaml from 'js-yaml'
+import { useBreadcrumb } from '@/lib/store/breadcrumbStore'
 
 const PF_TEMPLATE = `# SCENARIO: Promo Forecast Behavior
 # performance_adjustment: signed %. 50 = promo performs 50% better than forecast.
@@ -47,13 +48,13 @@ scenario:
   disruptions:
     - dc: DC_EAST
       items: all
-      window_start: "2024-02-05"
-      window_end: "2024-02-11"
+      window_start: "02/05/2024"
+      window_end: "02/11/2024"
       mode: stockout
     - dc: DC_WEST
       items: all
-      window_start: "2024-04-01"
-      window_end: "2024-04-17"
+      window_start: "04/01/2024"
+      window_end: "04/17/2024"
       mode: outage
       fulfillment_pct: 30
 `
@@ -444,6 +445,7 @@ export default function ScenarioPage() {
   const params = useParams()
   const retailerAccountId = params.retailerAccountId as string
   const [selectedTile, setSelectedTile] = useState<(typeof TILES)[number] | null>(null)
+  useBreadcrumb(selectedTile ? [{ label: 'Scenario', href: `/retailers/${retailerAccountId}/scenario` }, { label: selectedTile.title }] : [{ label: 'Scenario' }])
 
   if (selectedTile) return <ScenarioEditor tile={selectedTile} onBack={() => setSelectedTile(null)} />
 

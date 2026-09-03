@@ -1,6 +1,6 @@
 import { apiClient, engineClient } from './client'
 import { formatDateUS } from '@/lib/utils'
-import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest, BranchForecastResponse, BranchForecastRow } from './types'
+import type { RunYamlResponse, RunConfig, SimulationRun, FullSimulationOutput, DeleteResponse, EndingInventoryResponse, DemandJobResponse, GenerateExtensionDemandRequest, RollingForecastSession, RunChunkRequest, RunChunkResponse, RecalculateDemandRequest, BranchForecastResponse, BranchForecastRow, CreateScopedExtensionResponse, ScopedExtension } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // YAML body helpers — shared by rolling-forecast-modal and run-chunk-modal
@@ -242,6 +242,34 @@ export const recalculateRollingDemand = (sessionId: string, req: RecalculateDema
 // DELETE /rolling-session/{id}
 export const abandonRollingSession = (sessionId: string) =>
   engineClient.delete<{ abandoned: string }>(`/rolling-session/${sessionId}`).then(r => r.data)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scoped Extensions — independent, subset-scoped rolling forecasts off one base sim
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /simulation/{base_id}/scoped-extension — create a subset child sim (returns its id).
+// Scope by a promo group (its items) or an explicit item_codes list. The returned child then
+// drives the normal rolling-forecast flow, running subset-only.
+export const createScopedExtension = (
+  baseSimulationId: string,
+  body: { name?: string; scope: { promo_group_id?: string; item_codes?: string[] } },
+): Promise<CreateScopedExtensionResponse> =>
+  engineClient.post<CreateScopedExtensionResponse>(
+    `/simulation/${baseSimulationId}/scoped-extension`, body,
+  ).then(r => r.data)
+
+// GET /simulation/{base_id}/scoped-extensions — list this base's scoped-extension children
+export const getScopedExtensions = (baseSimulationId: string): Promise<ScopedExtension[]> =>
+  engineClient.get<ScopedExtension[]>(
+    `/simulation/${baseSimulationId}/scoped-extensions`,
+  ).then(r => r.data)
+
+// DELETE /simulation/{base_id}/scoped-extension/{child_id} — cascades any Reactive/Adaptive
+// grandchildren of the extension too
+export const deleteScopedExtension = (baseSimulationId: string, childSimulationId: string) =>
+  engineClient.delete<{ deleted: string }>(
+    `/simulation/${baseSimulationId}/scoped-extension/${childSimulationId}`,
+  ).then(r => r.data)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HLS Branching  (app-backend routes)

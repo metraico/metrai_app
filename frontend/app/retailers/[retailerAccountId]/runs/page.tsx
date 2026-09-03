@@ -7,7 +7,8 @@ import type { SimulationRun } from '@/lib/api/types'
 import { useAuthStore } from '@/lib/store/authStore'
 import { Plus, Zap, Trash2, CheckCircle, Loader2, XCircle, ChevronLeft } from 'lucide-react'
 import { getScenario, NO_SCENARIO } from '@/lib/scenarios'
-import { formatDateUS } from '@/lib/utils'
+import { formatDateDisplay } from '@/lib/utils'
+import { useBreadcrumb } from '@/lib/store/breadcrumbStore'
 
 const STATUS_STYLES: Record<string, string> = {
   COMPLETED: 'bg-emerald-100 text-emerald-700',
@@ -32,6 +33,7 @@ function RunsPageInner() {
 
   const scenarioId = searchParams.get('scenario') ?? 'no_scenario'
   const scenario = getScenario(scenarioId) ?? NO_SCENARIO
+  useBreadcrumb([{ label: scenario.title }])
 
   const [runs, setRuns] = useState<SimulationRun[]>([])
   const [loading, setLoading] = useState(true)
@@ -152,11 +154,11 @@ function RunsPageInner() {
 
                 <div className="mb-3 border-b border-charcoal-blue-100 pb-3 space-y-0.5">
                   <p className="text-xs text-charcoal-blue-400">
-                    <span className="font-bold text-charcoal-blue-700">Period:</span> {formatDateUS(run.start_week)} → {formatDateUS(run.end_week)}
+                    <span className="font-bold text-charcoal-blue-700">Period:</span> {formatDateDisplay(run.start_week)} → {formatDateDisplay(run.end_week)}
                   </p>
                   <p className="text-xs text-charcoal-blue-400">
                     <span className="font-bold text-charcoal-blue-700">Created:</span>{' '}
-                    {new Date(run.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    {formatDateDisplay(run.created_at.slice(0, 10))}
                   </p>
                 </div>
 
