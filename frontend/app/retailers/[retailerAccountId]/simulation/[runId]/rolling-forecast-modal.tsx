@@ -505,12 +505,15 @@ export function RollingForecastModal({
         const status = await getDemandStatus(jobId)
         if (status.status === 'COMPLETED') {
           setDemandStatus('done')
-          // Full-session fetch (no date range) — these are the promos the USER scheduled
-          // via this session's own YAML (extension_promo_schedules), used by the dashboard
-          // to highlight upcoming promo weeks in orange before any chunk has actually run.
+          // Full-session fetch (no date range) — getSessionPromoSchedules now returns BOTH
+          // user-added (extension_promo_schedules) and base-catalog promo occurrences, tagged
+          // via `source`. Only the user-added ones belong in rollingPromos — the dashboard
+          // highlights those orange, upcoming; catalog ones are already covered by the
+          // purple catalogPromos state (see page.tsx's futurePromoWeekMap), so including them
+          // here too would wrongly paint pre-existing promo weeks orange.
           try {
             const schedules = await getSessionPromoSchedules(sess.session_id)
-            onDemandReady?.(schedules.map(s => ({
+            onDemandReady?.(schedules.filter(s => s.source !== 'catalog').map(s => ({
               promo_group_name: s.promo_group_name, promo_name: s.promo_name,
               start_date: s.start_date, end_date: s.end_date, demand_multiplier: s.demand_multiplier,
             })))
@@ -656,11 +659,13 @@ export function RollingForecastModal({
       // pct/promo_group_name are real fields (not just a comment) so they survive
       // editing and round-trip to the backend as the branch_params audit trail —
       // "what did the user see / what was the formula based on" vs. the computed multiplier.
+      const originLabel = (r: { source?: 'catalog' | 'extension' }) =>
+        r.source === 'catalog' ? ' [base]' : r.source === 'extension' ? ' [added]' : ''
       const reactiveEntries = rows.map(r =>
-        `  - schedule_id: "${r.schedule_id}"\n    multiplier: ${r.reactiveMult.toFixed(4)}\n    pct: ${r.reactivePct.toFixed(2)}                # audit only — does not affect the forecast\n    promo_group_name: "${r.promo_group_name}"    # audit only (was ×${r.origMult.toFixed(3)})`
+        `  - schedule_id: "${r.schedule_id}"\n    multiplier: ${r.reactiveMult.toFixed(4)}\n    pct: ${r.reactivePct.toFixed(2)}                # audit only — does not affect the forecast\n    promo_group_name: "${r.promo_group_name}"    # audit only (was ×${r.origMult.toFixed(3)})${originLabel(r)}`
       )
       const adaptiveEntries = rows.map(r =>
-        `  - schedule_id: "${r.schedule_id}"\n    multiplier: ${r.adaptiveMult.toFixed(4)}\n    pct: ${r.adaptivePct.toFixed(2)}                # audit only — does not affect the forecast\n    promo_group_name: "${r.promo_group_name}"    # audit only (was ×${r.origMult.toFixed(3)})`
+        `  - schedule_id: "${r.schedule_id}"\n    multiplier: ${r.adaptiveMult.toFixed(4)}\n    pct: ${r.adaptivePct.toFixed(2)}                # audit only — does not affect the forecast\n    promo_group_name: "${r.promo_group_name}"    # audit only (was ×${r.origMult.toFixed(3)})${originLabel(r)}`
       )
 
       const buildBranchYaml = (type: string, entries: string[]) =>

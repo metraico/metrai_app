@@ -14,7 +14,7 @@ const CHUNK_WEEKS = 4
  * `performance` entry with schedule_id and pct: 0.
  */
 export function buildRunChunkYaml(
-  promos: { id: string; promo_name?: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number }[],
+  promos: { id: string; promo_name?: string; promo_group_name: string; start_date: string; end_date: string; demand_multiplier: number; source?: 'catalog' | 'extension' }[],
   chunkStart: string,
   chunkEnd: string,
   sessionId?: string,
@@ -31,12 +31,13 @@ export function buildRunChunkYaml(
     return header + 'performance: []\n'
   }
 
-  const entries = promos.map(p =>
-    [
+  const entries = promos.map(p => {
+    const origin = p.source === 'catalog' ? ' [base]' : p.source === 'extension' ? ' [added]' : ''
+    return [
       `  - schedule_id: "${p.id}"`,
-      `    pct: 0        # ${p.promo_name ? `${p.promo_name} (${p.promo_group_name})` : p.promo_group_name}  ${formatDateUS(p.start_date)} → ${formatDateUS(p.end_date)}`,
+      `    pct: 0        # ${p.promo_name ? `${p.promo_name} (${p.promo_group_name})` : p.promo_group_name}  ${formatDateUS(p.start_date)} → ${formatDateUS(p.end_date)}${origin}`,
     ].join('\n')
-  ).join('\n\n')
+  }).join('\n\n')
 
   return header + 'performance:\n' + entries + '\n'
 }
@@ -329,6 +330,7 @@ export const getSessionPromoSchedules = (
     demand_multiplier: number
     performance_pct: number | null
     original_multiplier: number | null
+    source?: 'catalog' | 'extension'
   }[]>(
     `/rolling-session/${sessionId}/promo-schedules`,
     { params: { start_date: startDate, end_date: endDate } },
