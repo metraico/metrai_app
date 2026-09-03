@@ -14,6 +14,7 @@ import { DatePickerField } from '@/components/ui/date-picker-field'
 import yaml from 'js-yaml'
 import type { SimulatePreviewResponse } from '@/lib/api/types'
 import { SCENARIOS, NO_SCENARIO, type ScenarioId } from '@/lib/scenarios'
+import { useBreadcrumb } from '@/lib/store/breadcrumbStore'
 import { cn, formatDateUS, formatDateDisplay, parseDisplayToISO } from '@/lib/utils'
 
 interface RunFormValues {
@@ -169,6 +170,11 @@ export default function NewSimulationPage() {
 
   const urlScenario = (searchParams.get('scenario') as ScenarioId) ?? 'no_scenario'
   const isScenarioPreset = urlScenario !== 'no_scenario'
+  const scenarioTitle = [NO_SCENARIO, ...SCENARIOS].find(s => s.id === urlScenario)?.title ?? 'Runs'
+  useBreadcrumb([
+    { label: scenarioTitle, href: `/retailers/${routeAccountId}/runs?scenario=${urlScenario}` },
+    { label: 'New Simulation' },
+  ])
 
   const { setCache } = useSimulationStore()
   const [currentStep, setCurrentStep] = useState(0)
