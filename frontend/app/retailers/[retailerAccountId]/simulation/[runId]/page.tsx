@@ -2212,7 +2212,7 @@ export default function SimulationResultsPage() {
           {data.filter(d => d.is_promo_week).map(d => (
             <ReferenceArea
               key={d.week} yAxisId="left" x1={d.week} x2={d.week}
-              fill={d.is_user_promo || (extensionStartWeek && d.week >= extensionStartWeek) ? '#f59e0b' : '#8b5cf6'}
+              fill={d.is_user_promo ? '#f59e0b' : '#8b5cf6'}
               fillOpacity={0.12} stroke="none"
             />
           ))}
@@ -2874,7 +2874,7 @@ export default function SimulationResultsPage() {
                           {combinedPosData.filter(d => d.is_promo_week).map(d => (
                             <ReferenceArea
                               key={d.week} x1={d.week} x2={d.week}
-                              fill={d.is_user_promo || (extensionStartWeek && d.week >= extensionStartWeek) ? '#f59e0b' : '#8b5cf6'}
+                              fill={d.is_user_promo ? '#f59e0b' : '#8b5cf6'}
                               fillOpacity={0.12} stroke="none"
                             />
                           ))}
@@ -2978,7 +2978,7 @@ export default function SimulationResultsPage() {
                       {cutForBranch(zoom3.displayData).filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} yAxisId="left" x1={d.week} x2={d.week}
-                          fill={d.is_user_promo || (extensionStartWeek && d.week >= extensionStartWeek) ? '#f59e0b' : '#8b5cf6'}
+                          fill={d.is_user_promo ? '#f59e0b' : '#8b5cf6'}
                           fillOpacity={0.12} stroke="none"
                         />
                       ))}
