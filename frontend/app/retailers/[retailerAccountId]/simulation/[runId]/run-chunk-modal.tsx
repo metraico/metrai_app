@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { getSessionPromoSchedules, runRollingChunkYaml, buildRunChunkYaml } from '@/lib/api/simulation'
-import { formatDateDisplay } from '@/lib/utils'
+import { formatDateDisplay, isoWeekDiff } from '@/lib/utils'
 import type { RollingForecastSession, RunChunkResponse } from '@/lib/api/types'
 import yaml from 'js-yaml'
 
@@ -34,13 +34,15 @@ export function RunChunkModal({
   const currentStart = session.current_completed_week || baseEndDate
   const totalEnd = session.total_end_date
 
-  const chunkWeeks = CHUNK_WEEKS
-  const chunkEndDate = clampDate(addWeeks(currentStart, chunkWeeks), totalEnd)
+  const chunkEndDate = clampDate(addWeeks(currentStart, CHUNK_WEEKS), totalEnd)
 
-  const msPerWeek = 7 * 24 * 3600 * 1000
-  const weeksRemaining = Math.max(0, Math.round(
-    (new Date(totalEnd + 'T12:00:00').getTime() - new Date(chunkEndDate + 'T12:00:00').getTime()) / msPerWeek
-  ))
+  // Counted by ISO week label (via isoWeekDiff), not raw days ÷ 7 — the session's
+  // start/end dates aren't guaranteed to land on a Monday (e.g. a base simulation that
+  // ends on a Tuesday), so raw day-math produces a fractional week count that has to be
+  // rounded and can silently disagree with the W01…W13 labels shown on the chart's
+  // x-axis. This keeps "weeks remaining" consistent with what the chart actually shows.
+  const chunkWeeks = Math.max(1, isoWeekDiff(currentStart, chunkEndDate))
+  const weeksRemaining = Math.max(0, isoWeekDiff(chunkEndDate, totalEnd))
 
   // ── State ────────────────────────────────────────────────────────────────
   const [running, setRunning] = useState(false)
@@ -94,7 +96,7 @@ export function RunChunkModal({
             Run Simulation Chunk
           </DialogTitle>
           <p className="text-[10px] text-charcoal-blue-400 mt-0.5">
-            Review the next {chunkWeeks}-week chunk, then enter how your promos actually performed.
+            Review the next {chunkWeeks}-week{chunkWeeks === 1 ? '' : ''} chunk, then enter how your promos actually performed.
           </p>
         </div>
 
@@ -112,7 +114,7 @@ export function RunChunkModal({
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs font-bold text-charcoal-blue-800">
                 {formatDateDisplay(currentStart)} → {formatDateDisplay(chunkEndDate)}
-                <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} weeks)</span>
+                <span className="ml-2 font-normal text-charcoal-blue-500">({chunkWeeks} week{chunkWeeks === 1 ? '' : 's'})</span>
               </p>
               <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${weeksRemaining === 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
                 {weeksRemaining === 0 ? 'Last chunk' : `${weeksRemaining}w remaining after`}
@@ -154,7 +156,7 @@ export function RunChunkModal({
             </button>
             <button onClick={handleRun} disabled={running || loadingPromos}
               className="flex-[2] rounded-xl bg-majorelle-blue-500 py-2.5 text-xs font-bold text-white hover:bg-majorelle-blue-600 disabled:opacity-50 flex items-center justify-center gap-2">
-              {running ? <><Loader2 size={13} className="animate-spin" /> Running…</> : `Run ${chunkWeeks} Weeks`}
+              {running ? <><Loader2 size={13} className="animate-spin" /> Running…</> : `Run ${chunkWeeks} Week${chunkWeeks === 1 ? '' : 's'}`}
             </button>
           </div>
         </div>

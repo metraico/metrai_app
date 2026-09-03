@@ -16,6 +16,7 @@ import {
 } from '@/lib/api/analytics'
 import type { HiddenLostSalesResponse } from '@/lib/api/analytics'
 import { getRunConfig, getAnalyticsStatus, getSimulationExportUrl, getRollingSession, getDemandWeeklyTotals, getSessionPromoSchedules, generateBranches, getRuns, generateBranchForecasts, runBranches, getBranchForecast } from '@/lib/api/simulation'
+import { getPromos, getPromoGroups } from '@/lib/api/promos'
 import { RollingForecastModal } from './rolling-forecast-modal'
 import { RunChunkModal } from './run-chunk-modal'
 import { computeBranchOverrideRows, branchOverridesFromRows } from './branch-overrides'
@@ -24,6 +25,7 @@ import { useFilterStore } from '@/lib/store/filterStore'
 import { useAnalyticsStatusStore } from '@/lib/store/analyticsStatusStore'
 import type { AnalyticsMeta, SimulationSummary, RollingForecastSession, SimulationRun, BranchForecastRow, BranchForecastResponse } from '@/lib/api/types'
 import { toIsoWeek, formatDateDisplay } from '@/lib/utils'
+import { useBreadcrumb } from '@/lib/store/breadcrumbStore'
 
 // ── Export branch options ─────────────────────────────────────────────────────
 
@@ -68,10 +70,14 @@ function computeExportOptions(
 // ── Aggregation helpers ───────────────────────────────────────────────────────
 
 function aggPOS(pos: any[]) {
-  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; promoName: string; promoGroupName: string; runType: string }>()
+  const map = new Map<string, { demand: number; sales: number; lost: number; revenue: number; isPromo: boolean; isUserPromo: boolean; promoName: string; promoGroupName: string; eventType: string; runType: string }>()
   for (const r of pos) {
-    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, promoName: '', promoGroupName: '', runType: 'base' }
-    const rowIsPromoDemand = Boolean(Number(r.is_promo_demand ?? 0))
+    const c = map.get(r.pos_week) ?? { demand: 0, sales: 0, lost: 0, revenue: 0, isPromo: false, isUserPromo: false, promoName: '', promoGroupName: '', eventType: '', runType: 'base' }
+    // The summary API sends `is_promo_week` (pre-aggregated per week), not the raw
+    // per-store `is_promo_demand` — checking only the latter meant this was always
+    // false and every promo-derived field below silently fell back to "first row
+    // seen" instead of "the row that's actually a promo week".
+    const rowIsPromoDemand = Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0))
     const rowPromoGroup = r.promo_group_name ?? ''
     // Prefer a promo_group_name from a row that actually has is_promo_demand=1 over an
     // earlier non-promo row whose name is blank (or stale). Otherwise keep first-seen.
@@ -86,9 +92,16 @@ function aggPOS(pos: any[]) {
       sales: c.sales + Number(r.sales_qty),
       lost: c.lost + Number(r.stockout_qty),
       revenue: c.revenue + Number(r.sales_amount),
-      isPromo: c.isPromo || Boolean(Number(r.is_promo_week ?? r.is_promo_demand ?? 0)),
+      isPromo: c.isPromo || rowIsPromoDemand,
+      // A "[rolling] " promo_name prefix marks a promo the USER scheduled via this
+      // extension's own rolling-forecast YAML (see _inject_group_promo_overrides in
+      // main.py) — as opposed to a promo already sitting in the account's catalog that
+      // the demand curve replays regardless of what the user added. Distinguishing them
+      // lets the chart highlight "your addition" separately from "already-planned promo".
+      isUserPromo: c.isUserPromo || (rowIsPromoDemand && (r.promo_name ?? '').startsWith('[rolling]')),
       promoName: c.promoName || (r.promo_name ?? ''),
       promoGroupName: nextGroup,
+      eventType: c.eventType || (rowIsPromoDemand ? (r.event_type ?? '') : ''),
       // keep the most specific run_type seen for this week (rolling_chunk > extension > base)
       runType: (r.run_type === 'rolling_chunk' || r.run_type === 'rolling_reactive' || r.run_type === 'rolling_adaptive') ? r.run_type
              : r.run_type === 'extension' && c.runType === 'base' ? 'extension'
@@ -102,11 +115,44 @@ function aggPOS(pos: any[]) {
     stockout_qty: v.lost,
     sales_amount: v.revenue,
     is_promo_week: v.isPromo ? 1 : 0,
+    is_user_promo: v.isUserPromo ? 1 : 0,
     promo_name: v.promoName,
     promo_group_name: v.promoGroupName,
+    event_type: v.eventType,
     run_type: v.runType,
   }))
 }
+
+// Humanize known promo mechanic codes for display (e.g. "B2G2_Free" → "Buy 2 Get 2 Free").
+// Falls back to a lightly-cleaned version of the raw code for anything not in the map,
+// so a new/unrecognized event type still reads reasonably instead of showing raw_snake_case.
+const PROMO_EVENT_LABELS: Record<string, string> = {
+  B2G1_Free: 'Buy 2 Get 1 Free',
+  B2G2_Free: 'Buy 2 Get 2 Free',
+  BOGO: 'Buy One Get One Free',
+  BOGO_Ad: 'Buy One Get One Free (Ad)',
+}
+function humanizePromoEvent(eventType: string): string {
+  if (!eventType) return ''
+  if (PROMO_EVENT_LABELS[eventType]) return PROMO_EVENT_LABELS[eventType]
+  return eventType.replace(/_/g, ' ').replace(/\bFree\b/i, 'Free').trim()
+}
+
+/** Every ISO week (YYYY-Www) touched by [startISO, endISO], inclusive — mirrors the
+ *  engine's day-by-day promo bucketing so a promo highlight lands on the same weeks
+ *  the engine actually applies its multiplier to. */
+function isoWeeksTouched(startISO: string, endISO: string): string[] {
+  const weeks = new Set<string>()
+  const cur = new Date(startISO + 'T12:00:00')
+  const end = new Date(endISO + 'T12:00:00')
+  while (cur <= end) {
+    weeks.add(toIsoWeek(cur.toISOString().slice(0, 10)))
+    cur.setDate(cur.getDate() + 1)
+  }
+  return [...weeks]
+}
+
+type FuturePromoInfo = { groupName: string; eventType: string; isUserPromo: boolean }
 
 function aggStoreInv(inv: any[]) {
   const onHand = new Map<string, number>()
@@ -252,20 +298,25 @@ function formatWeekLabel(label?: string): string {
 
 function ChartTooltip({ active, payload, label, promoWeekMap }: {
   active?: boolean; payload?: any[]; label?: string
-  promoWeekMap?: Record<string, { name: string; groupName: string }>
+  promoWeekMap?: Record<string, { name: string; groupName: string; eventType?: string; isUserPromo?: boolean }>
 }) {
   if (!active || !payload?.length) return null
   const data = payload[0]?.payload ?? {}
   const promoGroupName = data.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
   const promoName = data.promo_name || promoWeekMap?.[label ?? '']?.name || ''
   const promoLabel = promoGroupName || promoName || 'Promo week'
+  const promoEventLabel = humanizePromoEvent(data.event_type || promoWeekMap?.[label ?? '']?.eventType || '')
+  const isUserPromo = Boolean(data.is_user_promo) || Boolean(promoWeekMap?.[label ?? '']?.isUserPromo)
   const isPromo = data.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[140px]">
       {isPromo && (
-        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1">
-          <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
-          <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+        <div className="mb-2 flex flex-col gap-0.5 rounded-md px-2 py-1" style={{ background: isUserPromo ? '#fffbeb' : '#f5f3ff' }}>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ background: isUserPromo ? '#f59e0b' : '#8b5cf6' }} />
+            <span className="font-semibold truncate" style={{ color: isUserPromo ? '#b45309' : '#6d28d9' }}>Promo: {promoLabel}</span>
+          </div>
+          {promoEventLabel && <span className="pl-3.5 text-[10px] font-medium" style={{ color: isUserPromo ? '#d97706' : '#7c3aed' }}>{promoEventLabel}</span>}
         </div>
       )}
       <p className="mb-1 font-semibold text-charcoal-blue-700">{formatWeekLabel(label)}</p>
@@ -283,7 +334,7 @@ function ChartTooltip({ active, payload, label, promoWeekMap }: {
 
 function POSTooltip({ active, payload, label, promoWeekMap, hideActual }: {
   active?: boolean; payload?: any[]; label?: string
-  promoWeekMap?: Record<string, { name: string; groupName: string }>
+  promoWeekMap?: Record<string, { name: string; groupName: string; eventType?: string; isUserPromo?: boolean }>
   hideActual?: boolean
 }) {
   if (!active || !payload?.length) return null
@@ -291,6 +342,8 @@ function POSTooltip({ active, payload, label, promoWeekMap, hideActual }: {
   const promoGroupName = d.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
   const promoName = d.promo_name || promoWeekMap?.[label ?? '']?.name || ''
   const promoLabel = promoGroupName || promoName || 'Promo week'
+  const promoEventLabel = humanizePromoEvent(d.event_type || promoWeekMap?.[label ?? '']?.eventType || '')
+  const isUserPromo = Boolean(d.is_user_promo) || Boolean(promoWeekMap?.[label ?? '']?.isUserPromo)
   const isPromo = d.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
   const demand = Number(d.primary_demand_qty ?? d.demand_qty ?? 0)
   const actualDemand = Number(d.demand_qty ?? 0)
@@ -334,11 +387,12 @@ function POSTooltip({ active, payload, label, promoWeekMap, hideActual }: {
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[180px]">
       {isPromo && (
-        <div className="mb-2 rounded-md bg-violet-50 px-2 py-1">
+        <div className="mb-2 rounded-md px-2 py-1" style={{ background: isUserPromo ? '#fffbeb' : '#f5f3ff' }}>
           <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
-            <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+            <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ background: isUserPromo ? '#f59e0b' : '#8b5cf6' }} />
+            <span className="font-semibold truncate" style={{ color: isUserPromo ? '#b45309' : '#6d28d9' }}>Promo: {promoLabel}</span>
           </div>
+          {promoEventLabel && <span className="pl-3.5 text-[10px] font-medium" style={{ color: isUserPromo ? '#d97706' : '#7c3aed' }}>{promoEventLabel}</span>}
           <PerformanceBadge pct={computedPerfPct} />
         </div>
       )}
@@ -422,7 +476,7 @@ function StoreInvTooltip({ active, payload, label }: { active?: boolean; payload
 // existing tooltips, since each merged row now carries both sets of fields.
 function ComparisonTooltip({ active, payload, label, promoWeekMap }: {
   active?: boolean; payload?: any[]; label?: string
-  promoWeekMap?: Record<string, { name: string; groupName: string }>
+  promoWeekMap?: Record<string, { name: string; groupName: string; eventType?: string; isUserPromo?: boolean }>
 }) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload ?? {}
@@ -430,6 +484,8 @@ function ComparisonTooltip({ active, payload, label, promoWeekMap }: {
   const promoGroupName = d.promo_group_name || promoWeekMap?.[label ?? '']?.groupName || ''
   const promoName = d.promo_name || promoWeekMap?.[label ?? '']?.name || ''
   const promoLabel = promoGroupName || promoName || 'Promo week'
+  const promoEventLabel = humanizePromoEvent(d.event_type || promoWeekMap?.[label ?? '']?.eventType || '')
+  const isUserPromo = Boolean(d.is_user_promo) || Boolean(promoWeekMap?.[label ?? '']?.isUserPromo)
   const isPromo = d.is_promo_week || (promoWeekMap && label && promoWeekMap[label])
   const demand = Number(d.primary_demand_qty ?? d.demand_qty ?? 0)
   const actualDemand = Number(d.demand_qty ?? 0)
@@ -451,11 +507,12 @@ function ComparisonTooltip({ active, payload, label, promoWeekMap }: {
   return (
     <div className="rounded-lg border border-charcoal-blue-200 bg-white px-3 py-2 shadow-md text-xs min-w-[190px]">
       {isPromo && (
-        <div className="mb-2 rounded-md bg-violet-50 px-2 py-1">
+        <div className="mb-2 rounded-md px-2 py-1" style={{ background: isUserPromo ? '#fffbeb' : '#f5f3ff' }}>
           <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 flex-shrink-0 rounded-full bg-violet-500" />
-            <span className="font-semibold text-violet-700 truncate">Promo: {promoLabel}</span>
+            <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ background: isUserPromo ? '#f59e0b' : '#8b5cf6' }} />
+            <span className="font-semibold truncate" style={{ color: isUserPromo ? '#b45309' : '#6d28d9' }}>Promo: {promoLabel}</span>
           </div>
+          {promoEventLabel && <span className="pl-3.5 text-[10px] font-medium" style={{ color: isUserPromo ? '#d97706' : '#7c3aed' }}>{promoEventLabel}</span>}
           <PerformanceBadge pct={computedPerfPct} />
         </div>
       )}
@@ -711,8 +768,21 @@ export default function SimulationResultsPage() {
   // Pre-simulation forecasted demand for base simulation weeks (from weekly_demand)
   const [baseForecastMap, setBaseForecastMap] = useState<Map<string, number>>(new Map())
   const [rollingPromos, setRollingPromos] = useState<{ promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]>([])
+  // Account catalog promos (pre-existing, independent of this session's own YAML) — fetched
+  // once so upcoming/not-yet-simulated forecast weeks can still be promo-highlighted (purple)
+  // right after "Generate Demand", before any chunk has actually run and produced real
+  // is_promo_week rows. rollingPromos (above) is the equivalent for USER-added (orange) promos.
+  const [catalogPromos, setCatalogPromos] = useState<{ promo_group_name: string | null; start_date: string | null; end_date: string | null; event_type: string }[]>([])
+  const [promoGroupsCatalog, setPromoGroupsCatalog] = useState<{ promo_group_name: string; item_ids: string[] }[]>([])
   const [promoGroupPerfMap, setPromoGroupPerfMap] = useState<Record<string, number | null>>({})
   const [runFullConfig, setRunFullConfig] = useState<Record<string, unknown> | null>(null)
+  // Scoped-extension children run the normal rolling-forecast flow on themselves; base sims
+  // instead surface an "Extend" entry point to the extensions list. Set from run-config.
+  const [isScopedChild, setIsScopedChild] = useState(false)
+  // For a scoped child, the base sim's own id/name — fetched once known, purely for the
+  // breadcrumb trail (Runs > Base Sim > Extensions > this extension).
+  const [parentSimulationId, setParentSimulationId] = useState<string | null>(null)
+  const [parentSimName, setParentSimName] = useState<string | null>(null)
   const [runEndWeek, setRunEndWeek] = useState<string>('')
   const [yamlModalOpen, setYamlModalOpen] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
@@ -748,13 +818,73 @@ export default function SimulationResultsPage() {
   // activeBranchView (same pattern as chunksForView below) so the "Chunk N End" line
   // advances with whichever timeline is being viewed, instead of staying frozen at
   // main-line's single pre-fork chunk once branches take over.
+  // A branch's own timeline is its pre-fork main-line chunk(s) PLUS whatever it has run
+  // itself post-fork — a branch never re-runs the pre-fork chunk under its own branch_type,
+  // so filtering to ONLY branch_type === branchView (the old behavior) silently dropped the
+  // shared chunk1 from the branch's own lineage, which both mislabeled its first own chunk
+  // as "Chunk 1" (it's really chunk #2 overall) and, in the Comparison tab specifically,
+  // meant the two panels weren't even scoped to their own branch at all — they both read
+  // the single global `activeBranchView` (the Data Dashboard's toggle state), so switching
+  // that toggle silently changed BOTH the Reactive and Adaptive panels' reference lines
+  // instead of leaving each panel showing its own branch's chunk history.
+  function computeChunkMarkers(branchView: string | null) {
+    const chunksForView = (rollingSession?.chunks ?? []).filter(c =>
+      !c.branch_type || (branchView && c.branch_type === branchView))
+    // "Forecast Start" marks where the WHOLE rolling forecast began (right after the base
+    // simulation's own end week) — the same instant on every branch view, since a branch
+    // only diverges from the fork point onward, not from its own first chunk.
+    const earliestMainChunk = (rollingSession?.chunks ?? [])
+      .filter(c => !c.branch_type)
+      .sort((a, b) => (a.chunk_number ?? 0) - (b.chunk_number ?? 0))[0]
+    const baseStartWeek = rollingSession ? toIsoWeek(earliestMainChunk?.start_week ?? runEndWeek ?? '') : null
+    const completed = chunksForView.filter(c => c.status === 'completed')
+      .sort((a, b) => (a.end_week < b.end_week ? -1 : 1))
+    const lastCompleted = completed.slice(-1)[0]
+    const forecastStartWeek = lastCompleted ? toIsoWeek(lastCompleted.end_week) : null
+    // chunk_number is only populated for main-line chunks — Reactive/Adaptive branch chunks
+    // store it as null, so label each completed chunk (mainline + this branch's own, combined
+    // and time-ordered) by its 1-based position in the FULL lineage: "Chunk 1 End", "Chunk 2 End", ...
+    const areas = completed.map((c, i) => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: i + 1 }))
+    return { baseStartWeek, forecastStartWeek, areas }
+  }
   const _chunksForView = (rollingSession?.chunks ?? []).filter(c =>
     activeBranchView ? c.branch_type === activeBranchView : !c.branch_type)
   const _sortedChunks = _chunksForView.slice().sort((a, b) => (a.chunk_number ?? 0) - (b.chunk_number ?? 0))
-  const rollingBaseStartWeek = rollingSession ? toIsoWeek(_sortedChunks[0]?.start_week ?? runEndWeek ?? '') : null
-  const _lastCompletedChunk = _chunksForView.filter(c => c.status === 'completed').slice(-1)[0]
-  const rollingForecastStartWeek = _lastCompletedChunk ? toIsoWeek(_lastCompletedChunk.end_week) : null
-  const chunkAreas = _chunksForView.filter(c => c.status === 'completed').map(c => ({ x1: toIsoWeek(c.start_week), x2: toIsoWeek(c.end_week), num: c.chunk_number }))
+  const _dashboardMarkers = computeChunkMarkers(activeBranchView)
+  const rollingBaseStartWeek = _dashboardMarkers.baseStartWeek
+  const rollingForecastStartWeek = _dashboardMarkers.forecastStartWeek
+  const chunkAreas = _dashboardMarkers.areas
+  // Promo weeks not yet simulated (still "Future Demand") have no real is_promo_week row to
+  // read from — this map lets the charts highlight them anyway, right after Generate Demand,
+  // using the same purple (already-in-the-account's-catalog) / orange (added via this
+  // session's own YAML) split used for already-run weeks. User-added promos win on overlap
+  // since they're the more specific, deliberate signal.
+  const futurePromoWeekMap = useMemo(() => {
+    const map = new Map<string, FuturePromoInfo>()
+    const scopeItemIds = isScopedChild ? ((runFullConfig as any)?.scope_item_ids as string[] | undefined) : undefined
+    const scopeSet = scopeItemIds && scopeItemIds.length > 0 ? new Set(scopeItemIds) : null
+    const allowedGroups = scopeSet
+      ? new Set(promoGroupsCatalog.filter(g => g.item_ids.some(id => scopeSet.has(id))).map(g => g.promo_group_name))
+      : null
+    for (const p of catalogPromos) {
+      if (!p.start_date || !p.end_date) continue
+      if (allowedGroups && !(p.promo_group_name && allowedGroups.has(p.promo_group_name))) continue
+      for (const w of isoWeeksTouched(p.start_date, p.end_date)) {
+        if (!map.has(w)) map.set(w, { groupName: p.promo_group_name ?? '', eventType: p.event_type, isUserPromo: false })
+      }
+    }
+    for (const p of rollingPromos) {
+      if (!p.start_date || !p.end_date) continue
+      for (const w of isoWeeksTouched(p.start_date, p.end_date)) {
+        map.set(w, {
+          groupName: p.promo_group_name,
+          eventType: p.promo_name && p.promo_name !== p.promo_group_name ? p.promo_name : '',
+          isUserPromo: true,
+        })
+      }
+    }
+    return map
+  }, [catalogPromos, promoGroupsCatalog, rollingPromos, isScopedChild, runFullConfig])
   // Branches are persistent child simulations, tracked generically in session.branches
   // (branch_key is an open string, not just 'reactive'/'adaptive'). hasPromoBranches is true
   // once forked (demand-ready stage) so the toggle appears immediately after "Run Both
@@ -765,6 +895,18 @@ export default function SimulationResultsPage() {
     rollingSession?.branches?.some(b => b.branch_key === 'reactive') &&
     rollingSession?.branches?.some(b => b.branch_key === 'adaptive')
   )
+
+  // Support a `?tab=comparison` deep link — jump to the Comparison tab as soon as it
+  // unlocks (branches exist), once, instead of making the user click it.
+  const wantsComparisonTabRef = useRef(
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tab') === 'comparison',
+  )
+  useEffect(() => {
+    if (wantsComparisonTabRef.current && hasPromoBranches) {
+      wantsComparisonTabRef.current = false
+      setActiveTab('comparison')
+    }
+  }, [hasPromoBranches])
   const [posError, setPosError] = useState('')
   const [posLoading, setPosLoading] = useState(false)
 
@@ -822,6 +964,44 @@ export default function SimulationResultsPage() {
   const childBranches = allRuns.filter(r => r.parent_simulation_id === simulationId)
   const reactiveChild = childBranches.find(r => r.branch_type === 'reactive') || null
   const adaptiveChild = childBranches.find(r => r.branch_type === 'adaptive') || null
+
+  // For a scoped extension, fetch its base sim's name once — purely for the breadcrumb
+  // trail (Runs > Base Sim Name > Extensions > this extension's own name).
+  useEffect(() => {
+    if (!parentSimulationId) { setParentSimName(null); return }
+    let cancelled = false
+    getRunConfig(parentSimulationId)
+      .then(cfg => {
+        if (!cancelled) setParentSimName(String((cfg.full_config as any)?.simulation_name ?? (cfg.full_config as any)?.run?.simulation_name ?? 'Base simulation'))
+      })
+      .catch(() => { if (!cancelled) setParentSimName('Base simulation') })
+    return () => { cancelled = true }
+  }, [parentSimulationId])
+
+  const retailerAccountIdForCrumbs = params.retailerAccountId as string
+  useBreadcrumb(
+    !simName ? null
+    : isScopedChild && parentSimulationId
+      ? (parentSimName ? [
+          { label: 'Runs', href: `/retailers/${retailerAccountIdForCrumbs}/runs?scenario=${scenarioType ?? 'no_scenario'}` },
+          { label: parentSimName, href: `/retailers/${retailerAccountIdForCrumbs}/simulation/${parentSimulationId}` },
+          { label: 'Extensions', href: `/retailers/${retailerAccountIdForCrumbs}/simulation/${parentSimulationId}/extensions` },
+          { label: simName },
+        ] : null)
+      : [
+          { label: 'Runs', href: `/retailers/${retailerAccountIdForCrumbs}/runs?scenario=${scenarioType ?? 'no_scenario'}` },
+          { label: simName },
+        ]
+  )
+  // Fetch the account's promo catalog once (independent of any rolling-forecast session)
+  // so upcoming forecast weeks can be highlighted purple even before a chunk has run.
+  useEffect(() => {
+    if (!retailerAccountIdForCrumbs || isHls) return
+    getPromos(retailerAccountIdForCrumbs).then(setCatalogPromos).catch(() => null)
+    getPromoGroups(retailerAccountIdForCrumbs).then(setPromoGroupsCatalog).catch(() => null)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retailerAccountIdForCrumbs])
+
   const isHls = scenarioType === 'hidden_lost_sales' || (hlsData !== null && hlsData.disruption_windows.length > 0)
   // HLS-only — driven by child simulations whose parent_simulation_id === this run.
   // Promo scenarios use hasPromoBranches (declared earlier, driven by rollingSession.branches).
@@ -1191,8 +1371,11 @@ export default function SimulationResultsPage() {
           brand: globalBrand || undefined,
         }
         // Fetch future demand (for the forecast line/bar). For a branch view, read that
-        // branch's isolated demand curve; for main-line, the shared curve (undefined).
-        const _demandSimId = _branchSimId ?? undefined
+        // branch's isolated demand curve; for main-line, the shared curve (undefined) — UNLESS
+        // this simulation is itself a scoped extension, whose own demand lives under its own
+        // simulation_id (demand_pool_id), not the account-wide shared pool. Falling through to
+        // undefined there would pull in every item in the account, not just the scope's items.
+        const _demandSimId = _branchSimId ?? (isScopedChild ? simulationId : undefined)
         getDemandWeeklyTotals(session.retailer_account_id, futureStartWeek, endWeek, seed, filters, _demandSimId)
           .then(rows => {
             const mapped = rows.map(r => ({ week: r.pos_week, forecast_qty: r.demand_qty }))
@@ -1241,7 +1424,7 @@ export default function SimulationResultsPage() {
     } catch {
       // 404 = no active session, that's fine
     }
-  }, [simulationId, runEndWeek, runFullConfig, activeBranchView, isHls,
+  }, [simulationId, runEndWeek, runFullConfig, activeBranchView, isHls, isScopedChild,
       globalItem, globalStore, globalSdc, globalRdc, globalCategory, globalSubcategory, globalBrand])
 
   useEffect(() => {
@@ -1391,7 +1574,13 @@ export default function SimulationResultsPage() {
       subcategory: globalSubcategory || undefined,
       brand: globalBrand || undefined,
     }
-    getDemandWeeklyTotals(retailerAccountId, startWeek, endWeek, seed, filters)
+    // A scoped extension's own weekly_demand pool (demand_pool_id) is keyed by its own
+    // simulation_id and already contains only its promo group's items — omitting simulationId
+    // here would fall back to the shared/account-wide pool (_ZERO_UUID, ALL items in the
+    // account), wildly overstating "Forecasted Demand" relative to the scoped sim's actual
+    // Sales/Actual Demand whenever the sidebar category/subcategory/brand filter matches items
+    // outside the scope (or even unfiltered, since the shared pool covers every item).
+    getDemandWeeklyTotals(retailerAccountId, startWeek, endWeek, seed, filters, isScopedChild ? simulationId : undefined)
       .then(rows => {
         const m = new Map<string, number>()
         rows.forEach(r => m.set(r.pos_week, r.demand_qty))
@@ -1399,7 +1588,7 @@ export default function SimulationResultsPage() {
       })
       .catch(() => null)
   }, [posData, parentPosData, selectedBranch, runFullConfig, params.retailerAccountId,
-      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand])
+      globalItem, globalStore, globalCategory, globalSubcategory, globalBrand, isScopedChild, simulationId])
 
   // ── Filtered fetch handlers ───────────────────────────────────────────────
 
@@ -1420,7 +1609,14 @@ export default function SimulationResultsPage() {
       const data = await getStoreInventory(analyticsSimId, p)
       const rows = aggStoreInv(data.store_inventory ?? [])
       setStoreInvData(rows)
-      if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
+      // Empty rows can mean "ClickHouse write still in flight" (worth re-polling) OR just
+      // "no data matches this filter combo" (e.g. a brand/subcategory with zero items in a
+      // scoped extension) — the latter is a legitimate, permanent result. Only reinterpret
+      // empty as not-yet-ready for the UNFILTERED case, where zero rows can never be correct
+      // for a completed simulation. Doing this for filtered queries too caused an infinite
+      // PENDING→READY→refetch→PENDING loop whenever a filter combo had no matching data.
+      const noFiltersApplied = !itemId && !storeId && !category && !subcategory && !brand
+      if (rows.length === 0 && noFiltersApplied && analyticsStatusRef.current === 'READY') {
         setAnalyticsStatus('PENDING')
       }
     } catch (e: any) { setStoreInvError(e?.message ?? 'Failed') }
@@ -1456,7 +1652,10 @@ export default function SimulationResultsPage() {
       })
       const rows = aggDCInv(data.dc_inventory ?? [], data.supplier_dc_inventory ?? [])
       setDcInvData(rows)
-      if (rows.length === 0 && analyticsStatusRef.current === 'READY') {
+      // See the matching comment in fetchStoreInvFiltered — only treat empty as "not ready
+      // yet" when unfiltered, or a filter combo with genuinely zero matches loops forever.
+      const noFiltersApplied = !itemId && !rdcId && !sdcId && !category && !subcategory && !brand
+      if (rows.length === 0 && noFiltersApplied && analyticsStatusRef.current === 'READY') {
         setAnalyticsStatus('PENDING')
       }
     } catch (e: any) { setDcInvError(e?.message ?? 'Failed') }
@@ -1740,8 +1939,10 @@ export default function SimulationResultsPage() {
       if (!activeBranchView) loadSummary()
       getRunConfig(simulationId).then(cfg => {
         if (!cancelled) {
-          setSimName(String((cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
+          setSimName(String((cfg.full_config as any)?.simulation_name ?? (cfg.full_config as any)?.run?.simulation_name ?? cache.simulationName))
           setRunFullConfig(cfg.full_config)
+          setIsScopedChild(!!cfg.is_scoped_extension)
+          setParentSimulationId(cfg.parent_simulation_id ?? null)
           if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
       }).catch(() => null)
@@ -1751,10 +1952,12 @@ export default function SimulationResultsPage() {
     const checkStatus = async () => {
       try {
         const cfg = await getRunConfig(simulationId)
-        const name = (cfg.full_config as any)?.run?.simulation_name ?? 'Simulation Results'
+        const name = (cfg.full_config as any)?.simulation_name ?? (cfg.full_config as any)?.run?.simulation_name ?? 'Simulation Results'
         if (!cancelled) {
           setSimName(String(name))
           setRunFullConfig(cfg.full_config)
+          setIsScopedChild(!!cfg.is_scoped_extension)
+          setParentSimulationId(cfg.parent_simulation_id ?? null)
           if (cfg.end_week) setRunEndWeek(cfg.end_week)
         }
         if (cfg.status === 'COMPLETED') {
@@ -1979,14 +2182,28 @@ export default function SimulationResultsPage() {
   // Comparison tab combined chart: the existing POS chart (bars, left axis) + the existing
   // Store Inventory chart (lines, right axis) merged into one dual-axis ComposedChart.
   const renderComparisonChart = (
-    data: any[],
+    rawData: any[],
     zoom: ReturnType<typeof useChartZoom>,
     height: number,
+    branchView: 'reactive' | 'adaptive',
   ) => {
+    // Same future-week promo overlay as the Data Dashboard's own POS chart — see
+    // futurePromoWeekMap above — so not-yet-simulated weeks get highlighted here too.
+    const data = rawData.map((d: any) => {
+      if (d.is_promo_week) return d
+      const fp = futurePromoWeekMap.get(d.week)
+      if (!fp) return d
+      return { ...d, is_promo_week: 1, is_user_promo: fp.isUserPromo ? 1 : 0, promo_group_name: fp.groupName, event_type: fp.eventType }
+    })
     const promoWeekMap = Object.fromEntries(
-      data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }])
+      data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name, eventType: d.event_type, isUserPromo: !!d.is_user_promo }])
     )
     const hasForecast = data.some(d => d.forecast_qty != null)
+    // Each Comparison-tab panel is a FIXED branch (Adaptive always Adaptive, Reactive always
+    // Reactive) regardless of the Data Dashboard's own branch toggle — using the shared
+    // top-level markers here (computed off activeBranchView) meant switching that toggle
+    // would silently redraw BOTH panels' reference lines. Compute this panel's own instead.
+    const { baseStartWeek: panelBaseStartWeek, areas: panelChunkAreas } = computeChunkMarkers(branchView)
     return (
       <ResponsiveContainer width="100%" height={height}>
         <ComposedChart data={zoom.isZoomed ? zoom.displayData : data} margin={{ top: 5, right: 20, left: 0, bottom: 20 }} barCategoryGap="4%" barGap={2}
@@ -1995,7 +2212,7 @@ export default function SimulationResultsPage() {
           {data.filter(d => d.is_promo_week).map(d => (
             <ReferenceArea
               key={d.week} yAxisId="left" x1={d.week} x2={d.week}
-              fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+              fill={d.is_user_promo || (extensionStartWeek && d.week >= extensionStartWeek) ? '#f59e0b' : '#8b5cf6'}
               fillOpacity={0.12} stroke="none"
             />
           ))}
@@ -2034,10 +2251,10 @@ export default function SimulationResultsPage() {
           )}
           <Line yAxisId="right" dataKey="available_quantity" stroke="#10b981" name="Available" type="monotone" strokeWidth={2} dot={false} />
           <Line yAxisId="right" dataKey="on_order_quantity" stroke="#f59e0b" name="On Order" type="monotone" strokeWidth={2} dot={false} strokeDasharray="4 4" />
-          {rollingBaseStartWeek && <ReferenceLine yAxisId="left" x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
-          {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-            <ReferenceLine yAxisId="left" x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
-          )}
+          {panelBaseStartWeek && <ReferenceLine yAxisId="left" x={panelBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
+          {panelChunkAreas.filter(a => a.x2 && a.x2 !== panelBaseStartWeek).map(a => (
+            <ReferenceLine key={`chunk-end-${a.num}`} yAxisId="left" x={a.x2} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${a.num} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+          ))}
         </ComposedChart>
       </ResponsiveContainer>
     )
@@ -2223,7 +2440,17 @@ export default function SimulationResultsPage() {
                 {runBranchesInFlight ? 'Simulating branches…' : 'Run Simulation for Future Demand'}
               </button>
             )}
-            {pageState === 'ready' && !rollingSession && !isHls && (
+            {/* Base promo sim → Extend (scoped extensions list). Scoped-extension children
+                run the rolling forecast on themselves, so they keep the Rolling Forecast button. */}
+            {pageState === 'ready' && !rollingSession && !isHls && !isScopedChild && (
+              <button
+                onClick={() => router.push(`/retailers/${params.retailerAccountId}/simulation/${simulationId}/extensions`)}
+                className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
+              >
+                <ChevronRight size={13} /> Extend
+              </button>
+            )}
+            {pageState === 'ready' && !rollingSession && !isHls && isScopedChild && (
               <button
                 onClick={() => setShowRollingModal(true)}
                 className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-amber-400 px-4 py-2 text-xs font-bold text-amber-600 transition-all hover:bg-amber-50"
@@ -2479,8 +2706,8 @@ export default function SimulationResultsPage() {
                   ))}
                 </div>
                 <span className="text-[9px] text-charcoal-blue-400">
-                  {activeBranchView === 'reactive' && '↑ Full correction based on avg historical performance'}
-                  {activeBranchView === 'adaptive' && '↑ Dampened — max ±10% from original plan'}
+                  {activeBranchView === 'reactive' && '↑ Full correction based on latest performance'}
+                  {activeBranchView === 'adaptive' && '↑ Dampened — 10% of latest performance carried forward'}
                   {activeBranchView === null && (
                     <span className="inline-flex items-center gap-1 rounded-full bg-charcoal-blue-50 px-2 py-0.5 font-semibold text-charcoal-blue-500">
                       Frozen reference — original plan, not updated after branching
@@ -2624,7 +2851,14 @@ export default function SimulationResultsPage() {
                         branch_forecast_qty: null,
                       }))
                   : []
-                const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks, ...branchForecastOnlyWeeks].sort((a, b) => a.week.localeCompare(b.week))
+                const combinedPosData = [...mergedPosData, ...forecastOnlyWeeks, ...branchForecastOnlyWeeks]
+                  .sort((a, b) => a.week.localeCompare(b.week))
+                  .map((d: any) => {
+                    if (d.is_promo_week) return d // already-simulated weeks carry their own real flag
+                    const fp = futurePromoWeekMap.get(d.week)
+                    if (!fp) return d
+                    return { ...d, is_promo_week: 1, is_user_promo: fp.isUserPromo ? 1 : 0, promo_group_name: fp.groupName, event_type: fp.eventType }
+                  })
 
                 return (
                   <ChartShell
@@ -2640,7 +2874,7 @@ export default function SimulationResultsPage() {
                           {combinedPosData.filter(d => d.is_promo_week).map(d => (
                             <ReferenceArea
                               key={d.week} x1={d.week} x2={d.week}
-                              fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                              fill={d.is_user_promo || (extensionStartWeek && d.week >= extensionStartWeek) ? '#f59e0b' : '#8b5cf6'}
                               fillOpacity={0.12} stroke="none"
                             />
                           ))}
@@ -2648,7 +2882,7 @@ export default function SimulationResultsPage() {
                           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                           <XAxis dataKey="week" {...xAxisProps} />
                           <YAxis tickFormatter={yAxisTickFormatter} />
-                          <Tooltip content={<POSTooltip hideActual={selectedBranch !== 'base' && !branchIsCompleted} promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                          <Tooltip content={<POSTooltip hideActual={selectedBranch !== 'base' && !branchIsCompleted} promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name, eventType: d.event_type, isUserPromo: !!d.is_user_promo }]))} />} />
                           <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                           <Bar dataKey="primary_demand_qty" fill="#8b5cf6" name="Forecasted Demand" barSize={10}>
                             {combinedPosData.map((d, i) => {
@@ -2683,9 +2917,9 @@ export default function SimulationResultsPage() {
                             <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
                           )}
                           {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
-                          {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-                            <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
-                          )}
+                          {chunkAreas.filter(a => a.x2 && a.x2 !== rollingBaseStartWeek).map(a => (
+                            <ReferenceLine key={`chunk-end-${a.num}`} x={a.x2} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${a.num} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                          ))}
                           {showBranchForecastTail && forecastStartWeek && branchTailColor && (
                             <ReferenceLine x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                           )}
@@ -2719,9 +2953,9 @@ export default function SimulationResultsPage() {
                         <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
                       )}
                       {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
-                      {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-                        <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
-                      )}
+                      {chunkAreas.filter(a => a.x2 && a.x2 !== rollingBaseStartWeek).map(a => (
+                        <ReferenceLine key={`chunk-end-${a.num}`} x={a.x2} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${a.num} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                      ))}
                       {showBranchForecastTail && forecastStartWeek && branchTailColor && (
                         <ReferenceLine x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                       )}
@@ -2744,7 +2978,7 @@ export default function SimulationResultsPage() {
                       {cutForBranch(zoom3.displayData).filter(d => d.is_promo_week).map(d => (
                         <ReferenceArea
                           key={d.week} yAxisId="left" x1={d.week} x2={d.week}
-                          fill={extensionStartWeek && d.week >= extensionStartWeek ? '#f59e0b' : '#8b5cf6'}
+                          fill={d.is_user_promo || (extensionStartWeek && d.week >= extensionStartWeek) ? '#f59e0b' : '#8b5cf6'}
                           fillOpacity={0.12} stroke="none"
                         />
                       ))}
@@ -2753,7 +2987,7 @@ export default function SimulationResultsPage() {
                       <XAxis dataKey="week" {...xAxisProps} />
                       <YAxis yAxisId="left" tickFormatter={yAxisTickFormatter} />
                       <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tickFormatter={v => `${(v * 100).toFixed(0)}%`} />
-                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                      <Tooltip content={<ChartTooltip promoWeekMap={Object.fromEntries(posData.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name, eventType: d.event_type, isUserPromo: !!d.is_user_promo }]))} />} />
                       <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                       <Bar yAxisId="left" dataKey="ordered_qty" fill="#3b82f6" name="Ordered" barSize={10}>
                         {cutForBranch(zoom3.displayData).map((d, i) => <Cell key={i} fill={extensionStartWeek && d.week >= extensionStartWeek ? '#93c5fd' : '#3b82f6'} />)}
@@ -2765,9 +2999,9 @@ export default function SimulationResultsPage() {
                         <ReferenceLine yAxisId="left" x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
                       )}
                       {rollingBaseStartWeek && <ReferenceLine yAxisId="left" x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
-                      {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-                        <ReferenceLine yAxisId="left" x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
-                      )}
+                      {chunkAreas.filter(a => a.x2 && a.x2 !== rollingBaseStartWeek).map(a => (
+                        <ReferenceLine key={`chunk-end-${a.num}`} yAxisId="left" x={a.x2} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${a.num} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                      ))}
                       {showBranchForecastTail && forecastStartWeek && branchTailColor && (
                         <ReferenceLine yAxisId="left" x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                       )}
@@ -2801,9 +3035,9 @@ export default function SimulationResultsPage() {
                         <ReferenceLine x={extensionStartWeek} stroke="#5b5fcf" strokeDasharray="4 2" label={{ value: 'Extension', position: 'insideTopRight', fontSize: 9, fill: '#5b5fcf' }} />
                       )}
                       {rollingBaseStartWeek && <ReferenceLine x={rollingBaseStartWeek} stroke="#8b5cf6" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: '#8b5cf6' }} />}
-                      {rollingForecastStartWeek && rollingForecastStartWeek !== rollingBaseStartWeek && (
-                        <ReferenceLine x={rollingForecastStartWeek} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${chunkAreas.length} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
-                      )}
+                      {chunkAreas.filter(a => a.x2 && a.x2 !== rollingBaseStartWeek).map(a => (
+                        <ReferenceLine key={`chunk-end-${a.num}`} x={a.x2} stroke="#7c3aed" strokeDasharray="4 2" strokeWidth={1.5} label={{ value: `Chunk ${a.num} End`, position: 'insideBottomRight', fontSize: 9, fill: '#7c3aed' }} />
+                      ))}
                       {showBranchForecastTail && forecastStartWeek && branchTailColor && (
                         <ReferenceLine x={forecastStartWeek} stroke={branchTailColor} strokeDasharray="4 2" strokeWidth={1.5} label={{ value: 'Forecast Start', position: 'insideTopLeft', fontSize: 9, fill: branchTailColor }} />
                       )}
@@ -2835,14 +3069,14 @@ export default function SimulationResultsPage() {
               subtitle="Forecasted Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
               error="" loading={comparisonLoading}
               isZoomed={zoomCmpA.isZoomed} onZoomReset={zoomCmpA.resetZoom}
-              chart={(h) => renderComparisonChart(adaptiveSeries, zoomCmpA, h)}
+              chart={(h) => renderComparisonChart(adaptiveSeries, zoomCmpA, h, 'adaptive')}
             />
             <ChartShell
               title="Reactive — POS & Store Inventory"
               subtitle="Forecasted Demand / Sales / Lost Sales / Future Demand (left) · Available & On Order (right)"
               error="" loading={comparisonLoading}
               isZoomed={zoomCmpB.isZoomed} onZoomReset={zoomCmpB.resetZoom}
-              chart={(h) => renderComparisonChart(reactiveSeries, zoomCmpB, h)}
+              chart={(h) => renderComparisonChart(reactiveSeries, zoomCmpB, h, 'reactive')}
             />
           </div>
         )}
@@ -2938,7 +3172,7 @@ export default function SimulationResultsPage() {
                   <XAxis dataKey="week" {...xAxisProps} />
                   <YAxis yAxisId="left" tickFormatter={yAxisTickFormatter} />
                   <YAxis yAxisId="right" orientation="right" tickFormatter={yAxisTickFormatter} />
-                  <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name }]))} />} />
+                  <Tooltip content={<POSTooltip promoWeekMap={Object.fromEntries(data.filter(d => d.is_promo_week).map(d => [d.week, { name: d.promo_name, groupName: d.promo_group_name, eventType: d.event_type, isUserPromo: !!d.is_user_promo }]))} />} />
                   <Legend verticalAlign="bottom" align="right" wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
                   <Bar yAxisId="left" dataKey="primary_demand_qty" fill="#8b5cf6" name="Forecasted Demand" barSize={8} />
                   <Bar yAxisId="left" dataKey="sales_qty" fill="#10b981" name="Sales" barSize={8} />
@@ -3014,6 +3248,8 @@ export default function SimulationResultsPage() {
       retailerAccountId={params.retailerAccountId as string}
       baseSeed={baseSeed}
       baseEndDate={runEndWeek}
+      isScopedExtension={isScopedChild}
+      scopeItemIds={isScopedChild ? ((runFullConfig as any)?.scope_item_ids as string[] | undefined) : undefined}
       existingSession={rollingSession}
       onSessionUpdated={(s) => {
         setRollingSession(s)

@@ -109,12 +109,42 @@ function appendPromoSnippet(
   return yaml.trimEnd() + '\n\n' + snippet
 }
 
-/** Lightweight YAML validation — returns null if OK, error message if not. */
-function validateRollingYaml(yaml: string): string | null {
-  const endDate = extractTotalEndDate(yaml)
+/** Lightweight YAML validation — returns null if OK, error message if not.
+ *  baseEndDateISO (the base simulation's own end week, YYYY-MM-DD) is required to check
+ *  that every promo actually falls inside the forecastable window — a promo dated outside
+ *  [baseEndDate, total_end_date] can never affect the simulation (there's no forecast for
+ *  it to apply to), so this is a hard error, not a soft nudge like the multi-week linter. */
+function validateRollingYaml(yamlText: string, baseEndDateISO: string): string | null {
+  const endDate = extractTotalEndDate(yamlText)
   if (!endDate) return 'total_end_date is required (format: MM-DD-YYYY)'
   // extractTotalEndDate normalises to YYYY-MM-DD internally
   if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return `total_end_date "${endDate}" is not a valid date`
+
+  let parsed: any
+  try {
+    parsed = yaml.load(yamlText)
+  } catch {
+    return null // yamlError already surfaces parse failures separately
+  }
+  const promos = parsed?.promos
+  if (Array.isArray(promos)) {
+    for (const p of promos) {
+      if (!p?.start || !p?.end) continue
+      const label = `${p.name ?? 'Promo'}${p.event ? ` · ${p.event}` : ''}`
+      const startISO = parseToISO(String(p.start))
+      const endISO = parseToISO(String(p.end))
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO) || !/^\d{4}-\d{2}-\d{2}$/.test(endISO)) {
+        return `${label}: start/end must be a valid date (MM-DD-YYYY)`
+      }
+      if (endISO < startISO) return `${label}: end date is before its start date`
+      if (startISO <= baseEndDateISO) {
+        return `${label}: starts ${formatDateDisplay(startISO)}, on or before the base simulation's end date (${formatDateDisplay(baseEndDateISO)}) — it must fall inside the forecast window, not before it`
+      }
+      if (endISO > endDate) {
+        return `${label}: ends ${formatDateDisplay(endISO)}, after the Total Forecast End Date (${formatDateDisplay(endDate)}) — extend the forecast window or shorten the promo`
+      }
+    }
+  }
   return null
 }
 
@@ -253,6 +283,12 @@ function addWeeks(dateStr: string, weeks: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T12:00:00')
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
 function clampDate(dateStr: string, ceiling: string): string {
   return dateStr > ceiling ? ceiling : dateStr
 }
@@ -273,6 +309,13 @@ export interface RollingForecastModalProps {
   retailerAccountId: string
   baseSeed: number
   baseEndDate: string   // YYYY-MM-DD
+  // True when baseSimulationId is a scoped extension — its own weekly_demand pool
+  // (demand_pool_id) lives under its own simulation_id, not the account-wide shared pool.
+  isScopedExtension?: boolean
+  // The scoped extension's own item scope (its full_config.scope_item_ids) — used to filter
+  // the "Add promo" picker down to promo groups that actually touch this scope, instead of
+  // every promo group in the account (e.g. a Coke 2L extension shouldn't offer DORITOS promos).
+  scopeItemIds?: string[]
   existingSession: RollingForecastSession | null
   onSessionUpdated: (session: RollingForecastSession | null) => void
   onDemandReady?: (promos: { promo_group_name: string; promo_name: string; start_date: string; end_date: string; demand_multiplier: number }[]) => void
@@ -280,7 +323,7 @@ export interface RollingForecastModalProps {
 
 export function RollingForecastModal({
   open, onClose, baseSimulationId, retailerAccountId, baseSeed,
-  baseEndDate, existingSession, onSessionUpdated, onDemandReady,
+  baseEndDate, isScopedExtension, scopeItemIds, existingSession, onSessionUpdated, onDemandReady,
 }: RollingForecastModalProps) {
   useAuthStore()
 
@@ -399,7 +442,10 @@ export function RollingForecastModal({
     const endWeek = toIsoWeek(sess.total_end_date)
     if (!startWeek || !endWeek) return
     try {
-      const rows = await getDemandWeeklyTotals(retailerAccountId, startWeek, endWeek, baseSeed)
+      const rows = await getDemandWeeklyTotals(
+        retailerAccountId, startWeek, endWeek, baseSeed,
+        undefined, isScopedExtension ? baseSimulationId : undefined,
+      )
       setChartData(rows.map(r => ({ week: r.pos_week, demand_qty: r.demand_qty })))
     } catch {
       setChartData([])
@@ -409,7 +455,7 @@ export function RollingForecastModal({
   // ── Step: Save setup and generate demand ─────────────────────────────────
   async function handleSaveAndPreview() {
     // Client-side YAML validation
-    const validErr = validateRollingYaml(yamlContent)
+    const validErr = validateRollingYaml(yamlContent, baseEndDate)
     if (validErr) { setYamlError(validErr); return }
 
     const endDate = extractTotalEndDate(yamlContent)
@@ -459,7 +505,18 @@ export function RollingForecastModal({
         const status = await getDemandStatus(jobId)
         if (status.status === 'COMPLETED') {
           setDemandStatus('done')
-          onDemandReady?.([])
+          // Full-session fetch (no date range) — these are the promos the USER scheduled
+          // via this session's own YAML (extension_promo_schedules), used by the dashboard
+          // to highlight upcoming promo weeks in orange before any chunk has actually run.
+          try {
+            const schedules = await getSessionPromoSchedules(sess.session_id)
+            onDemandReady?.(schedules.map(s => ({
+              promo_group_name: s.promo_group_name, promo_name: s.promo_name,
+              start_date: s.start_date, end_date: s.end_date, demand_multiplier: s.demand_multiplier,
+            })))
+          } catch {
+            onDemandReady?.([])
+          }
           onClose()
         } else if (status.status === 'FAILED') {
           setDemandStatus('error')
@@ -556,14 +613,22 @@ export function RollingForecastModal({
 
   // ── Add promo snippet via dropdown ────────────────────────────────────────
   function handleAddPromo(promo: PromoResponse) {
-    const today = new Date().toISOString().slice(0, 10)
-    const weekLater = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+    // Default into the still-open forecast window — the day after the last completed
+    // chunk (or the base sim's own end date, before any chunk has run yet) through one
+    // week later, clamped to the chosen Total Forecast End Date. Previously this used
+    // today's real wall-clock date, which lands wildly outside the window whenever "today"
+    // isn't inside [baseEndDate, total_end_date] — e.g. a 2024 forecast window gets a promo
+    // dated in 2026, which the engine can never apply (see validateRollingYaml).
+    const windowFloor = session?.current_completed_week || baseEndDate
+    const windowCeil = extractTotalEndDate(yamlContent) || totalEndDate || windowFloor
+    const start = addDays(windowFloor, 1)
+    const end = windowCeil && windowCeil < addDays(start, 6) ? windowCeil : addDays(start, 6)
     setYamlContent(prev => appendPromoSnippet(
       prev,
       promo.promo_group_name ?? promo.promo_name,
       promo.event_type || null,
-      today,
-      weekLater,
+      start,
+      end,
       promo.demand_multiplier,
     ))
     setShowPromoDropdown(false)
@@ -660,7 +725,14 @@ export function RollingForecastModal({
     return acc
   }, {})
 
-  const filteredGroups = promoGroupCatalog.filter(g =>
+  // Scoped extensions only ever simulate scopeItemIds — offering a promo group with none of
+  // its items in that set would let the user "add" a promo that can never affect this sim.
+  const scopeItemIdSet = scopeItemIds ? new Set(scopeItemIds) : null
+  const scopedGroupCatalog = scopeItemIdSet
+    ? promoGroupCatalog.filter(g => g.item_ids.some(id => scopeItemIdSet.has(id)))
+    : promoGroupCatalog
+
+  const filteredGroups = scopedGroupCatalog.filter(g =>
     promoSearch === '' ||
     g.promo_group_name.toLowerCase().includes(promoSearch.toLowerCase()) ||
     (g.category ?? '').toLowerCase().includes(promoSearch.toLowerCase()) ||

@@ -8,6 +8,7 @@ import { useAuthStore } from '@/lib/store/authStore'
 import { Plus, Zap, Trash2, CheckCircle, Loader2, XCircle, ChevronLeft } from 'lucide-react'
 import { getScenario, NO_SCENARIO } from '@/lib/scenarios'
 import { formatDateDisplay } from '@/lib/utils'
+import { useBreadcrumb } from '@/lib/store/breadcrumbStore'
 
 const STATUS_STYLES: Record<string, string> = {
   COMPLETED: 'bg-emerald-100 text-emerald-700',
@@ -32,6 +33,7 @@ function RunsPageInner() {
 
   const scenarioId = searchParams.get('scenario') ?? 'no_scenario'
   const scenario = getScenario(scenarioId) ?? NO_SCENARIO
+  useBreadcrumb([{ label: scenario.title }])
 
   const [runs, setRuns] = useState<SimulationRun[]>([])
   const [loading, setLoading] = useState(true)

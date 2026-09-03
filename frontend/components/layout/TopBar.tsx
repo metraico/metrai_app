@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuthStore } from '@/lib/store/authStore'
+import { useBreadcrumbStore } from '@/lib/store/breadcrumbStore'
 import { logout } from '@/lib/api/auth'
 import { LogOut, ChevronDown } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
@@ -10,6 +11,7 @@ export function TopBar() {
   const pathname = usePathname()
   const router = useRouter()
   const { fullName, email, refreshToken, clearAuth } = useAuthStore()
+  const trail = useBreadcrumbStore(s => s.trail)
 
   const handleLogout = async () => {
     if (refreshToken) logout().catch(() => {})
@@ -17,16 +19,18 @@ export function TopBar() {
     router.push('/login')
   }
 
+  // "Retailers / Account" is always derivable from the URL alone. Everything after that is
+  // page-specific (a simulation's real name, an extension's scope, a scenario) and the URL
+  // segments alone can't say what it is — each page sets `trail` (via useBreadcrumb) once it
+  // has loaded that context, and clears it on unmount. Pages that never set one (the retailer
+  // list, the account landing page) just show the static prefix, which is already complete.
   const getBreadcrumbs = () => {
     const segments = pathname.split('/').filter(Boolean)
-    const crumbs = []
+    const crumbs: { label: string; href?: string }[] = []
     if (segments[0] === 'retailers') {
       crumbs.push({ label: 'Retailers', href: '/retailers' })
       if (segments[1]) crumbs.push({ label: 'Account', href: `/retailers/${segments[1]}` })
-      if (segments[2]) {
-        const labels: Record<string, string> = { runs: 'Runs', simulation: 'Simulation', scenario: 'Scenario' }
-        crumbs.push({ label: labels[segments[2]] || segments[2], href: '' })
-      }
+      crumbs.push(...trail)
     }
     return crumbs
   }

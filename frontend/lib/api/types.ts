@@ -166,6 +166,28 @@ export interface SimulationRun {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Scoped Extensions  (backend: POST /simulation/{base_id}/scoped-extension,
+//                     GET /simulation/{base_id}/scoped-extensions)
+// ─────────────────────────────────────────────────────────────────────────────
+export interface CreateScopedExtensionResponse {
+  child_simulation_id: string
+  item_count: number
+  scope: { promo_group_id?: string; promo_group_name?: string; item_codes?: string[] }
+}
+
+export interface ScopedExtension {
+  child_simulation_id: string
+  simulation_name: string | null
+  simulation_status: string
+  start_week: string | null
+  end_week: string | null
+  created_at: string | null
+  scope_label: string
+  scope: { promo_group_id?: string; promo_group_name?: string; item_codes?: string[] }
+  item_count: number
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HLS Branching  (backend: POST /simulate/{id}/branch/forecast, /branch/run;
 //                 GET /branch-forecast/{id})
 // ─────────────────────────────────────────────────────────────────────────────
@@ -309,6 +331,8 @@ export interface RunConfig {
   start_week: string | null
   is_extended: boolean
   extension_count: number
+  parent_simulation_id?: string | null
+  is_scoped_extension?: boolean
 }
 
 // GET /simulation/{simulation_id} — full ClickHouse output (untyped, large)
