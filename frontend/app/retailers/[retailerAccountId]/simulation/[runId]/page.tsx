@@ -1255,13 +1255,28 @@ export default function SimulationResultsPage() {
       // (e.g. left over from a previously selected branch/filter combo) would otherwise
       // persist forever, silently showing a different branch's/filter's demand.
       setRollingForecastSnapshot(new Map())
-      // Fetch promo performance pcts for tooltip display
+      // Fetch promo performance pcts for tooltip display, and repopulate rollingPromos
+      // (drives the orange "user-added" future-week highlight) — rollingPromos otherwise
+      // only gets set in-memory right after Generate Demand (onDemandReady in the modal),
+      // so without this a page refresh silently loses every future promo highlight even
+      // though the schedules are still persisted server-side.
       getSessionPromoSchedules(session.session_id).then(schedules => {
         const map: Record<string, number | null> = {}
         for (const s of schedules) {
           if (s.performance_pct != null) map[s.promo_group_name] = s.performance_pct
         }
         setPromoGroupPerfMap(map)
+        setRollingPromos(
+          schedules
+            .filter(s => s.source === 'extension')
+            .map(s => ({
+              promo_group_name: s.promo_group_name,
+              promo_name: s.promo_name,
+              start_date: s.start_date,
+              end_date: s.end_date,
+              demand_multiplier: s.demand_multiplier,
+            }))
+        )
       }).catch(() => null)
       // Which simulation to read from: base for main-line, the child sim for a branch view.
       const _branchSimId = activeBranchView
