@@ -493,7 +493,7 @@ export function RollingForecastModal({
 
       pollDemandJob(job.job_id, sess)
     } catch (e: any) {
-      setError(e?.message ?? 'Failed to save setup')
+      setError(e?.response?.data?.detail ?? e?.message ?? 'Failed to save setup')
     } finally {
       setSavingSetup(false)
     }
@@ -571,7 +571,7 @@ export function RollingForecastModal({
         setModalState('performance_input')
       }
     } catch (e: any) {
-      setError(e?.message ?? 'Chunk run failed')
+      setError(e?.response?.data?.detail ?? e?.message ?? 'Chunk run failed')
       setModalState('demand_preview')
     }
   }
@@ -589,7 +589,7 @@ export function RollingForecastModal({
       const job = await recalculateRollingDemand(session.session_id, { performance_inputs: inputs })
       pollRecalcJob(job.job_id, session)
     } catch (e: any) {
-      setError(e?.message ?? 'Recalculation failed')
+      setError(e?.response?.data?.detail ?? e?.message ?? 'Recalculation failed')
       setModalState('demand_preview')
     }
   }
