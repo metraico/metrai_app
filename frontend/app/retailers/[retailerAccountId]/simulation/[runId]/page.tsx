@@ -2572,7 +2572,7 @@ export default function SimulationResultsPage() {
             {/* KPIs */}
             <div className="mb-5 grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
               <KPICard label="Total Sales (units)" value={displayKpis.totalSales.toLocaleString()} icon={ShoppingCart} color="bg-blue-500" />
-              <KPICard label="Total Revenue" value={`$${(displayKpis.totalRevenue / 1000).toFixed(1)}K`} icon={Package} color="bg-emerald-500" />
+              <KPICard label="Total Revenue" value={`$${Math.round(displayKpis.totalRevenue).toLocaleString()}`} icon={Package} color="bg-emerald-500" />
               <KPICard label="Avg Fill Rate" value={`${displayKpis.fillRate.toFixed(1)}%`} icon={Truck} color="bg-majorelle-blue-500" />
               <KPICard label="Stockout Rate" value={`${displayKpis.stockoutRate.toFixed(1)}%`} icon={AlertCircle} color="bg-rose-500" />
             </div>
@@ -3162,7 +3162,7 @@ export default function SimulationResultsPage() {
               </div>
               <div className="mb-3 grid gap-2 grid-cols-2 sm:grid-cols-4">
                 <Kpi label="Total Sales" value={kpi.totalSales.toLocaleString()} />
-                <Kpi label="Total Revenue" value={`$${(kpi.totalRevenue / 1000).toFixed(1)}K`} />
+                <Kpi label="Total Revenue" value={`$${Math.round(kpi.totalRevenue).toLocaleString()}`} />
                 <Kpi label="Avg Fill Rate" value={`${kpi.fillRate.toFixed(1)}%`} />
                 <Kpi label="Stockout Rate" value={`${kpi.stockoutRate.toFixed(1)}%`} />
               </div>
